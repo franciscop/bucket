@@ -29,6 +29,6 @@ jobs:
     - run: npm ci
     - run: npm test
       env:
-        BACKBLAZE_NAME: ${{ secrets.backblazeName }}
-        BACKBLAZE_ID: ${{ secrets.backblazeId }}
-        BACKBLAZE_KEY: ${{ secrets.backblazeKey }}
+        BACKBLAZE_NAME: ${{ secrets.BACKBLAZE_NAME }}
+        BACKBLAZE_ID: ${{ secrets.BACKBLAZE_ID }}
+        BACKBLAZE_KEY: ${{ secrets.BACKBLAZE_KEY }}
