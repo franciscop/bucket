@@ -1,0 +1,32 @@
+{
+  "name": "bucket",
+  "version": "0.1.0",
+  "description": "Access any of the popular storage solutions with a unified API:",
+  "author": "Francisco Presencia <public@francisco.io> (https://francisco.io/)",
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "npm run watch",
+    "test": "node --experimental-fetch --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "watch": "node --experimental-fetch --experimental-vm-modules node_modules/jest/bin/jest.js --watch --runInBand"
+  },
+  "keywords": [],
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "fch": "^4.1.5",
+    "swear": "^1.1.0"
+  },
+  "jest": {
+    "testEnvironment": "jest-environment-node",
+    "transform": {},
+    "setupFiles": [
+      "./setup.js"
+    ]
+  },
+  "devDependencies": {
+    "files": "^2.1.1",
+    "isomorphic-fetch": "^3.0.0",
+    "jest": "^27.5.1"
+  }
+}
