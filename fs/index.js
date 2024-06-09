@@ -1,9 +1,8 @@
+import { exec } from "node:child_process";
+import { createReadStream, createWriteStream } from "node:fs";
 import fsp from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { createReadStream, createWriteStream } from "node:fs";
-import { exec } from "node:child_process";
 import { promisify } from "node:util";
-
 import swear from "swear";
 
 export const ENV_NAME = "FILESYSTEM_NAME";
@@ -180,6 +179,7 @@ export default function Bucket(name = ".", options) {
     download,
     read,
     write,
+
     remove,
     exists,
     copy,

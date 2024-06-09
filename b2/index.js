@@ -1,13 +1,13 @@
+import "dotenv/config";
+
+import fch from "fch";
+import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { createHash, randomBytes } from "node:crypto";
-
-import "dotenv/config";
-import fch from "fch";
-// import axios from "axios";
 import swear from "swear";
+
 import listFromGenerator from "../lib/listFromGenerator.js";
 
 const API_VERSION_URL = "/b2api/v2/";
@@ -17,17 +17,6 @@ export const ENV_ID = "BACKBLAZE_ID";
 export const ENV_KEY = "BACKBLAZE_KEY";
 
 const PAGE_SIZE = process.env.PAGE_SIZE || 10000;
-
-const rand = () => randomBytes(32).toString("hex");
-
-class CodeError extends Error {
-  constructor(error) {
-    super(error);
-    this.code = error.code;
-    this.message = error.code.toUpperCase() + " " + error.message;
-    this.stack = error.stack;
-  }
-}
 
 const {
   BACKBLAZE_NAME: NAME,
@@ -167,10 +156,7 @@ export default function (name = NAME, { id = ID, key = KEY } = {}) {
     };
 
     const body = createReadStream(src);
-    const data2 = await api.post(uploadUrl, {
-      headers,
-      body,
-    });
+    const data2 = await api.post(uploadUrl, body, { headers });
     return toFile(data2);
   };
 
@@ -183,11 +169,17 @@ export default function (name = NAME, { id = ID, key = KEY } = {}) {
       "Content-Type": "b2/x-auto",
       "Content-Length": text.length,
       "X-Bz-File-Name": encodeURIComponent(dst),
-      "X-Bz-Content-Sha1": await hashString(text),
+      "X-Bz-Content-Sha1": hashString(text),
     };
 
-    const data2 = await api.post(uploadUrl, { headers, body: text });
-    return toFile(data2);
+    console.log(uploadUrl, headers, text);
+    try {
+      const data2 = await api.post(uploadUrl, text, { headers });
+      console.log(data2);
+      return toFile(data2);
+    } catch (error) {
+      console.log(error);
+    }
   };
 
   const remove = async (prefix) => {
