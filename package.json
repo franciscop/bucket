@@ -1,7 +1,7 @@
 {
   "name": "bucket",
   "version": "0.1.0",
-  "description": "Access any of the popular storage solutions with a unified API:",
+  "description": "Access any of the popular file storage solutions with a unified API:",
   "author": "Francisco Presencia <public@francisco.io> (https://francisco.io/)",
   "license": "MIT",
   "type": "module",
