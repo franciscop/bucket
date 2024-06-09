@@ -1,0 +1,20 @@
+{
+  "ListBucketResult": {
+    "Name": "bucket-demo",
+    "Contents": {
+      "Key": "2013-09-21 16.10.40.jpg",
+      "Size": 2979361,
+      "LastModified": "2024-06-08T16:52:21.263Z",
+      "Owner": {
+        "ID": "05d554460a87eab62ce481f82bfd97ea",
+        "DisplayName": "05d554460a87eab62ce481f82bfd97ea"
+      },
+      "ETag": "\"7efe113aba22926cd825dd5e5ad71b62\"",
+      "StorageClass": "STANDARD"
+    },
+    "IsTruncated": false,
+    "Prefix": {},
+    "Marker": {},
+    "MaxKeys": 1000
+  }
+}

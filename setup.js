@@ -1,5 +1,6 @@
-import expect from "expect";
 import "isomorphic-fetch";
+
+import expect from "expect";
 
 global.FormData = class FormData {};
 

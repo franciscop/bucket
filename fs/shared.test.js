@@ -1,6 +1,8 @@
 import "dotenv/config";
+
 import { pipeline } from "stream/promises";
-import Bucket, { ENV_NAME, ENV_ID, ENV_KEY } from "./";
+
+import Bucket, { ENV_ID, ENV_KEY, ENV_NAME } from "./";
 
 const name = process.env[ENV_NAME];
 const id = process.env[ENV_ID];

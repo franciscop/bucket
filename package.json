@@ -8,13 +8,13 @@
   "main": "index.js",
   "scripts": {
     "start": "npm run watch",
-    "test": "node --experimental-fetch --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "watch": "node --experimental-fetch --experimental-vm-modules node_modules/jest/bin/jest.js --watch --runInBand"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch --runInBand"
   },
   "keywords": [],
   "dependencies": {
     "dotenv": "^16.0.0",
-    "fch": "^4.1.5",
+    "fch": "^5.1.5",
     "swear": "^1.1.0"
   },
   "jest": {
@@ -25,8 +25,10 @@
     ]
   },
   "devDependencies": {
+    "axios": "^1.7.2",
     "files": "^2.1.1",
     "isomorphic-fetch": "^3.0.0",
-    "jest": "^27.5.1"
+    "jest": "^27.5.1",
+    "xml-js": "^1.6.11"
   }
 }

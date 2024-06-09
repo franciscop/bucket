@@ -6,7 +6,7 @@ Access any of the popular storage solutions with a unified API:
 
 ```js
 // Simple example displaying all of the files in the bucket
-import Bucket from "bucket/b2"; // or /b2, /r2, /fs, etc
+import Bucket from "bucket/b2"; // or /s3, /r2, /fs, etc
 
 const bucket = Bucket("bucket-name", { id, key, ...options });
 console.log(await bucket.list());
@@ -45,6 +45,11 @@ All of the methods are async:
 - `.exists()`: checks whether a file exists. Note that there are no real folders in most bucket implementations, it's all only files and the `/` is the separator, not actually folder paths.
 - `.copy()`: creates a duplicate of a file with a different name.
 - `.sign()`: sign a specific path for read or write, returns the full URL endpoint.
+
+Note:
+
+- .read(src).then(); .read(src).pipeTo(...); read(src).pipe(...);
+- .write(dst, data); .pipeTo(write(dst)); .pipe(write(dst));
 
 ### Bucket()
 

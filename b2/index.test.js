@@ -1,4 +1,5 @@
 import files from "files";
+
 import BackblazeBucket from "./index.js";
 
 const b2 = BackblazeBucket();
