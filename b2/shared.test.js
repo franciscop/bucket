@@ -12,14 +12,24 @@ const bucket = Bucket(name, { id, key });
 
 describe(`${bucket.name} Shared API`, () => {
   beforeAll(async () => {
-    await bucket.remove("/");
+    // Reset the bucket to a known state
+    console.log("A");
+    console.log(await bucket.list());
+    console.log("B");
+    await bucket.clear("/");
+    console.log("C");
+    console.log(await bucket.list());
+    console.log("D");
     await bucket.write("/readme.md", "Hello world");
     await bucket.write("/hello.txt", "Hello world");
     await bucket.write("/demo/data.csv", "Hello,world");
     await bucket.write("/demo/readme.md", "Hello world");
+    console.log("E");
+    console.log(await bucket.list());
+    console.log("F");
   });
   afterAll(async () => {
-    await bucket.remove("/");
+    await bucket.clear("/");
   });
 
   it("is a function", () => {

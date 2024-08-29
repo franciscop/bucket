@@ -1,188 +1,179 @@
+import "isomorphic-fetch";
+
+import { userInfo } from "os";
+
+import hashMod from "hash-it";
+
+import { Blob } from "node:buffer";
 import { exec } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
 import fsp from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { promisify } from "node:util";
-import swear from "swear";
+import { dirname, join, resolve } from "node:path";
+import { Readable, Writable, PassThrough } from "node:stream";
+import { promisify } from "util";
 
-export const ENV_NAME = "FILESYSTEM_NAME";
-export const ENV_ID = null;
-export const ENV_KEY = null;
+const { default: hash } = hashMod;
 
 const execP = promisify(exec);
-const cmd = (txt) => swear(execP(txt)).stdout;
+const cmd = (txt) => execP(txt).then((res) => res.stdout.trim());
+const mimeType = (file) => cmd(`file -b --mime-type '${file}'`);
 
-const mimeType = (file) => cmd(`file -b --mime-type '${file}'`).trim();
-
-const normalize = (base, prefix = ".") => {
-  if (!base.startsWith("./")) {
-    if (base.startsWith("/")) {
-      base = "." + base;
-    } else if (base === ".") {
-      base = "./";
-    } else {
-      base = "./" + base;
-    }
+const merge = (...streams) => {
+  let pass = new PassThrough();
+  for (let stream of streams) {
+    console.log(stream);
+    const end = stream == streams.at(-1);
+    pass = stream.pipe(pass, { end });
   }
-  // Remove any ending `/`; reserve those for the prefix
-  base = base.replace(/\/$/, "");
-
-  if (!prefix.startsWith(".")) {
-    if (prefix.startsWith("/")) {
-      prefix = "." + prefix;
-    } else if (prefix === ".") {
-      prefix = "./";
-    } else {
-      prefix = "./" + prefix;
-    }
-  }
-  prefix = prefix.replace(/^\./, "");
-  return (base + prefix).replace("//", "/");
+  return pass;
 };
 
-function streamToString(stream) {
-  const chunks = [];
-  return new Promise((resolve, reject) => {
-    stream.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
-    stream.on("error", (err) => reject(err));
-    stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-  });
+const ensurePathStream = (path) => {
+  const s = new PassThrough();
+  s._read = () => {}; // redundant? see update below
+  (async () => {
+    await fsp.mkdir(dirname(path), { recursive: true });
+    s.push(null);
+  })();
+  return s;
+};
+
+export default function FileSystem(path) {
+  if (!(this instanceof FileSystem)) {
+    return new FileSystem(path);
+  }
+  this.path = resolve(path);
 }
 
-const absolute = (base, file) => {
-  return file.replace(base, "");
+FileSystem.prototype.name = "FILESYSTEM";
+
+FileSystem.prototype.info = function () {
+  const id = userInfo().username;
+  return {
+    id,
+    name: this.name,
+    path: this.path,
+  };
 };
 
-export default function Bucket(name = ".", options) {
-  name = normalize(name);
+FileSystem.prototype.file = function (name) {
+  const path = resolve(join(this.path, name));
+  return new File(path);
+};
 
-  const info = () => ({
-    id: resolve(name).split("/").filter(Boolean).join(":"),
-    path: resolve(name),
-  });
-
-  const list = (prefix = "./") => {
-    prefix = normalize(name, prefix);
-
-    return cmd(`find ${name} -type f`)
-      .split("\n")
-      .filter(Boolean)
-      .filter((f) => f.startsWith(prefix))
-      .map((file) => absolute(name, file))
-      .map(async (file) => {
-        const url = resolve(normalize(name, file));
-        const [info, mime] = await Promise.all([fsp.stat(url), mimeType(url)]);
-        return {
-          id: file,
-          name: file.split("/").pop(),
-          path: file,
-          type: mime,
-          size: info.size,
-          date: new Date(info.mtime),
-          url,
-        };
-      });
-  };
-
-  const count = async (prefix = "/") => {
-    const files = await list(prefix);
-    return files.length;
-  };
-
-  const exists = (prefix) => {
-    prefix = normalize(name, prefix);
-    return fsp.access(prefix).then(() => true, () => false); // prettier-ignore
-  };
-
-  const upload = async (src, dst) => {
-    dst = normalize(name, dst);
-    await fsp.mkdir(dirname(dst), { recursive: true });
-    await fsp.copyFile(src, dst);
-    return absolute(name, dst);
-  };
-
-  const download = async (src, dst) => {
-    src = normalize(name, src);
-    await fsp.mkdir(dirname(dst), { recursive: true });
-    await fsp.copyFile(src, dst);
-    return dst;
-  };
-
-  const remove = async (file) => {
-    if (!(await exists(file))) return;
-    file = normalize(name, file);
-
-    if ((await fsp.lstat(file)).isDirectory()) {
-      return fsp.rmdir(file, { recursive: true });
+class File {
+  constructor(path) {
+    if (!(this instanceof File)) {
+      return new File(path);
     }
+    // Basic file info
+    this.id = hash(path);
+    this.name = path.split("/").pop();
+    this.path = path;
+  }
 
-    await fsp.unlink(file);
-
-    // Needs to be before we normalize it to our filesystem
-    let folder = dirname(file);
-
-    // Remove empty folders
-    if (!(await count(absolute(name, folder)))) {
-      await fsp.rmdir(folder);
-    }
-    return file;
-  };
-
-  const read = (src) => {
-    src = normalize(name, src);
-
-    // Absorb the error here because otherwise it triggers globally on the
-    // promise if there's an error there. pipeline() adds an extra on('error')
-    // so pipe handles errors properly, and .then() already has its own errors
-    const stream = createReadStream(src).on("error", (err) => err);
-
-    // Overload the stream with then and catch methods to behave like a promise
-    stream.then = (...args) => {
-      stream.destroy();
-      return fsp.readFile(src, "utf8").then(...args);
+  async info() {
+    const [info, type] = await Promise.all([
+      fsp.stat(this.path),
+      mimeType(this.path),
+    ]);
+    return {
+      id: this.id,
+      name: this.name,
+      path: this.path,
+      type,
+      size: info.size,
+      date: new Date(info.mtime),
+      url: null,
     };
-    stream.catch = (cb) => stream.then((data) => data, cb);
+  }
 
-    // Return the composite method
-    return stream;
-  };
+  async exists() {
+    return fsp
+      .access(this.path, fsp.constants.F_OK)
+      .then(() => true)
+      .catch(() => false);
+  }
 
-  const write = (dst, data) => {
-    dst = normalize(name, dst);
-    if (!data) {
-      return createWriteStream(dst);
+  async text() {
+    return fsp.readFile(this.path, "utf-8");
+  }
+
+  async json() {
+    return fsp.readFile(this.path, "utf-8").then((data) => JSON.parse(data));
+  }
+
+  async buffer() {
+    return fsp.readFile(this.path);
+  }
+
+  async blob() {
+    const buffer = await fsp.readFile(this.path);
+    return new Blob([buffer]);
+  }
+
+  async write(content) {
+    await fsp.mkdir(dirname(this.path), { recursive: true });
+    if (typeof content === "string") {
+      return fsp.writeFile(this.path, content);
     }
-    return fsp.mkdir(dirname(dst), { recursive: true }).then(() => {
-      return fsp.writeFile(dst, data);
-    });
-  };
+    if (Buffer.isBuffer(content)) {
+      return fsp.writeFile(this.path, content);
+    }
+    if (content instanceof File) {
+      return content.readable("web").pipeTo(this.writable("web"));
+    }
+    if (content instanceof Blob) {
+      return fsp.writeFile(
+        this.path,
+        Buffer.from(await content.arrayBuffer(), "binary"),
+      );
+    }
+    if (typeof content.pipeTo === "function") {
+      return content.pipeTo(this.writable("web"));
+    }
+    if (content instanceof Readable) {
+      return Readable.toWeb(content).pipeTo(this.writable("web"));
+    }
+    throw new Error("Invalid content type");
+  }
 
-  const copy = async (src, dst) => {
-    // TODO: copy directory or collection of files as well
-    src = normalize(name, src);
-    dst = normalize(name, dst);
-    await fsp.mkdir(dirname(dst), { recursive: true });
-    await fsp.copyFile(src, dst);
-  };
+  async remove() {
+    return fsp.unlink(this.path);
+  }
 
-  const sign = () => {
-    console.warn("The Bucket/fs cannot sign URLs");
-    return null;
-  };
+  readable(type = "web") {
+    if (type === "node") {
+      return createReadStream(this.path);
+    }
+    if (type === "web") {
+      return Readable.toWeb(createReadStream(this.path));
+    }
+  }
 
-  return {
-    name: "Bucket/fs",
-    info,
-    count,
-    list,
-    upload,
-    download,
-    read,
-    write,
+  writable(type = "web") {
+    if (type === "web") {
+      return Writable.toWeb(this.writable("node"));
+    }
 
-    remove,
-    exists,
-    copy,
-    sign,
-  };
+    if (type === "node") {
+      // Create a writable that first ensures the folder exists and THEN
+      // creates the write stream to write to it
+      return createWriteStream(this.path);
+      const path = this.path;
+      let writer;
+      return new Writable({
+        async construct(next) {
+          await fsp.mkdir(dirname(path), { recursive: true });
+          writer = createWriteStream(path);
+          next();
+        },
+        async write(chunk, encoding, next) {
+          writer.encoding = encoding;
+          writer.write(chunk);
+          next();
+        },
+      });
+    }
+  }
 }

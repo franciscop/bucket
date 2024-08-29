@@ -1,7 +1,7 @@
 import "dotenv/config";
 
 import fch from "fch";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -172,7 +172,6 @@ export default function (name = NAME, { id = ID, key = KEY } = {}) {
       "X-Bz-Content-Sha1": hashString(text),
     };
 
-    console.log(uploadUrl, headers, text);
     try {
       const data2 = await api.post(uploadUrl, text, { headers });
       console.log(data2);
@@ -182,20 +181,20 @@ export default function (name = NAME, { id = ID, key = KEY } = {}) {
     }
   };
 
-  const remove = async (prefix) => {
+  const remove = async (path) => {
+    const files = await list(path?.path || path);
+    const file = files[0];
     const { api } = await info();
+    while (await exists(file.path)) {
+      const query = { fileName: file.path, fileId: file.id };
+      await api.get("/b2_delete_file_version", { query });
+    }
+  };
+
+  const clear = async (prefix) => {
     const files = await list(prefix);
-    let last;
-    await Promise.all(
-      files.map(async (file) => {
-        last = file;
-        while (await exists(file.path)) {
-          const query = { fileName: file.path, fileId: file.id };
-          await api.get("/b2_delete_file_version", { query });
-        }
-      })
-    );
-    return last;
+    await Promise.all(files.map(remove));
+    return files[files.length - 1];
   };
 
   const exists = async (src) => {
@@ -215,6 +214,7 @@ export default function (name = NAME, { id = ID, key = KEY } = {}) {
     read: todo,
     write,
     remove,
+    clear,
     exists,
     copy: todo,
     sign: todo,
