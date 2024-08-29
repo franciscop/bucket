@@ -15,14 +15,12 @@
   "dependencies": {
     "dotenv": "^16.0.0",
     "fch": "^5.1.5",
+    "hash-it": "^6.0.0",
     "swear": "^1.1.0"
   },
   "jest": {
     "testEnvironment": "jest-environment-node",
-    "transform": {},
-    "setupFiles": [
-      "./setup.js"
-    ]
+    "transform": {}
   },
   "devDependencies": {
     "axios": "^1.7.2",

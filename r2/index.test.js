@@ -5,10 +5,6 @@ const r2 = CloudflareBucket();
 describe("Cloudflare R2 (S3)", () => {
   const env = process.env;
 
-  // beforeAll(async () => {
-  //   await r2.remove("/test.txt");
-  // });
-
   beforeEach(() => {
     process.env = { ...env };
   });
@@ -17,14 +13,8 @@ describe("Cloudflare R2 (S3)", () => {
     process.env = env;
   });
 
-  // it("works", async () => {
-  //   expect(await r2.info().bucketId).toBe("a1ce8b68d8f873b57e250c14");
-  // });
-
   it("can list the files", async () => {
     const items = await r2.list();
-    // expect(items.length).toBe(8);
-    // console.log(items);
     expect(items[0]).toEqual({
       id: "7efe113aba22926cd825dd5e5ad71b62",
       name: "2013-09-21 16.10.40.jpg",
