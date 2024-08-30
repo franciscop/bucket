@@ -1,8 +1,6 @@
-import "isomorphic-fetch";
-
 import { userInfo } from "os";
 
-import hashMod from "hash-it";
+import hash from "hash-it";
 
 import { Blob } from "node:buffer";
 import { exec } from "node:child_process";
@@ -13,8 +11,6 @@ import { Readable, Writable } from "node:stream";
 import { WritableStream } from "node:stream/web";
 import { promisify } from "node:util";
 import { isAbsolute } from "path";
-
-const { default: hash } = hashMod;
 
 // This is better than extension-guessing
 const execP = promisify(exec);
