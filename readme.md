@@ -1,4 +1,4 @@
-# Bucket
+# Bucket [![test badge](https://github.com/franciscop/bucket/workflows/tests/badge.svg "test badge")](https://github.com/franciscop/bucket/blob/master/.github/workflows/tests.yml)
 
 > Early WIP; right now only the Backblaze B2 `bucket/b2` and Local Filesystem `"bucket/fs"` are available.
 
