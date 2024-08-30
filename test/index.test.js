@@ -31,11 +31,9 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
 
   describe("Bucket()", () => {
     it("can get the basic info", async () => {
-      expect(await bucket.info()).toEqual({
-        id: "francisco",
-        name: "FILESYSTEM",
-        path: "/Users/francisco/projects/bucket/test/bucket",
-      });
+      const info = await bucket.info();
+      expect(info.id).toBeDefined();
+      expect(info.name).toBe("FILESYSTEM");
     });
 
     it("can get all of the files", async () => {
