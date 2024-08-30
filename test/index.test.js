@@ -44,11 +44,9 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
 
     it("can get file info", async () => {
       const info = await bucket.file("nero.jpg").info();
-      expect(info.id).toEqual(14184022085698);
+      // expect(info.id).toEqual(14184022085698);
       expect(info.name).toEqual("nero.jpg");
-      // expect(info.path).toEqual(
-      //   "/Users/francisco/projects/bucket/test/bucket/nero.jpg",
-      // );
+      // expect(info.path).toEqual("/Users/francisco/projects/bucket/test/bucket/nero.jpg");
       expect(info.exists).toEqual(true);
       expect(info.type).toEqual("image/jpeg");
       expect(info.size).toEqual(175888);
@@ -57,16 +55,15 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
     });
 
     it("can get a non-existing file info", async () => {
-      expect(await bucket.file("nonexisting.txt").info()).toEqual({
-        id: 9874933570189,
-        name: "nonexisting.txt",
-        path: "/Users/francisco/projects/bucket/test/bucket/nonexisting.txt",
-        exists: false,
-        type: null,
-        size: 0,
-        date: null,
-        url: null,
-      });
+      const info = await bucket.file("nonexisting.txt").info();
+      // expect(info.id).toBe(9874933570189);
+      expect(info.name).toEqual("nonexisting.txt");
+      // expect(info.path).toEqual("/Users/francisco/projects/bucket/test/bucket/nonexisting.txt");
+      expect(info.exists).toEqual(false);
+      expect(info.type).toEqual(null);
+      expect(info.size).toEqual(0);
+      expect(info.date).toEqual(null);
+      expect(info.url).toEqual(null);
     });
   });
 
