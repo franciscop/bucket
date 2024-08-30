@@ -37,11 +37,11 @@ There are two main APIs, the `Bucket` one and the `File` one:
 
 - `Bucket()` initialize the instance attached to a single bucket.
   - `.info()`: display the information about the current bucket.
-  - `.list()`: return the list of all files in the bucket.
-  - `.count()`: return the Number of items in the bucket.
+  - `.list(filter?)`: return the list of all files in the bucket.
+  - `.count(filter?)`: return the Number of items in the bucket.
   - `.upload(localSrc, remoteDst)`: copies a file from the local filesystem into the specified path of the bucket.
   - `.download(remoteSrc, localDst)`: copies a file from the bucket into the specified path of the local filesystem.
-  - `.file(path)`: creates a File instance
+  - `.file(path)`: creates a File instance for the given path
 - `File` instance (created with `.file()`, or each item in the `list()`). It has `id`, `name` and `path` already:
   - `.info()`: returns some more details of the file, like `date` (creation time), `type` (mime type) and `size`.
   - `.exists()`: checks whether a file exists, returning true if it does.
