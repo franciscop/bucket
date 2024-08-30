@@ -53,7 +53,7 @@ export default function (name = NAME, { id = ID, key = KEY } = {}) {
     const headers = { Authorization: "Basic " + headerKey };
     const data = await fch(
       "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
-      { headers }
+      { headers },
     );
     const api = fch.create({
       baseURL: data.apiUrl + API_VERSION_URL,

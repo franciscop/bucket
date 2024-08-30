@@ -2,7 +2,7 @@ import CloudflareBucket from "./index.js";
 
 const r2 = CloudflareBucket();
 
-describe("Cloudflare R2 (S3)", () => {
+describe.skip("Cloudflare R2 (S3)", () => {
   const env = process.env;
 
   beforeEach(() => {

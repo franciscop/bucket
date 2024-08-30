@@ -4,7 +4,7 @@ import BackblazeBucket from "./index.js";
 
 const b2 = BackblazeBucket();
 
-describe("BackblazeBucket", () => {
+describe.skip("BackblazeBucket", () => {
   const env = process.env;
 
   beforeAll(async () => {

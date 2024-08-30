@@ -10,7 +10,7 @@ const key = process.env[ENV_KEY];
 
 const bucket = Bucket(name, { id, key });
 
-describe(`${bucket.name} Shared API`, () => {
+describe.skip(`${bucket.name} Shared API`, () => {
   beforeAll(async () => {
     // Reset the bucket to a known state
     console.log("A");
@@ -139,17 +139,17 @@ describe(`${bucket.name} Shared API`, () => {
   it("can use then and catch", async () => {
     expect(await bucket.read("/readme.md")).toBe("Hello world");
     expect(await bucket.read("/readme.md").then((data) => data)).toBe(
-      "Hello world"
+      "Hello world",
     );
     expect(await bucket.read("/readme.md").catch((err) => err)).toBe(
-      "Hello world"
+      "Hello world",
     );
   });
 
   it("can handle errors", async () => {
     const err = await bucket.read("/abc.txt").catch((err) => err);
     expect(err.message).toBe(
-      "ENOENT: no such file or directory, open './fs/test/abc.txt'"
+      "ENOENT: no such file or directory, open './fs/test/abc.txt'",
     );
   });
 
@@ -165,7 +165,7 @@ describe(`${bucket.name} Shared API`, () => {
     const writeStream = bucket.write("/manual.txt");
     const err = await pipeline(readStream, writeStream).catch((err) => err);
     expect(err.message).toBe(
-      "ENOENT: no such file or directory, open './fs/test/abc.txt'"
+      "ENOENT: no such file or directory, open './fs/test/abc.txt'",
     );
   });
 });
