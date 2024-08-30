@@ -9,34 +9,17 @@ import { exec } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
 import fsp from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { Readable, Writable, PassThrough } from "node:stream";
-import { promisify } from "util";
+import { Readable, Writable } from "node:stream";
+import { WritableStream } from "node:stream/web";
+import { promisify } from "node:util";
+import { isAbsolute } from "path";
 
 const { default: hash } = hashMod;
 
+// This is better than extension-guessing
 const execP = promisify(exec);
 const cmd = (txt) => execP(txt).then((res) => res.stdout.trim());
 const mimeType = (file) => cmd(`file -b --mime-type '${file}'`);
-
-const merge = (...streams) => {
-  let pass = new PassThrough();
-  for (let stream of streams) {
-    console.log(stream);
-    const end = stream == streams.at(-1);
-    pass = stream.pipe(pass, { end });
-  }
-  return pass;
-};
-
-const ensurePathStream = (path) => {
-  const s = new PassThrough();
-  s._read = () => {}; // redundant? see update below
-  (async () => {
-    await fsp.mkdir(dirname(path), { recursive: true });
-    s.push(null);
-  })();
-  return s;
-};
 
 export default function FileSystem(path) {
   if (!(this instanceof FileSystem)) {
@@ -56,8 +39,24 @@ FileSystem.prototype.info = function () {
   };
 };
 
+FileSystem.prototype.list = async function (filter) {
+  const raw = await fsp.readdir(this.path, {
+    recursive: true,
+    withFileTypes: true,
+  });
+  const files = raw
+    .filter((dirent) => dirent.isFile())
+    .map((f) => this.file(join(f.path, f.name)));
+  // Only the name, even if it's in a subpath
+  if (filter instanceof RegExp) {
+    return files.filter((f) => filter.test(f.name));
+  }
+  return files;
+};
+
 FileSystem.prototype.file = function (name) {
-  const path = resolve(join(this.path, name));
+  if (!name) throw new Error("No name");
+  const path = resolve(isAbsolute(name) ? name : join(this.path, name));
   return new File(path);
 };
 
@@ -73,17 +72,20 @@ class File {
   }
 
   async info() {
-    const [info, type] = await Promise.all([
-      fsp.stat(this.path),
+    const [exists, info, type] = await Promise.all([
+      this.exists(),
+      fsp.stat(this.path).catch(() => ({ size: 0 })),
       mimeType(this.path),
     ]);
     return {
       id: this.id,
       name: this.name,
       path: this.path,
-      type,
+
+      exists,
+      type: exists ? type : null,
       size: info.size,
-      date: new Date(info.mtime),
+      date: exists ? new Date(info.mtime) : null,
       url: null,
     };
   }
@@ -113,21 +115,23 @@ class File {
   }
 
   async write(content) {
-    await fsp.mkdir(dirname(this.path), { recursive: true });
     if (typeof content === "string") {
+      await fsp.mkdir(dirname(this.path), { recursive: true });
       return fsp.writeFile(this.path, content);
     }
     if (Buffer.isBuffer(content)) {
+      await fsp.mkdir(dirname(this.path), { recursive: true });
       return fsp.writeFile(this.path, content);
     }
-    if (content instanceof File) {
-      return content.readable("web").pipeTo(this.writable("web"));
-    }
     if (content instanceof Blob) {
+      await fsp.mkdir(dirname(this.path), { recursive: true });
       return fsp.writeFile(
         this.path,
         Buffer.from(await content.arrayBuffer(), "binary"),
       );
+    }
+    if (content instanceof File) {
+      return content.readable("web").pipeTo(this.writable("web"));
     }
     if (typeof content.pipeTo === "function") {
       return content.pipeTo(this.writable("web"));
@@ -153,27 +157,22 @@ class File {
 
   writable(type = "web") {
     if (type === "web") {
-      return Writable.toWeb(this.writable("node"));
+      return new WritableStream({
+        path: this.path,
+        writer: null,
+        async start() {
+          await fsp.mkdir(dirname(this.path), { recursive: true });
+          this.writer = createWriteStream(this.path);
+          await new Promise((done) => this.writer.on("open", done));
+        },
+        write(chunk) {
+          this.writer.write(chunk);
+        },
+      });
     }
 
     if (type === "node") {
-      // Create a writable that first ensures the folder exists and THEN
-      // creates the write stream to write to it
-      return createWriteStream(this.path);
-      const path = this.path;
-      let writer;
-      return new Writable({
-        async construct(next) {
-          await fsp.mkdir(dirname(path), { recursive: true });
-          writer = createWriteStream(path);
-          next();
-        },
-        async write(chunk, encoding, next) {
-          writer.encoding = encoding;
-          writer.write(chunk);
-          next();
-        },
-      });
+      return Writable.fromWeb(this.writable("web"));
     }
   }
 }

@@ -1,6 +1,7 @@
 import { Blob } from "node:buffer";
 
 import FileSystem from "../fs/index.js";
+
 import {
   nodeStreamToString,
   webStreamToString,
@@ -8,14 +9,26 @@ import {
   textToWebStream,
 } from "./utils.js";
 import { pipeline } from "node:stream/promises";
-import fsp from "node:fs/promises";
 import { createGzip } from "node:zlib";
+
+const testFile = (ext = "txt") =>
+  `test${Math.floor(Math.random() * 100000)}.${ext}`;
+
+const removeTestFiles = async (bucket) => {
+  try {
+    const files = await bucket.list(/test[^\.]*\..*/);
+    await Promise.all(files.map((file) => file.remove()));
+  } catch (error) {}
+};
 
 const buckets = {
   FileSystem: FileSystem("./test/bucket/"),
 };
 
 describe.each(Object.entries(buckets))("%s", (name, bucket) => {
+  beforeEach(() => removeTestFiles(bucket));
+  afterEach(() => removeTestFiles(bucket));
+
   describe("Bucket()", () => {
     it("can get the basic info", async () => {
       expect(await bucket.info()).toEqual({
@@ -25,14 +38,32 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
       });
     });
 
+    it("can get all of the files", async () => {
+      expect((await bucket.list()).length).toEqual(7);
+    });
+
     it("can get file info", async () => {
       expect(await bucket.file("nero.jpg").info()).toEqual({
         id: 14184022085698,
         name: "nero.jpg",
         path: "/Users/francisco/projects/bucket/test/bucket/nero.jpg",
+        exists: true,
         type: "image/jpeg",
         size: 175888,
-        date: new Date("2024-07-01T18:44:09.448Z"),
+        date: new Date("2024-08-30T11:35:36.840Z"),
+        url: null,
+      });
+    });
+
+    it("can get a non-existing file info", async () => {
+      expect(await bucket.file("nonexisting.txt").info()).toEqual({
+        id: 9874933570189,
+        name: "nonexisting.txt",
+        path: "/Users/francisco/projects/bucket/test/bucket/nonexisting.txt",
+        exists: false,
+        type: null,
+        size: 0,
+        date: null,
         url: null,
       });
     });
@@ -44,7 +75,7 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
     });
 
     it("can read a text file", async () => {
-      const data = await bucket.file("test.txt").text();
+      const data = await bucket.file("data.txt").text();
       expect(data).toBe("hello");
     });
 
@@ -67,31 +98,24 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
     });
 
     it("can (default=web) stream a file", async () => {
-      const stream = await bucket.file("test.txt").readable();
+      const stream = await bucket.file("data.txt").readable();
       expect(await webStreamToString(stream)).toBe("hello");
     });
 
     it("can (web) stream a file", async () => {
-      const stream = await bucket.file("test.txt").readable("web");
+      const stream = await bucket.file("data.txt").readable("web");
       expect(await webStreamToString(stream)).toBe("hello");
     });
 
     it("can (node) stream a file", async () => {
-      const stream = await bucket.file("test.txt").readable("node");
+      const stream = await bucket.file("data.txt").readable("node");
       expect(await nodeStreamToString(stream)).toBe("hello");
     });
   });
 
   describe("Writing data", () => {
-    afterEach(async () => {
-      const files = ["w1.txt", "deep/w2.txt", "w3.jpg"];
-      try {
-        await Promise.all(files.map((name) => bucket.file(name).remove()));
-      } catch (error) {}
-    });
-
     it("creates a file if it doesn't exist", async () => {
-      const file = bucket.file("w1.txt");
+      const file = bucket.file(testFile());
       expect(await file.exists()).toBe(false);
       await file.write("hello");
       expect(await file.exists()).toBe(true);
@@ -99,7 +123,7 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
     });
 
     it("creates the file AND folder if they don't exist", async () => {
-      const file = bucket.file("deep/w2.txt");
+      const file = bucket.file("deep/" + testFile());
       expect(await file.exists()).toBe(false);
       await file.write("hello");
       expect(await file.exists()).toBe(true);
@@ -107,20 +131,20 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
     });
 
     it("can write a File", async () => {
-      const dst = bucket.file("w1.txt");
-      const src = bucket.file("test.txt");
+      const src = bucket.file("data.txt");
+      const dst = bucket.file(testFile());
       await dst.write(src);
       expect(await dst.text()).toBe("hello");
     });
 
     it("can write a string", async () => {
-      const file = bucket.file("w1.txt");
+      const file = bucket.file(testFile());
       await file.write("hello1");
       expect(await file.text()).toBe("hello1");
     });
 
     it("can write a buffer", async () => {
-      const file = bucket.file("w2.jpg");
+      const file = bucket.file(testFile("jpg"));
       const data = await bucket.file("nero.jpg").buffer();
       await file.write(data);
       const info = await file.info();
@@ -128,7 +152,7 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
     });
 
     it("can write a blob", async () => {
-      const file = bucket.file("w3.jpg");
+      const file = bucket.file(testFile(".jpg"));
       const data = await bucket.file("nero.jpg").blob();
       await file.write(data);
       const info = await file.info();
@@ -136,56 +160,51 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
     });
 
     it("can write a Web Stream", async () => {
-      const file = bucket.file("w1.txt");
+      const file = bucket.file(testFile());
       await file.write(textToWebStream("hello3"));
       expect(await file.text()).toBe("hello3");
     });
 
     it("can write a Node Stream", async () => {
-      const file = bucket.file("w1.txt");
+      const file = bucket.file(testFile());
       await file.write(textToNodeStream("hello4"));
       expect(await file.text()).toBe("hello4");
     });
 
     it("can (default) stream to a file", async () => {
-      const file = bucket.file("w1.txt");
+      const file = bucket.file(testFile());
       await pipeline(textToWebStream("hello5"), file.writable());
       expect(await file.text()).toBe("hello5");
     });
 
     it("can (web) stream to a file", async () => {
-      const file = bucket.file("w1.txt");
+      const file = bucket.file(testFile());
       await pipeline(textToWebStream("hello6"), file.writable("web"));
       expect(await file.text()).toBe("hello6");
     });
 
     it("can (node) stream to a file", async () => {
-      const file = bucket.file("w1.txt");
+      const file = bucket.file(testFile());
       await pipeline(textToNodeStream("hello7"), file.writable("node"));
       expect(await file.text()).toBe("hello7");
     });
 
     it("can copy a file with (web) default .pipeTo()", async () => {
-      const file = bucket.file("w1.txt");
-      await bucket
-        .file("test.txt")
-        .readable()
-        .pipeTo(bucket.file("w1.txt").writable());
+      const file = bucket.file(testFile());
+      await bucket.file("data.txt").readable().pipeTo(file.writable());
       expect(await file.text()).toBe("hello");
     });
 
     it("can copy a file with Web .pipeTo()", async () => {
-      const file = bucket.file("w1.txt");
-      await bucket
-        .file("test.txt")
-        .readable("web")
-        .pipeTo(bucket.file("w1.txt").writable("web"));
-      expect(await file.text()).toBe("hello");
+      const src = bucket.file("data.txt");
+      const dst = bucket.file(testFile());
+      await src.readable("web").pipeTo(dst.writable("web"));
+      expect(await dst.text()).toBe("hello");
     });
 
     it("can copy a file with Node .pipe()", async () => {
-      const dst = bucket.file("w1.txt");
-      const src = bucket.file("test.txt");
+      const dst = bucket.file(testFile());
+      const src = bucket.file("data.txt");
       await pipeline(src.readable("node"), dst.writable("node"));
       expect(await dst.text()).toBe("hello");
     });
@@ -193,26 +212,10 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
 
   // TODO: Need to make sure the folder exists before `.writable()` happens, but
   // if possible without making `.writable()` async
-  describe.skip("examples", () => {
-    afterEach(async () => {
-      const files = ["compressed/w1.zip"];
-      try {
-        await Promise.all(files.map((name) => bucket.file(name).remove()));
-      } catch (error) {}
-
-      if (bucket.name === "FILESYSTEM") {
-        await fsp
-          .rm("./test/bucket/compressed", { recursive: true })
-          .catch((err) => {});
-        await fsp
-          .rm("./test/bucket/deep", { recursive: true })
-          .catch((err) => {});
-      }
-    });
-
+  describe("examples", () => {
     it("can zip a single file with pipes", async () => {
       const source = bucket.file("a-1*(a!.txt");
-      const target = bucket.file("compressed/w1.zip");
+      const target = bucket.file(testFile("zip"));
       await pipeline(
         source.readable("node"),
         createGzip(),
