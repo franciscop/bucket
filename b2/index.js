@@ -1,22 +1,16 @@
 import "dotenv/config";
 
-import fch from "fch";
+import hash from "hash-it";
+import { Readable, Writable } from "node:stream";
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, stat } from "node:fs/promises";
-import { dirname } from "node:path";
-import { pipeline } from "node:stream/promises";
-import swear from "swear";
+import promiseToReadable from "../lib/promiseToReadable.js";
+import promiseToWritable from "../lib/promiseToWritable.js";
 
-import listFromGenerator from "../lib/listFromGenerator.js";
+const hashString = (str) => {
+  return createHash("sha1").update(str).digest("hex");
+};
 
 const API_VERSION_URL = "/b2api/v2/";
-
-export const ENV_NAME = "BACKBLAZE_NAME";
-export const ENV_ID = "BACKBLAZE_ID";
-export const ENV_KEY = "BACKBLAZE_KEY";
-
-const PAGE_SIZE = process.env.PAGE_SIZE || 10000;
 
 const {
   BACKBLAZE_NAME: NAME,
@@ -24,199 +18,227 @@ const {
   BACKBLAZE_KEY: KEY,
 } = process.env;
 
-const hashFile = (src) => {
-  return new Promise((resolve, reject) => {
-    const fd = createReadStream(src);
-    const hp = createHash("sha1");
-    hp.setEncoding("hex");
-    fd.pipe(hp);
-    fd.on("end", () => {
-      hp.end();
-      resolve(hp.read()); // the desired sha1sum
-    });
-    fd.on("error", (err) => {
-      hp.end();
-      reject(err);
-    });
-  });
-};
-
-const hashString = (str) => {
-  return createHash("sha1").update(str).digest("hex");
-};
-
-export default function (name = NAME, { id = ID, key = KEY } = {}) {
-  let baseInfo;
-
-  let apiPromise = (async () => {
-    const headerKey = Buffer.from(id + ":" + key).toString("base64");
-    const headers = { Authorization: "Basic " + headerKey };
-    const data = await fch(
+export default function BackBlaze(name = NAME, { id = ID, key = KEY } = {}) {
+  if (!(this instanceof BackBlaze)) {
+    return new BackBlaze(name, { id, key });
+  }
+  this.promise = (async (done) => {
+    const derived = Buffer.from(id + ":" + key).toString("base64");
+    const res = await this.fetch(
       "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
-      { headers },
+      { headers: { Authorization: "Basic " + derived } },
     );
-    const api = fch.create({
-      baseURL: data.apiUrl + API_VERSION_URL,
-      headers: { Authorization: data.authorizationToken },
-    });
-    const bucketId = data.allowed.bucketId;
-    const publicUrl = data.downloadUrl;
-    baseInfo = { id: bucketId, bucketId, publicUrl, api, raw: data };
-    return api;
+    const data = await res.json();
+    this.id = data.allowed.bucketId; // Bucket ID
+    this.name = name;
+    this.token = data.authorizationToken;
+    this.api = data.apiUrl + API_VERSION_URL;
+    this.base = data.downloadUrl.replace(/\/$/, "") + "/";
   })();
+}
 
-  const makePublic = (url) => {
-    const { publicUrl } = baseInfo;
-    if (url.startsWith("/")) {
-      url = publicUrl + "/file/" + name + url;
-    }
-    if (url && url.url) {
-      url = url.url;
-    }
-    return url;
+BackBlaze.prototype.type = "BACKBLAZE";
+
+BackBlaze.prototype.info = async function () {
+  await this.promise;
+  return {
+    id: this.id,
+    name: this.name,
+    type: this.type,
+    base: this.base,
   };
+};
 
-  const toFile = (file) => {
-    const path = ("/" + file.fileName).replace(/\/\//g, "/");
-    return {
-      id: file.fileId,
-      name: file.fileName.split("/").pop(),
-      path,
-      type: file.contentType,
-      size: file.contentLength,
-      date: new Date(file.uploadTimestamp),
-      // https://f345.backblazeb2.com/file/photos/cute/kitten.jpg
-      url: makePublic(path),
-    };
-  };
-
-  const info = swear(async () => {
-    await apiPromise;
-    return baseInfo;
+BackBlaze.prototype.fetch = async function (url, options = {}) {
+  await this.promise;
+  const headers = { Authorization: this.token };
+  const res = await fetch(url, {
+    ...options,
+    headers: { ...headers, ...options.headers },
   });
+  if (!res.ok) {
+    const path = url.split(".com").pop();
+    if (res.headers.get("content-type").includes("application/json")) {
+      const { status, code, message } = await res.json();
+      throw new Error(`[${status}] "${code}" on ${path}\n${message}`);
+    } else {
+      throw new Error(`Error ${res.status}: ${path}\n${await res.text()}`);
+    }
+  }
+  return res;
+};
 
-  async function* listGenerator(prefix, opts = {}) {
-    opts = typeof prefix === "string" ? { ...opts, prefix } : prefix || {};
-    prefix = opts.prefix;
-    const limit = opts.limit || Infinity;
-    const { api, id: bucketId } = await info();
+BackBlaze.prototype.file = function (name) {
+  if (!name) throw new Error("No name");
+  return new File(name, this);
+};
 
-    let i = 0;
-    let startFileName;
-    // The two escape conditions are inside
-    do {
-      // Avoid overfetching data (needs to be calculated each loop)
-      const remaining = limit - i;
-      const maxFileCount = remaining > PAGE_SIZE ? PAGE_SIZE : remaining;
+BackBlaze.prototype.list = async function (prefix = "") {
+  await this.promise;
+  let url =
+    this.api + "b2_list_file_names?bucketId=" + encodeURIComponent(this.id);
+  if (prefix && typeof prefix === "string")
+    url += "&prefix=" + encodeURIComponent(prefix);
+  const res = await this.fetch(url);
+  const data = await res.json();
+  return data.files
+    .filter((f) => (prefix instanceof RegExp ? prefix.test(f.fileName) : true))
+    .map((file) => {
+      const f = new File(file.fileName, this);
+      f.id = file.fileId;
+      f.type = file.contentType;
+      f.size = file.contentLength;
+      f.date = new Date(file.uploadTimestamp);
+      f.url = this.base + "file/" + this.name + "/" + file.fileName;
+      return f;
+    });
+};
 
-      // Retrieve the actual data
-      const query = { bucketId, prefix, maxFileCount, startFileName };
-      const data = await api.get("/b2_list_file_names", { query });
-      startFileName = data.nextFileName;
+class File {
+  #bucket;
 
-      for (let file of data.files) {
-        yield toFile(file);
-        i++;
-      }
-      // Reached the limit parameter, don't go any further
-      // No more files to find in the bucket anyway
-    } while (i < limit && startFileName);
+  constructor(path, bucket) {
+    if (!(this instanceof File)) {
+      return new File(path);
+    }
+    // Basic file info
+    this.id = hash(path);
+    this.name = path.split("/").pop();
+    this.path = path;
+    this.#bucket = bucket;
   }
 
-  const list = listFromGenerator(listGenerator);
-
-  // Use the generator to avoid putting them all in memory
-  const count = async (prefix) => {
-    let i = 0;
-    for await (let _ of list(prefix)) {
-      i++;
+  async info() {
+    const files = await this.#bucket.list(this.path);
+    if (files.length) {
+      this.id = files[0].id;
+      this.type = files[0].contentType;
+      this.size = files[0].contentLength;
+      this.date = new Date(files[0].uploadTimestamp);
+      return {
+        ...files[0],
+        exists: true,
+      };
     }
-    return i;
-  };
-
-  const download = async (src, dst) => {
-    const { api } = await info();
-    src = makePublic(src);
-    await mkdir(dirname(dst), { recursive: true });
-    const data = await api.get(src, { output: "stream" });
-    return await pipeline(data, createWriteStream(dst));
-  };
-
-  const upload = async (src, dst) => {
-    const { api, id: bucketId } = await info();
-    const data = await api.get("/b2_get_upload_url/", { query: { bucketId } });
-    const { uploadUrl, authorizationToken } = data;
-    const { size } = await stat(src);
-    const headers = {
-      Authorization: authorizationToken,
-      "Content-Type": "b2/x-auto",
-      "Content-Length": size,
-      "X-Bz-File-Name": encodeURIComponent(dst),
-      "X-Bz-Content-Sha1": await hashFile(src),
+    return {
+      id: this.id,
+      name: this.name,
+      path: this.path,
+      exists: false,
+      type: null,
+      size: 0,
+      date: null,
+      url: null,
     };
+  }
 
-    const body = createReadStream(src);
-    const data2 = await api.post(uploadUrl, body, { headers });
-    return toFile(data2);
-  };
+  async text() {
+    const bucket = await this.#bucket.info();
+    const url = bucket.base + "file/" + bucket.name + "/" + this.path;
+    const res = await this.#bucket.fetch(url);
+    return await res.text();
+  }
 
-  const write = async (dst, text) => {
-    const { api, id: bucketId } = await info();
-    const data = await api.get("/b2_get_upload_url/", { query: { bucketId } });
-    const { uploadUrl, authorizationToken } = data;
+  async json() {
+    const bucket = await this.#bucket.info();
+    const url = bucket.base + "file/" + bucket.name + "/" + this.path;
+    const res = await this.#bucket.fetch(url);
+    return await res.json();
+  }
+
+  async buffer() {
+    const bucket = await this.#bucket.info();
+    const url = bucket.base + "file/" + bucket.name + "/" + this.path;
+    const res = await this.#bucket.fetch(url);
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  async blob() {
+    const bucket = await this.#bucket.info();
+    const url = bucket.base + "file/" + bucket.name + "/" + this.path;
+    const res = await this.#bucket.fetch(url);
+    return res.blob();
+  }
+
+  async exists() {
+    return (await this.info()).size !== 0;
+  }
+
+  async #put(data) {
+    const [file, bucket] = await Promise.all([
+      this.info(),
+      this.#bucket.info(),
+    ]);
+    const url = this.#bucket.api + "b2_get_upload_url?bucketId=" + bucket.id;
+    const res = await this.#bucket.fetch(url);
+    const auth = await res.json();
+
     const headers = {
-      Authorization: authorizationToken,
+      Authorization: auth.authorizationToken,
+      "X-Bz-File-Name": this.path,
+      "X-Bz-Content-Sha1": hashString(data),
+      "Content-Length": Buffer.byteLength(data),
       "Content-Type": "b2/x-auto",
-      "Content-Length": text.length,
-      "X-Bz-File-Name": encodeURIComponent(dst),
-      "X-Bz-Content-Sha1": hashString(text),
     };
+    await this.#bucket.fetch(auth.uploadUrl, {
+      body: data,
+      method: "POST",
+      headers,
+    });
+  }
 
-    try {
-      const data2 = await api.post(uploadUrl, text, { headers });
-      console.log(data2);
-      return toFile(data2);
-    } catch (error) {
-      console.log(error);
+  async write(content) {
+    if (typeof content === "string") {
+      return this.#put(content);
     }
-  };
-
-  const remove = async (path) => {
-    const files = await list(path?.path || path);
-    const file = files[0];
-    const { api } = await info();
-    while (await exists(file.path)) {
-      const query = { fileName: file.path, fileId: file.id };
-      await api.get("/b2_delete_file_version", { query });
+    if (content instanceof Buffer) {
+      return this.#put(content);
     }
-  };
+    if (content instanceof Blob) {
+      return this.#put(Buffer.from(await content.arrayBuffer(), "binary"));
+    }
+    if (content instanceof File) {
+      return this.#put(await content.buffer());
+    }
+    if (typeof content.pipeTo === "function") {
+      return content.pipeTo(this.writable("web"));
+    }
+    if (content instanceof Readable) {
+      return Readable.toWeb(content).pipeTo(this.writable("web"));
+    }
+    throw new Error("Invalid content type");
+  }
 
-  const clear = async (prefix) => {
-    const files = await list(prefix);
-    await Promise.all(files.map(remove));
-    return files[files.length - 1];
-  };
+  async remove() {
+    const bucket = await this.#bucket.info();
+    do {
+      const url =
+        this.#bucket.api + "b2_delete_file_version?bucketId=" + bucket.id;
+      await this.#bucket.fetch(url, {
+        method: "POST",
+        body: JSON.stringify({ fileId: this.id, fileName: this.path }),
+        headers: { "Content-Type": "application/json" },
+      });
+      // Keep removing it until there's no copies
+    } while (await this.exists());
+  }
 
-  const exists = async (src) => {
-    const file = await list(src);
-    return Boolean(file.length);
-  };
+  writable(type = "web") {
+    if (type === "node") {
+      return Writable.fromWeb(this.writable("web"));
+    }
+    return promiseToWritable((data) => this.write(data));
+  }
 
-  const todo = () => console.log("TODO");
-
-  return {
-    name: "Bucket/b2",
-    info,
-    count,
-    list,
-    upload,
-    download,
-    read: todo,
-    write,
-    remove,
-    clear,
-    exists,
-    copy: todo,
-    sign: todo,
-  };
+  readable(type = "web") {
+    if (type === "node") {
+      return Readable.fromWeb(this.readable("web"));
+    }
+    return promiseToReadable(async () => {
+      const bucket = await this.#bucket.info();
+      const url = bucket.base + "file/" + bucket.name + "/" + this.name;
+      const res = await this.#bucket.fetch(url);
+      return res.body;
+    });
+  }
 }

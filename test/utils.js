@@ -7,14 +7,12 @@ export async function nodeStreamToString(stream) {
   return await new Response(stream).text();
 }
 
-// https://stackoverflow.com/a/49129872/938236
 export async function webStreamToString(stream) {
-  const enc = new TextDecoder("utf-8");
-  let txt = "";
+  const chunks = [];
   for await (const chunk of stream) {
-    txt += enc.decode(chunk);
+    chunks.push(Buffer.from(chunk));
   }
-  return txt;
+  return Buffer.concat(chunks).toString("utf-8");
 }
 
 // Okay this is legit amazing

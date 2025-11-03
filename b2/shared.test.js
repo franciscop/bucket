@@ -2,11 +2,11 @@ import "dotenv/config";
 
 import { pipeline } from "stream/promises";
 
-import Bucket, { ENV_ID, ENV_KEY, ENV_NAME } from "./";
+import Bucket from "./";
 
-const name = process.env[ENV_NAME];
-const id = process.env[ENV_ID];
-const key = process.env[ENV_KEY];
+const name = process.env.BACKBLAZE_NAME;
+const id = process.env.BACKBLAZE_ID;
+const key = process.env.BACKBLAZE_KEY;
 
 const bucket = Bucket(name, { id, key });
 
