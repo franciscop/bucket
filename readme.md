@@ -55,6 +55,8 @@ There are two main APIs, the `Bucket` one and the `File` one:
   - `.move(path)`: change the location of the file (removing the original).
   - `.rename(path)`: change the name of the file enforcing it remains in the same folder (removing the original).
   - `.remove()`: deletes the file completely.
+  - `.readable()`: creates a readable stream ('web' or 'node') that can be piped to a writable stream.
+  - `.writable()`: creates a writable stream ('web' or 'node') that can receive data from a readable stream.
 
 ### Bucket()
 

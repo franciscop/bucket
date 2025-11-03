@@ -1,16 +1,14 @@
-import { userInfo } from "os";
-
 import hash from "hash-it";
 
+import { userInfo } from "node:os";
 import { Blob } from "node:buffer";
 import { exec } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
 import fsp from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, isAbsolute } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { WritableStream } from "node:stream/web";
 import { promisify } from "node:util";
-import { isAbsolute } from "path";
 
 // This is better than extension-guessing
 const execP = promisify(exec);
@@ -115,7 +113,7 @@ class File {
       await fsp.mkdir(dirname(this.path), { recursive: true });
       return fsp.writeFile(this.path, content);
     }
-    if (Buffer.isBuffer(content)) {
+    if (content instanceof Buffer) {
       await fsp.mkdir(dirname(this.path), { recursive: true });
       return fsp.writeFile(this.path, content);
     }
@@ -152,23 +150,21 @@ class File {
   }
 
   writable(type = "web") {
-    if (type === "web") {
-      return new WritableStream({
-        path: this.path,
-        writer: null,
-        async start() {
-          await fsp.mkdir(dirname(this.path), { recursive: true });
-          this.writer = createWriteStream(this.path);
-          await new Promise((done) => this.writer.on("open", done));
-        },
-        write(chunk) {
-          this.writer.write(chunk);
-        },
-      });
-    }
-
     if (type === "node") {
       return Writable.fromWeb(this.writable("web"));
     }
+
+    return new WritableStream({
+      path: this.path,
+      writer: null,
+      async start() {
+        await fsp.mkdir(dirname(this.path), { recursive: true });
+        this.writer = createWriteStream(this.path);
+        await new Promise((done) => this.writer.on("open", done));
+      },
+      write(chunk) {
+        this.writer.write(chunk);
+      },
+    });
   }
 }

@@ -1,6 +1,7 @@
 import { Blob } from "node:buffer";
 
 import FileSystem from "../fs/index.js";
+import Backblaze from "../b2/index.js";
 
 import {
   nodeStreamToString,
@@ -10,6 +11,7 @@ import {
 } from "./utils.js";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
+import fsp from "node:fs/promises";
 
 const testFile = (ext = "txt") =>
   `test${Math.floor(Math.random() * 100000)}.${ext}`;
@@ -23,9 +25,13 @@ const removeTestFiles = async (bucket) => {
 
 const buckets = {
   FileSystem: FileSystem("./test/bucket/"),
+  // BackBlaze: Backblaze(),
 };
 
+const bytes = await fsp.readFile("./test/bucket/nero.jpg");
+
 describe.each(Object.entries(buckets))("%s", (name, bucket) => {
+  beforeAll(() => bucket.info()); // Heat it up
   beforeEach(() => removeTestFiles(bucket));
   afterEach(() => removeTestFiles(bucket));
 
@@ -33,13 +39,20 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
     it("can get the basic info", async () => {
       const info = await bucket.info();
       expect(info.id).toBeDefined();
-      expect(info.name).toBe("FILESYSTEM");
+      expect(info.type).toBe(bucket.type);
     });
 
     it("can get all of the files", async () => {
-      expect((await bucket.list()).length).toEqual(7);
+      const files = await bucket.list();
+      expect(files.length).toEqual(8);
+      const keys = Object.keys(files[0]);
+      expect(keys).toContain("id");
+      expect(keys).toContain("name");
+      expect(keys).toContain("path");
     });
+  });
 
+  describe("File", () => {
     it("can get file info", async () => {
       const info = await bucket.file("nero.jpg").info();
       // expect(info.id).toEqual(14184022085698);
@@ -49,7 +62,21 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
       expect(info.type).toEqual("image/jpeg");
       expect(info.size).toEqual(175888);
       // expect(info.date).toEqual(new Date("2024-08-30T11 35:36.840Z"));
-      expect(info.url).toEqual(null);
+      // expect(info.url).toEqual(null);
+    });
+
+    it("can get deep file info", async () => {
+      const info = await bucket.file("deep/readme.txt").info();
+      // expect(info.id).toEqual(14184022085698);
+      expect(info.name).toEqual("readme.txt");
+      expect(info.path.split("/").slice(-2).join("/")).toEqual(
+        "deep/readme.txt",
+      );
+      expect(info.exists).toEqual(true);
+      expect(info.type).toEqual("text/plain");
+      expect(info.size).toEqual(9);
+      // expect(info.date).toEqual(new Date("2024-08-30T11 35:36.840Z"));
+      // expect(info.url).toEqual(null);
     });
 
     it("can get a non-existing file info", async () => {
@@ -66,10 +93,6 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
   });
 
   describe("Reading data", () => {
-    it("is well defined", async () => {
-      expect(bucket.name).toEqual("FILESYSTEM");
-    });
-
     it("can read a text file", async () => {
       const data = await bucket.file("data.txt").text();
       expect(data).toBe("hello");
@@ -145,6 +168,7 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
       await file.write(data);
       const info = await file.info();
       expect(info.size).toBe(175888);
+      expect(info.type).toBe("image/jpeg");
     });
 
     it("can write a blob", async () => {
@@ -153,6 +177,7 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
       await file.write(data);
       const info = await file.info();
       expect(info.size).toBe(175888);
+      expect(info.type).toBe("image/jpeg");
     });
 
     it("can write a Web Stream", async () => {
@@ -169,13 +194,13 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
 
     it("can (default) stream to a file", async () => {
       const file = bucket.file(testFile());
-      await pipeline(textToWebStream("hello5"), file.writable());
+      await textToWebStream("hello5").pipeTo(file.writable());
       expect(await file.text()).toBe("hello5");
     });
 
     it("can (web) stream to a file", async () => {
       const file = bucket.file(testFile());
-      await pipeline(textToWebStream("hello6"), file.writable("web"));
+      await textToWebStream("hello6").pipeTo(file.writable("web"));
       expect(await file.text()).toBe("hello6");
     });
 
@@ -206,8 +231,6 @@ describe.each(Object.entries(buckets))("%s", (name, bucket) => {
     });
   });
 
-  // TODO: Need to make sure the folder exists before `.writable()` happens, but
-  // if possible without making `.writable()` async
   describe("examples", () => {
     it("can zip a single file with pipes", async () => {
       const source = bucket.file("a-1*(a!.txt");

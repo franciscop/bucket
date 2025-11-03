@@ -9,7 +9,7 @@
   "scripts": {
     "start": "npm run watch",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
-    "watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch --runInBand"
+    "watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch --runInBand --detectOpenHandles"
   },
   "keywords": [],
   "dependencies": {
