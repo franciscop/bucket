@@ -154,16 +154,26 @@ class File {
       return Writable.fromWeb(this.writable("web"));
     }
 
+    const filePath = this.path;
+    let writer = null;
     return new WritableStream({
-      path: this.path,
-      writer: null,
       async start() {
-        await fsp.mkdir(dirname(this.path), { recursive: true });
-        this.writer = createWriteStream(this.path);
-        await new Promise((done) => this.writer.on("open", done));
+        await fsp.mkdir(dirname(filePath), { recursive: true });
+        writer = createWriteStream(filePath);
+        await new Promise((resolve) => writer.on("open", resolve));
       },
       write(chunk) {
-        this.writer.write(chunk);
+        return new Promise((resolve, reject) => {
+          const ok = writer.write(chunk);
+          if (ok) resolve();
+          else writer.once("drain", resolve);
+          writer.once("error", reject);
+        });
+      },
+      close() {
+        return new Promise((resolve, reject) => {
+          writer.end((err) => (err ? reject(err) : resolve()));
+        });
       },
     });
   }
