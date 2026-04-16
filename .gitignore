@@ -8,6 +8,7 @@ bun.lock
 # BUILD OUTPUTS
 dist/
 build/
+*.js
 .next/
 out/
 coverage/

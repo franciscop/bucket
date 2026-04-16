@@ -1,7 +1,9 @@
+// This test only covers the things specific for this bucket;
+// any shared API test is under test/index.test.ts at the root
+
 import S3 from "./index.ts";
 
 // All tests use mocked fetch — no real credentials needed.
-// Tests that require real AWS credentials are in the describe.skip block below.
 
 const TEST_BUCKET = "test-bucket";
 const TEST_CONFIG = { id: "test-id", secret: "test-secret", region: "us-east-1" };
@@ -41,54 +43,6 @@ const S3_LIST_XML = `<?xml version="1.0" encoding="UTF-8"?>
   </Contents>
 </ListBucketResult>`;
 
-describe("S3 module structure", () => {
-  it("is a factory function", () => {
-    expect(typeof S3).toBe("function");
-  });
-
-  it("returns a bucket object with the right methods", () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    expect(typeof bucket.info).toBe("function");
-    expect(typeof bucket.list).toBe("function");
-    expect(typeof bucket.file).toBe("function");
-  });
-
-  it("bucket has a type property", () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    expect(bucket.type).toBe("S3");
-  });
-
-  it("file() returns a file object with the right methods", () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    const file = bucket.file("test.txt");
-    expect(typeof file.info).toBe("function");
-    expect(typeof file.exists).toBe("function");
-    expect(typeof file.text).toBe("function");
-    expect(typeof file.json).toBe("function");
-    expect(typeof file.arrayBuffer).toBe("function");
-    expect(typeof file.blob).toBe("function");
-    expect(typeof file.bytes).toBe("function");
-    expect(typeof file.write).toBe("function");
-    expect(typeof file.remove).toBe("function");
-    expect(typeof file.stream).toBe("function");
-    expect(typeof file.nodeReadable).toBe("function");
-    expect(typeof file.writable).toBe("function");
-    expect(typeof file.nodeWritable).toBe("function");
-  });
-
-  it("file() sets correct name and path properties", () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    const file = bucket.file("path/to/file.txt");
-    expect(file.name).toBe("file.txt");
-    expect(file.path).toBe("path/to/file.txt");
-  });
-
-  it("file() throws when given no name", () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    expect(() => bucket.file("")).toThrow("No name");
-  });
-});
-
 describe("S3 bucket info", () => {
   it("returns correct bucket info", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -120,48 +74,24 @@ describe("S3 bucket info", () => {
 describe("S3 list()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
 
   it("parses S3 XML list response correctly", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(S3_LIST_XML)));
-
     const files = await bucket.list();
     expect(files.length).toBe(2);
   });
 
-  it("returns correct file names", async () => {
+  it("returns correct file names and paths", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(S3_LIST_XML)));
-
     const files = await bucket.list();
     expect(files[0].name).toBe("hello.txt");
-    expect(files[1].name).toBe("world.json");
-  });
-
-  it("returns correct file paths", async () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    mockFetch(() => Promise.resolve(makeResponse(S3_LIST_XML)));
-
-    const files = await bucket.list();
     expect(files[0].path).toBe("hello.txt");
+    expect(files[1].name).toBe("world.json");
     expect(files[1].path).toBe("data/world.json");
-  });
-
-  it("returns file objects with remove/write/read methods", async () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    mockFetch(() => Promise.resolve(makeResponse(S3_LIST_XML)));
-
-    const files = await bucket.list();
-    expect(typeof files[0].remove).toBe("function");
-    expect(typeof files[0].write).toBe("function");
-    expect(typeof files[0].text).toBe("function");
   });
 
   it("handles empty bucket", async () => {
@@ -169,7 +99,6 @@ describe("S3 list()", () => {
     const emptyXml = `<?xml version="1.0"?>
 <ListBucketResult><Name>test</Name><IsTruncated>false</IsTruncated></ListBucketResult>`;
     mockFetch(() => Promise.resolve(makeResponse(emptyXml)));
-
     const files = await bucket.list();
     expect(files).toEqual([]);
   });
@@ -177,7 +106,6 @@ describe("S3 list()", () => {
   it("throws on non-OK response", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse("AccessDenied", 403)));
-
     await expect(bucket.list()).rejects.toThrow("S3 list error: 403");
   });
 
@@ -213,13 +141,8 @@ describe("S3 list()", () => {
 describe("S3 file().info()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
 
   it("returns exists: true for an existing file", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -256,13 +179,8 @@ describe("S3 file().info()", () => {
 describe("S3 file().exists()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
 
   it("returns true for an existing file", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -288,19 +206,8 @@ describe("S3 file().exists()", () => {
 describe("S3 file().text()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("returns file content as a string", async () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    mockFetch(() => Promise.resolve(makeResponse("hello world")));
-    expect(await bucket.file("hello.txt").text()).toBe("hello world");
-  });
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
 
   it("throws on non-OK response", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -311,81 +218,11 @@ describe("S3 file().text()", () => {
   });
 });
 
-describe("S3 file().json()", () => {
-  let originalFetch: typeof fetch;
-
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("parses and returns JSON content", async () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    mockFetch(() =>
-      Promise.resolve(
-        makeResponse('["John","Mary","Sarah"]', 200, {
-          "content-type": "application/json",
-        }),
-      ),
-    );
-    const data = await bucket.file("people.json").json();
-    expect(data).toEqual(["John", "Mary", "Sarah"]);
-  });
-});
-
-describe("S3 file().buffer()", () => {
-  let originalFetch: typeof fetch;
-
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("returns file content as an ArrayBuffer", async () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    mockFetch(() => Promise.resolve(makeResponse("hello")));
-    const buf = await bucket.file("hello.txt").arrayBuffer();
-    expect(buf instanceof ArrayBuffer).toBe(true);
-    expect(new TextDecoder().decode(buf)).toBe("hello");
-  });
-});
-
-describe("S3 file().bytes()", () => {
-  let originalFetch: typeof fetch;
-
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  it("returns file content as Uint8Array", async () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    mockFetch(() => Promise.resolve(makeResponse("hello")));
-    const bytes = await bucket.file("hello.txt").bytes();
-    expect(bytes).toBeInstanceOf(Uint8Array);
-    expect(Buffer.from(bytes).toString("utf-8")).toBe("hello");
-  });
-});
-
 describe("S3 file().write()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
 
   it("sends a PUT request with string content", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -403,34 +240,6 @@ describe("S3 file().write()", () => {
     expect(capturedBody).toBe("hello world");
   });
 
-  it("sends a PUT request with Buffer content", async () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    let capturedMethod: string | undefined;
-
-    mockFetch((_, init) => {
-      capturedMethod = init?.method;
-      return Promise.resolve(makeResponse(null, 200));
-    });
-
-    const buf = Buffer.from("hello buffer");
-    await bucket.file("hello.txt").write(buf);
-    expect(capturedMethod).toBe("PUT");
-  });
-
-  it("sends a PUT request with Blob content", async () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    let capturedMethod: string | undefined;
-
-    mockFetch((_, init) => {
-      capturedMethod = init?.method;
-      return Promise.resolve(makeResponse(null, 200));
-    });
-
-    const blob = new Blob(["hello blob"]);
-    await bucket.file("hello.txt").write(blob);
-    expect(capturedMethod).toBe("PUT");
-  });
-
   it("throws on non-OK response", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(null, 403)));
@@ -443,13 +252,8 @@ describe("S3 file().write()", () => {
 describe("S3 file().remove()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
 
   it("sends a DELETE request", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -479,48 +283,11 @@ describe("S3 file().remove()", () => {
   });
 });
 
-describe("S3 file().stream()", () => {
-  it("returns a web ReadableStream", () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    const stream = bucket.file("hello.txt").stream();
-    expect(stream).toBeInstanceOf(ReadableStream);
-  });
-});
-
-describe("S3 file().nodeReadable()", () => {
-  it("returns a Node.js readable stream", () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    const stream = bucket.file("hello.txt").nodeReadable();
-    expect(typeof (stream as NodeJS.ReadableStream).pipe).toBe("function");
-  });
-});
-
-describe("S3 file().writable()", () => {
-  it("returns a web WritableStream", () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    const stream = bucket.file("hello.txt").writable();
-    expect(stream).toBeInstanceOf(WritableStream);
-  });
-});
-
-describe("S3 file().nodeWritable()", () => {
-  it("returns a Node.js writable stream", () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    const stream = bucket.file("hello.txt").nodeWritable();
-    expect(typeof (stream as NodeJS.WritableStream).write).toBe("function");
-  });
-});
-
 describe("S3 bucket.remove()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
 
   it("sends a POST DeleteObjects request", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -596,13 +363,8 @@ describe("S3 bucket.remove()", () => {
 describe("S3 file() pipe operations", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-  });
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
 
   it("can pipe a web stream to a writable and send PUT", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -629,27 +391,97 @@ describe("S3 file() pipe operations", () => {
   });
 });
 
-describe.skip("S3 (requires real credentials)", () => {
-  const bucket = S3();
+describe("S3 file().copyTo()", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
 
-  it("can get bucket info", async () => {
-    const info = await bucket.info();
-    expect(typeof info.id).toBe("string");
-    expect(info.type).toBe("S3");
+  it("sends a PUT with x-amz-copy-source header", async () => {
+    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
+    let capturedMethod: string | undefined;
+    let capturedCopySource: string | undefined;
+    mockFetch((_, init) => {
+      capturedMethod = init?.method;
+      capturedCopySource = new Headers(init?.headers).get("x-amz-copy-source") ?? undefined;
+      return Promise.resolve(makeResponse(null, 200));
+    });
+    await bucket.file("src.txt").copyTo("dst.txt");
+    expect(capturedMethod).toBe("PUT");
+    expect(capturedCopySource).toContain("src.txt");
+  });
+});
+
+describe("S3 file().moveTo()", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it("copies then deletes the original", async () => {
+    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
+    const methods: string[] = [];
+    mockFetch((_, init) => {
+      methods.push(init?.method ?? "GET");
+      return Promise.resolve(makeResponse(null, init?.method === "DELETE" ? 204 : 200));
+    });
+    await bucket.file("src.txt").moveTo("dst.txt");
+    expect(methods).toContain("PUT");
+    expect(methods).toContain("DELETE");
+  });
+});
+
+describe("S3 file().rename()", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  it("renames within the same directory", async () => {
+    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
+    const capturedUrls: string[] = [];
+    mockFetch((url, init) => {
+      capturedUrls.push(url as string);
+      return Promise.resolve(makeResponse(null, init?.method === "DELETE" ? 204 : 200));
+    });
+    await bucket.file("dir/old.txt").rename("new.txt");
+    expect(capturedUrls.some((u) => u.includes("dir/new.txt"))).toBe(true);
   });
 
-  it("can list files", async () => {
-    const files = await bucket.list();
-    expect(Array.isArray(files)).toBe(true);
+  it("throws when given a name with a slash", async () => {
+    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
+    await expect(bucket.file("dir/old.txt").rename("sub/new.txt")).rejects.toThrow(
+      "rename() cannot change directory",
+    );
+  });
+});
+
+describe("S3 file().publicUrl()", () => {
+  it("returns the correct S3 URL", () => {
+    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
+    const url = bucket.file("path/to/file.txt").publicUrl();
+    expect(url).toContain(TEST_BUCKET);
+    expect(url).toContain("path/to/file.txt");
+  });
+});
+
+describe("S3 file().signedUrl()", () => {
+  it("returns a presigned GET URL", async () => {
+    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
+    const url = await bucket.file("file.txt").signedUrl({ expires: 3600 });
+    expect(url).toContain("X-Amz-Signature");
+    expect(url).toContain("X-Amz-Expires=3600");
   });
 
-  it("can write and remove a file", async () => {
-    const file = bucket.file("test-ts-integration.txt");
-    await file.write("hello from TypeScript");
-    expect(await file.exists()).toBe(true);
-    const text = await file.text();
-    expect(text).toBe("hello from TypeScript");
-    await file.remove();
-    expect(await file.exists()).toBe(false);
-  }, 30000);
+  it("accepts string duration", async () => {
+    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
+    const url = await bucket.file("file.txt").signedUrl({ expires: "30min" });
+    expect(url).toContain("X-Amz-Expires=1800");
+  });
+});
+
+describe("S3 file().uploadUrl()", () => {
+  it("returns a presigned PUT URL", async () => {
+    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
+    const url = await bucket.file("file.txt").uploadUrl({ expires: 3600 });
+    expect(url).toContain("X-Amz-Signature");
+    expect(url).toContain("X-Amz-Expires=3600");
+  });
 });
