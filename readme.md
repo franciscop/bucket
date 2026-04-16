@@ -3,14 +3,20 @@
 A small library to talk to any of the popular file storage solutions with a unified API:
 
 ```js
-// Simple example displaying all of the files in the bucket
-import BackBlaze from "bucket/b2"; // or /s3, /r2, /fs, etc
-
-const bucket = BackBlaze("bucket-name", { id, key });
+// Default import is a ready-to-use S3 bucket (reads AWS_BUCKET, AWS_ACCESS_KEY_ID, etc. from env)
+import bucket from "bucket";
 
 const file = bucket.file("demo.txt");
 await file.write("hello world");
 console.log(await file.text());
+```
+
+Or import a specific provider:
+
+```js
+import BackBlaze from "bucket/b2"; // or /s3, /r2, /fs, etc
+
+const bucket = BackBlaze("bucket-name", { id, key });
 ```
 
 It has different engines and they all behave the same. It also has a "filesystem" Bucket, which will treat a local folder as a bucket:
@@ -46,10 +52,10 @@ There are two main APIs, the `Bucket` one and the `File` one:
   - `.arrayBuffer()`: read the contents of the file as an ArrayBuffer
   - `.blob()`: read the contents of the file as a Blob
   - `.bytes()`: read the contents of the file as a Uint8Array
-  - `.write(body)`: writes the content of the body into the file. You can pass a lot of things there.
-  - `.copy(path)`: creates a duplicate of a file with a different name (keeping the original).
-  - `.move(path)`: change the location of the file (removing the original).
-  - `.rename(path)`: change the name of the file enforcing it remains in the same folder (removing the original).
+  - `.write(body, options?)`: writes content to the file. Accepts strings, Buffers, Blobs, streams, or another file object. Content-type is auto-detected from the file extension; pass `options` to override it or set `cacheControl`, `disposition`, and `metadata`.
+  - `.copyTo(path)`: creates a duplicate of a file with a different name (keeping the original).
+  - `.moveTo(path)`: change the location of the file (removing the original).
+  - `.rename(name)`: change the name of the file enforcing it remains in the same folder (removing the original).
   - `.remove()`: deletes the file completely.
   - `.stream()`: returns a web `ReadableStream` that can be piped to a writable stream.
   - `.nodeReadable()`: returns a Node.js `Readable` stream for use with `pipeline()` etc.
@@ -212,7 +218,7 @@ Returns `Promise<Uint8Array>` with the raw binary contents as a typed array. Wor
 const bytes = await bucket.file("photo.jpg").bytes();
 ```
 
-### file.write(body)
+### file.write(body, options?)
 
 Writes content to the file. If the file already exists it is overwritten. Intermediate directories are created automatically. Accepts:
 
@@ -229,39 +235,49 @@ await bucket.file("data.bin").write(new Uint8Array([1, 2, 3]));
 await bucket.file("copy.txt").write(bucket.file("original.txt"));
 ```
 
-### file.copy(path)
+**Content-type** is inferred automatically from the file extension (e.g. `.jpg` → `image/jpeg`, `.json` → `application/json`). You can override it and set other metadata through the optional second argument:
 
-> **Planned** — not yet implemented.
+| Option | Type | Description |
+|---|---|---|
+| `type` | `string` | MIME type (overrides auto-detection) |
+| `cacheControl` | `string` | `Cache-Control` header value, e.g. `"public, max-age=31536000"` |
+| `disposition` | `string` | `Content-Disposition` header value, e.g. `"attachment; filename=file.pdf"` |
+| `metadata` | `Record<string, string>` | Provider-specific key/value metadata |
+
+```js
+await bucket.file("image.jpg").write(data, {
+  type: "image/jpeg",
+  cacheControl: "public, max-age=31536000",
+  disposition: "inline",
+  metadata: { author: "alice" },
+});
+```
+
+> **Note:** Options are silently ignored by the FileSystem provider.
+
+### file.copyTo(path)
 
 Creates a duplicate of the file at a new path, keeping the original:
 
 ```js
-await bucket.file("photo.jpg").copy('backup/photo.jpg');
+await bucket.file("photo.jpg").copyTo("backup/photo.jpg");
 ```
 
-Until implemented, you can do this with `.write()`:
+### file.moveTo(path)
+
+Moves the file to a new path, removing the original:
 
 ```js
-await bucket.file("backup/photo.jpg").write(bucket.file("photo.jpg"));
+await bucket.file("tmp/upload.jpg").moveTo("photos/avatar.jpg");
 ```
 
-### file.move(path)
+### file.rename(name)
 
-> **Planned** — not yet implemented.
-
-Moves the file to a new path, removing the original. Until implemented:
+Renames the file within the same directory. Throws if `name` contains a `/` — use `.moveTo()` to change directories.
 
 ```js
-const src = bucket.file("tmp/upload.jpg");
-await bucket.file("photos/avatar.jpg").write(src);
-await src.remove();
+await bucket.file("photos/old-name.jpg").rename("new-name.jpg");
 ```
-
-### file.rename(path)
-
-> **Planned** — not yet implemented.
-
-Renames the file within the same directory. Shorthand for `.move()` that enforces the destination stays in the same folder.
 
 ### file.remove()
 
@@ -354,6 +370,8 @@ Environment variable fallbacks:
 
 ### AWS S3
 
+S3 is the default export of the package, so `import bucket from "bucket"` is equivalent to `import S3 from "bucket/s3"`.
+
 ```js
 import S3 from "bucket/s3";
 
@@ -410,7 +428,7 @@ The simplest example I can think is copying a file; read the original one and co
 
 ```js
 // The native operation
-await bucket.file("/myfile.txt").copy("/copied.txt");
+await bucket.file("/myfile.txt").copyTo("/copied.txt");
 
 // Similar to the above but using streams (for demonstration purposes):
 const source = bucket.file("/myfile.txt").stream();

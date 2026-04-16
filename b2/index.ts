@@ -5,12 +5,14 @@ import parse from "../lib/parse.ts";
 import { createHash } from "node:crypto";
 import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
+import { getContentType } from "../lib/fileTypes.ts";
 import type {
   IBucket,
   IBucketFile,
   FileInfo,
   BucketInfo,
   WriteContent,
+  WriteOptions,
 } from "../lib/types.ts";
 
 const hashString = (str: string | Buffer): string => {
@@ -59,16 +61,22 @@ class B2File implements IBucketFile {
 
   async info(): Promise<FileInfo> {
     const files = await this.#bucket.list(this.path);
-    if (files.length) {
-      const f = files[0] as B2File;
-      this.id = f.id;
-      this.type = f.type;
-      this.size = f.size;
-      this.date = f.date;
+    const match = (files as B2File[]).find((f) => f.path === this.path);
+    if (match) {
+      this.id = match.id;
+      this.type = match.type;
+      this.size = match.size;
+      this.date = match.date;
       return {
-        ...files[0],
+        id: match.id,
+        name: match.name,
+        path: match.path,
         exists: true,
-      } as unknown as FileInfo;
+        type: match.type ?? null,
+        size: match.size ?? 0,
+        date: match.date ?? null,
+        url: match.url ?? null,
+      };
     }
     return {
       id: this.id,
@@ -115,23 +123,33 @@ class B2File implements IBucketFile {
   }
 
   async exists(): Promise<boolean> {
-    return (await this.info()).size !== 0;
+    return (await this.info()).exists;
   }
 
-  async #put(data: string | Buffer): Promise<void> {
+  async #put(data: string | Buffer, options: WriteOptions = {}): Promise<void> {
     const bucket = await this.#bucket.info();
     const url =
       this.#bucket.apiBase + "b2_get_upload_url?bucketId=" + bucket.id;
     const res = await this.#bucket.fetch(url);
     const auth = (await res.json()) as B2UploadAuth;
 
+    const type = options.type ?? getContentType(this.path) ?? "b2/x-auto";
     const headers: Record<string, string | number> = {
       Authorization: auth.authorizationToken,
       "X-Bz-File-Name": this.path,
       "X-Bz-Content-Sha1": hashString(data),
       "Content-Length": Buffer.byteLength(data as string),
-      "Content-Type": "b2/x-auto",
+      "Content-Type": type,
     };
+    if (options.cacheControl)
+      headers["X-Bz-Info-b2-cache-control"] = options.cacheControl;
+    if (options.disposition)
+      headers["X-Bz-Info-b2-content-disposition"] = options.disposition;
+    if (options.metadata) {
+      for (const [k, v] of Object.entries(options.metadata)) {
+        headers[`X-Bz-Info-${k}`] = v;
+      }
+    }
     const res2 = await this.#bucket.fetch(auth.uploadUrl, {
       body: data as BodyInit,
       method: "POST",
@@ -141,39 +159,35 @@ class B2File implements IBucketFile {
     this.id = uploaded.fileId;
   }
 
-  async write(content: WriteContent): Promise<void> {
-    if (typeof content === "string") return this.#put(content);
+  async write(content: WriteContent, options?: WriteOptions): Promise<void> {
+    if (typeof content === "string") return this.#put(content, options);
     if (content instanceof Buffer || content instanceof Uint8Array)
-      return this.#put(Buffer.from(content));
-    if (content instanceof Blob) {
-      return this.#put(Buffer.from(await content.arrayBuffer()));
-    }
-    if (content instanceof B2File) {
-      return this.#put(Buffer.from(await content.arrayBuffer()));
-    }
-    if (typeof (content as ReadableStream).pipeTo === "function") {
-      return (content as ReadableStream).pipeTo(this.writable());
-    }
-    if (content instanceof Readable) {
-      return Readable.toWeb(content).pipeTo(this.writable());
-    }
+      return this.#put(Buffer.from(content), options);
+    if (content instanceof Blob)
+      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+    if (content instanceof B2File)
+      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+    if (typeof (content as ReadableStream).pipeTo === "function")
+      return (content as ReadableStream).pipeTo(this.writable(options));
+    if (content instanceof Readable)
+      return Readable.toWeb(content).pipeTo(this.writable(options));
     throw new Error("Invalid content type");
   }
 
-  async copy(path: string): Promise<void> {
+  async copyTo(path: string): Promise<void> {
     await new B2File(path, this.#bucket).write(this);
   }
 
-  async move(path: string): Promise<void> {
-    await this.copy(path);
+  async moveTo(path: string): Promise<void> {
+    await this.copyTo(path);
     await this.remove();
   }
 
   async rename(name: string): Promise<void> {
     if (name.includes("/"))
-      throw new Error("rename() cannot change directory — use move() instead");
+      throw new Error("rename() cannot change directory — use moveTo() instead");
     const dir = this.path.split("/").slice(0, -1).join("/");
-    await this.move(dir ? dir + "/" + name : name);
+    await this.moveTo(dir ? dir + "/" + name : name);
   }
 
   async remove(): Promise<void> {
@@ -182,11 +196,17 @@ class B2File implements IBucketFile {
       this.#bucket.apiBase + "b2_delete_file_version?bucketId=" + bucket.id;
     do {
       if (!this.id) await this.info();
-      await this.#bucket.fetch(url, {
-        method: "POST",
-        body: JSON.stringify({ fileId: this.id, fileName: this.path }),
-        headers: { "Content-Type": "application/json" },
-      });
+      if (!this.id) break; // file no longer exists
+      try {
+        await this.#bucket.fetch(url, {
+          method: "POST",
+          body: JSON.stringify({ fileId: this.id, fileName: this.path }),
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        if ((e as Error).message.includes("file_not_present")) break;
+        throw e;
+      }
       this.id = "";
     } while (await this.exists());
   }
@@ -206,12 +226,12 @@ class B2File implements IBucketFile {
     );
   }
 
-  writable(): WritableStream {
-    return promiseToWritable((data) => this.write(data));
+  writable(options?: WriteOptions): WritableStream {
+    return promiseToWritable((data: Buffer) => this.#put(data, options));
   }
 
-  nodeWritable(): NodeJS.WritableStream {
-    return Writable.fromWeb(this.writable() as WritableStream<Uint8Array>);
+  nodeWritable(options?: WriteOptions): NodeJS.WritableStream {
+    return Writable.fromWeb(this.writable(options) as WritableStream<Uint8Array>);
   }
 
   publicUrl(): string | null {
@@ -385,6 +405,17 @@ class BackBlazeInstance implements IBucket {
   }
 }
 
+/**
+ * Create a Backblaze B2 bucket handle.
+ *
+ * @param name - Bucket name (falls back to `B2_BUCKET` env var)
+ * @param opts.id - Application Key ID (falls back to `B2_APPLICATION_KEY_ID`)
+ * @param opts.secret - Application Key (falls back to `B2_APPLICATION_KEY`)
+ *
+ * @example
+ * const bucket = BackBlaze("my-bucket", { id: "keyId", secret: "appKey" });
+ * await bucket.file("hello.txt").write("hello");
+ */
 export default function BackBlaze(
   name?: string,
   opts?: { id?: string; secret?: string },

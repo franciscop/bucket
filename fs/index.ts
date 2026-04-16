@@ -17,6 +17,7 @@ import type {
   BucketInfo,
   FileEntry,
   WriteContent,
+  WriteOptions,
 } from "../lib/types.ts";
 
 const execP = promisify(exec) as (
@@ -93,7 +94,7 @@ class FSFile implements IBucketFile {
     return new Uint8Array(await this.arrayBuffer());
   }
 
-  async write(content: WriteContent): Promise<void> {
+  async write(content: WriteContent, _options?: WriteOptions): Promise<void> {
     if (typeof content === "string") {
       await fsp.mkdir(dirname(this.path), { recursive: true });
       return fsp.writeFile(this.path, content);
@@ -120,13 +121,13 @@ class FSFile implements IBucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copy(path: string): Promise<void> {
+  async copyTo(path: string): Promise<void> {
     const dst = resolve(isAbsolute(path) ? path : join(this.#root, path));
     await fsp.mkdir(dirname(dst), { recursive: true });
     await fsp.copyFile(this.path, dst);
   }
 
-  async move(path: string): Promise<void> {
+  async moveTo(path: string): Promise<void> {
     const dst = resolve(isAbsolute(path) ? path : join(this.#root, path));
     await fsp.mkdir(dirname(dst), { recursive: true });
     await fsp.rename(this.path, dst);
@@ -134,13 +135,13 @@ class FSFile implements IBucketFile {
 
   async rename(name: string): Promise<void> {
     if (name.includes("/"))
-      throw new Error("rename() cannot change directory — use move() instead");
+      throw new Error("rename() cannot change directory — use moveTo() instead");
     const relDir = this.path
       .slice(this.#root.length)
       .split("/")
       .slice(0, -1)
       .join("/");
-    await this.move(relDir ? relDir + "/" + name : name);
+    await this.moveTo(relDir ? relDir + "/" + name : name);
   }
 
   async remove(): Promise<void> {
@@ -169,11 +170,11 @@ class FSFile implements IBucketFile {
     return createReadStream(this.path);
   }
 
-  nodeWritable(): NodeJS.WritableStream {
+  nodeWritable(_options?: WriteOptions): NodeJS.WritableStream {
     return Writable.fromWeb(this.writable() as WritableStream<Uint8Array>);
   }
 
-  writable(): WritableStream {
+  writable(_options?: WriteOptions): WritableStream {
     const filePath = this.path;
     let writer: ReturnType<typeof createWriteStream> | null = null;
 
@@ -263,6 +264,18 @@ class FileSystemBucket implements IBucket {
   }
 }
 
+/**
+ * Create a local filesystem bucket handle.
+ *
+ * All file paths are resolved relative to `path`.
+ * Nested directories are created automatically on write.
+ *
+ * @param path - Root directory for all file operations
+ *
+ * @example
+ * const bucket = FileSystem("./uploads");
+ * await bucket.file("hello.txt").write("hello");
+ */
 export default function FileSystem(path: string): FileSystemBucket {
   return new FileSystemBucket(path);
 }

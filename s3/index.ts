@@ -6,12 +6,14 @@ import { presignS3 } from "../lib/presignS3.ts";
 import parse from "../lib/parse.ts";
 import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
+import { getContentType } from "../lib/fileTypes.ts";
 import type {
   IBucket,
   IBucketFile,
   FileInfo,
   BucketInfo,
   WriteContent,
+  WriteOptions,
   S3Auth,
   S3Request,
 } from "../lib/types.ts";
@@ -142,31 +144,37 @@ class S3File implements IBucketFile {
     return new Uint8Array(await this.arrayBuffer());
   }
 
-  async #put(data: string | Buffer): Promise<void> {
-    const res = await this.#ctx.doRequest("PUT", this.path, { body: data });
+  async #put(data: string | Buffer, options: WriteOptions = {}): Promise<void> {
+    const headers: Record<string, string> = {};
+    const type = options.type ?? getContentType(this.path);
+    if (type) headers["Content-Type"] = type;
+    if (options.cacheControl) headers["Cache-Control"] = options.cacheControl;
+    if (options.disposition) headers["Content-Disposition"] = options.disposition;
+    if (options.metadata) {
+      for (const [k, v] of Object.entries(options.metadata)) {
+        headers[`x-amz-meta-${k}`] = v;
+      }
+    }
+    const res = await this.#ctx.doRequest("PUT", this.path, { body: data, headers });
     if (!res.ok) throw new Error(`S3 PUT error: ${res.status}`);
   }
 
-  async write(content: WriteContent): Promise<void> {
-    if (typeof content === "string") return this.#put(content);
+  async write(content: WriteContent, options?: WriteOptions): Promise<void> {
+    if (typeof content === "string") return this.#put(content, options);
     if (content instanceof Buffer || content instanceof Uint8Array)
-      return this.#put(Buffer.from(content));
-    if (content instanceof Blob) {
-      return this.#put(Buffer.from(await content.arrayBuffer()));
-    }
-    if (content instanceof S3File) {
-      return this.#put(Buffer.from(await content.arrayBuffer()));
-    }
-    if (typeof (content as ReadableStream).pipeTo === "function") {
-      return (content as ReadableStream).pipeTo(this.writable());
-    }
-    if (content instanceof Readable) {
-      return Readable.toWeb(content).pipeTo(this.writable());
-    }
+      return this.#put(Buffer.from(content), options);
+    if (content instanceof Blob)
+      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+    if (content instanceof S3File)
+      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+    if (typeof (content as ReadableStream).pipeTo === "function")
+      return (content as ReadableStream).pipeTo(this.writable(options));
+    if (content instanceof Readable)
+      return Readable.toWeb(content).pipeTo(this.writable(options));
     throw new Error("Invalid content type");
   }
 
-  async copy(path: string): Promise<void> {
+  async copyTo(path: string): Promise<void> {
     const dst = path.startsWith("/") ? path.slice(1) : path;
     const res = await this.#ctx.doRequest("PUT", dst, {
       headers: {
@@ -176,16 +184,16 @@ class S3File implements IBucketFile {
     if (!res.ok) throw new Error(`S3 COPY error: ${res.status}`);
   }
 
-  async move(path: string): Promise<void> {
-    await this.copy(path);
+  async moveTo(path: string): Promise<void> {
+    await this.copyTo(path);
     await this.remove();
   }
 
   async rename(name: string): Promise<void> {
     if (name.includes("/"))
-      throw new Error("rename() cannot change directory — use move() instead");
+      throw new Error("rename() cannot change directory — use moveTo() instead");
     const dir = this.path.split("/").slice(0, -1).join("/");
-    await this.move(dir ? dir + "/" + name : name);
+    await this.moveTo(dir ? dir + "/" + name : name);
   }
 
   async remove(): Promise<void> {
@@ -209,13 +217,13 @@ class S3File implements IBucketFile {
     );
   }
 
-  writable(): WritableStream {
-    return promiseToWritable((data: Buffer) => this.#put(data));
+  writable(options?: WriteOptions): WritableStream {
+    return promiseToWritable((data: Buffer) => this.#put(data, options));
   }
 
-  nodeWritable(): NodeJS.WritableStream {
+  nodeWritable(options?: WriteOptions): NodeJS.WritableStream {
     return Writable.fromWeb(
-      this.writable() as unknown as WritableStream<Uint8Array>,
+      this.writable(options) as unknown as WritableStream<Uint8Array>,
     );
   }
 
@@ -292,15 +300,15 @@ class S3Bucket implements IBucket {
     };
   }
 
-  async list(prefix?: string | RegExp): Promise<S3File[]> {
+  async list(filter?: string | RegExp): Promise<S3File[]> {
     const files: S3File[] = [];
     let token: string | undefined;
 
     do {
       const url = new URL(this.makeUrl(""));
       url.searchParams.set("list-type", "2");
-      if (prefix && typeof prefix === "string")
-        url.searchParams.set("prefix", prefix);
+      if (filter && typeof filter === "string")
+        url.searchParams.set("prefix", filter);
       if (token) url.searchParams.set("continuation-token", token);
 
       const req: S3Request = {
@@ -320,7 +328,7 @@ class S3Bucket implements IBucket {
       const xmlStr = await res.text();
       for (const item of extractTags(xmlStr, "Contents")) {
         const key = getTag(item, "Key");
-        if (prefix instanceof RegExp && !prefix.test(key)) continue;
+        if (filter instanceof RegExp && !filter.test(key)) continue;
         files.push(this.file(key));
       }
 
@@ -396,6 +404,19 @@ class S3Bucket implements IBucket {
   }
 }
 
+/**
+ * Create an AWS S3 bucket handle.
+ *
+ * @param bucket - Bucket name (falls back to `AWS_S3_BUCKET` env var)
+ * @param config.id - Access Key ID (falls back to `AWS_ACCESS_KEY_ID`)
+ * @param config.secret - Secret Access Key (falls back to `AWS_SECRET_ACCESS_KEY`)
+ * @param config.region - AWS region, default `"us-east-1"` (falls back to `AWS_REGION`)
+ * @param config.endpoint - Custom endpoint URL (falls back to `AWS_ENDPOINT`)
+ *
+ * @example
+ * const bucket = S3("my-bucket", { id: "keyId", secret: "secretKey", region: "us-west-2" });
+ * await bucket.file("hello.txt").write("hello");
+ */
 export default function S3(bucket?: string, config?: S3Config): S3Bucket {
   return new S3Bucket(bucket, config);
 }

@@ -275,6 +275,9 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
       });
     });
 
+    // ── Write options ─────────────────────────────────────────────────────────
+
+
     // ── copy / move / rename ──────────────────────────────────────────────────
 
     describe("copy()", () => {
@@ -282,14 +285,14 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
         const src = bucket.file(testFile());
         await src.write("copy-content");
         const dstPath = testFile();
-        await src.copy(dstPath);
+        await src.copyTo(dstPath);
         expect(await bucket.file(dstPath).text()).toBe("copy-content");
       });
 
       it("keeps the original intact", async () => {
         const src = bucket.file(testFile());
         await src.write("original");
-        await src.copy(testFile());
+        await src.copyTo(testFile());
         expect(await src.text()).toBe("original");
       });
 
@@ -297,7 +300,7 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
         const src = bucket.file(testFile());
         await src.write("nested-copy");
         const dstPath = "deep/" + testFile();
-        await src.copy(dstPath);
+        await src.copyTo(dstPath);
         expect(await bucket.file(dstPath).text()).toBe("nested-copy");
       });
 
@@ -306,7 +309,7 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
         const src = bucket.file(testFile("bin"));
         await src.write(bytes);
         const dstPath = testFile("bin");
-        await src.copy(dstPath);
+        await src.copyTo(dstPath);
         expect(await bucket.file(dstPath).bytes()).toEqual(bytes);
       });
     });
@@ -316,7 +319,7 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
         const src = bucket.file(testFile());
         await src.write("move-content");
         const dstPath = testFile();
-        await src.move(dstPath);
+        await src.moveTo(dstPath);
         expect(await bucket.file(dstPath).text()).toBe("move-content");
       });
 
@@ -324,7 +327,7 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
         const src = bucket.file(testFile());
         await src.write("will-move");
         const srcPath = src.path;
-        await src.move(testFile());
+        await src.moveTo(testFile());
         expect(await bucket.file(srcPath).exists()).toBe(false);
       });
 
@@ -332,7 +335,7 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
         const src = bucket.file(testFile());
         await src.write("deep-move");
         const dstPath = "deep/" + testFile();
-        await src.move(dstPath);
+        await src.moveTo(dstPath);
         expect(await bucket.file(dstPath).text()).toBe("deep-move");
       });
     });
@@ -358,6 +361,18 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
         const src = bucket.file(testFile());
         await src.write("x");
         await expect(src.rename("sub/name.txt")).rejects.toThrow();
+      });
+    });
+
+    // ── file.remove() ─────────────────────────────────────────────────────────
+
+    describe("file.remove()", () => {
+      it("removes the file so it no longer exists", async () => {
+        const file = bucket.file(testFile());
+        await file.write("to be removed");
+        expect(await file.exists()).toBe(true);
+        await file.remove();
+        expect(await file.exists()).toBe(false);
       });
     });
 
@@ -586,6 +601,30 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
           file.nodeReadable() as NodeJS.ReadableStream,
         );
         expect(fromWeb).toBe(fromNode);
+      });
+    });
+
+    // ── URL methods ───────────────────────────────────────────────────────────
+
+    describe("URL methods", () => {
+      it("publicUrl() returns a string or null", () => {
+        const url = bucket.file("photo.jpg").publicUrl();
+        expect(url === null || typeof url === "string").toBe(true);
+      });
+
+      it("signedUrl() returns a string or null", async () => {
+        const url = await bucket.file("photo.jpg").signedUrl({ expires: "1h" });
+        expect(url === null || typeof url === "string").toBe(true);
+      });
+
+      it("uploadUrl() returns a string or null", async () => {
+        const url = await bucket.file("photo.jpg").uploadUrl({ expires: "1h" });
+        expect(url === null || typeof url === "string").toBe(true);
+      });
+
+      it("signedUrl() accepts string durations", async () => {
+        const url = await bucket.file("photo.jpg").signedUrl({ expires: "30min" });
+        expect(url === null || typeof url === "string").toBe(true);
       });
     });
 
