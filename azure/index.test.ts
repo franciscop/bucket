@@ -103,8 +103,12 @@ describe("Azure bucket.info()", () => {
 describe("Azure bucket.list()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("parses Azure XML list response", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -139,7 +143,9 @@ describe("Azure bucket.list()", () => {
     const requests: string[] = [];
     mockFetch((url) => {
       requests.push(url);
-      return Promise.resolve(makeResponse(requests.length === 1 ? page1 : page2));
+      return Promise.resolve(
+        makeResponse(requests.length === 1 ? page1 : page2),
+      );
     });
 
     const files = await bucket.list();
@@ -159,8 +165,12 @@ describe("Azure bucket.list()", () => {
 describe("Azure file().info()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns exists: true for an existing file", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -192,8 +202,12 @@ describe("Azure file().info()", () => {
 describe("Azure file().write()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a PUT request with x-ms-blob-type header", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -225,8 +239,12 @@ describe("Azure file().write()", () => {
 describe("Azure file().remove()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a DELETE request", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -271,12 +289,18 @@ describe("Azure file().uploadUrl()", () => {
 
 describe("Azure file().exists()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns true for an existing file", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
-    mockFetch(() => Promise.resolve(makeResponse(null, 200, { "content-length": "5" })));
+    mockFetch(() =>
+      Promise.resolve(makeResponse(null, 200, { "content-length": "5" })),
+    );
     expect(await bucket.file("hello.txt").exists()).toBe(true);
   });
 
@@ -289,8 +313,12 @@ describe("Azure file().exists()", () => {
 
 describe("Azure file().text()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns file content as a string", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -301,19 +329,29 @@ describe("Azure file().text()", () => {
   it("throws on non-OK response", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
     mockFetch(() => Promise.resolve(makeResponse("Not Found", 404)));
-    await expect(bucket.file("missing.txt").text()).rejects.toThrow("Azure GET error: 404");
+    await expect(bucket.file("missing.txt").text()).rejects.toThrow(
+      "Azure GET error: 404",
+    );
   });
 });
 
 describe("Azure file().json()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("parses and returns JSON content", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
     mockFetch(() =>
-      Promise.resolve(makeResponse('["John","Mary","Sarah"]', 200, { "content-type": "application/json" })),
+      Promise.resolve(
+        makeResponse('["John","Mary","Sarah"]', 200, {
+          "content-type": "application/json",
+        }),
+      ),
     );
     const data = await bucket.file("people.json").json();
     expect(data).toEqual(["John", "Mary", "Sarah"]);
@@ -322,8 +360,12 @@ describe("Azure file().json()", () => {
 
 describe("Azure file().arrayBuffer()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns file content as an ArrayBuffer", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -336,8 +378,12 @@ describe("Azure file().arrayBuffer()", () => {
 
 describe("Azure file().bytes()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns file content as Uint8Array", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -350,8 +396,12 @@ describe("Azure file().bytes()", () => {
 
 describe("Azure file().blob()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns file content as a Blob", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -364,8 +414,12 @@ describe("Azure file().blob()", () => {
 
 describe("Azure file().copyTo()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a PUT with x-ms-copy-source header", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -373,7 +427,8 @@ describe("Azure file().copyTo()", () => {
     let capturedCopySource: string | undefined;
     mockFetch((_, init) => {
       capturedMethod = init?.method;
-      capturedCopySource = new Headers(init?.headers).get("x-ms-copy-source") ?? undefined;
+      capturedCopySource =
+        new Headers(init?.headers).get("x-ms-copy-source") ?? undefined;
       return Promise.resolve(makeResponse(null, 201));
     });
     await bucket.file("src.txt").copyTo("dst.txt");
@@ -384,15 +439,21 @@ describe("Azure file().copyTo()", () => {
 
 describe("Azure file().moveTo()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("copies then deletes the original", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
     const methods: string[] = [];
     mockFetch((_, init) => {
       methods.push(init?.method ?? "GET");
-      return Promise.resolve(makeResponse(null, init?.method === "DELETE" ? 202 : 201));
+      return Promise.resolve(
+        makeResponse(null, init?.method === "DELETE" ? 202 : 201),
+      );
     });
     await bucket.file("src.txt").moveTo("dst.txt");
     expect(methods).toContain("PUT");
@@ -402,15 +463,21 @@ describe("Azure file().moveTo()", () => {
 
 describe("Azure file().rename()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("renames within the same directory", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
     const capturedUrls: string[] = [];
     mockFetch((url, init) => {
       capturedUrls.push(url as string);
-      return Promise.resolve(makeResponse(null, init?.method === "DELETE" ? 202 : 201));
+      return Promise.resolve(
+        makeResponse(null, init?.method === "DELETE" ? 202 : 201),
+      );
     });
     await bucket.file("dir/old.txt").rename("new.txt");
     expect(capturedUrls.some((u) => u.includes("dir/new.txt"))).toBe(true);
@@ -418,9 +485,9 @@ describe("Azure file().rename()", () => {
 
   it("throws when given a name with a slash", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
-    await expect(bucket.file("dir/old.txt").rename("sub/new.txt")).rejects.toThrow(
-      "rename() cannot change directory",
-    );
+    await expect(
+      bucket.file("dir/old.txt").rename("sub/new.txt"),
+    ).rejects.toThrow("rename() cannot change directory");
   });
 });
 
@@ -456,8 +523,12 @@ describe("Azure file().nodeWritable()", () => {
 
 describe("Azure bucket.count()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns the number of files", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -469,8 +540,12 @@ describe("Azure bucket.count()", () => {
 describe("Azure bucket.remove()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("deletes all listed files and returns them", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -497,8 +572,12 @@ describe("Azure bucket.remove()", () => {
 
 describe("Azure file().write() content types", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a PUT request with Buffer content", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
@@ -525,8 +604,12 @@ describe("Azure file().write() content types", () => {
 
 describe("Azure async iteration", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("yields all files via for-await-of", async () => {
     const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);

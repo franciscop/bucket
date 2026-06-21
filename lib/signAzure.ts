@@ -5,8 +5,15 @@ export interface AzureAuth {
   key: string; // base64-encoded account key
 }
 
-const plainDate = (): string =>
-  new Date().toUTCString();
+const plainDate = (): string => new Date().toUTCString();
+
+// The canonicalized resource must mirror the request's actual URL path. Real
+// Azure keeps the account in the host, so the path is `/container/blob` and the
+// prefix is empty. Emulators (Azurite) and path-style endpoints keep the account
+// in the URL path, so it must be repeated in the signature; derive that prefix
+// from the endpoint, e.g. "http://127.0.0.1:10000/devstoreaccount1" → "/devstoreaccount1".
+export const accountPathPrefix = (endpoint: string): string =>
+  new URL(endpoint).pathname.replace(/\/$/, "");
 
 function canonicalHeaders(headers: Record<string, string>): string {
   return Object.entries(headers)

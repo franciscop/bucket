@@ -1,7 +1,7 @@
 // This test only covers the things specific for this bucket;
 // any shared API test is under test/index.test.ts at the root
 
-import GCS, { GCSBucket } from "./index.ts";
+import GCS from "./index.ts";
 
 // Generated test key (not a real credential)
 const TEST_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
@@ -63,8 +63,20 @@ afterEach(() => {
 
 const GCS_LIST_RESPONSE = JSON.stringify({
   items: [
-    { name: "hello.txt", contentType: "text/plain", size: "5", updated: "2024-01-01T00:00:00Z", mediaLink: "" },
-    { name: "data/world.json", contentType: "application/json", size: "25", updated: "2024-01-02T00:00:00Z", mediaLink: "" },
+    {
+      name: "hello.txt",
+      contentType: "text/plain",
+      size: "5",
+      updated: "2024-01-01T00:00:00Z",
+      mediaLink: "",
+    },
+    {
+      name: "data/world.json",
+      contentType: "application/json",
+      size: "25",
+      updated: "2024-01-02T00:00:00Z",
+      mediaLink: "",
+    },
   ],
 });
 
@@ -143,13 +155,17 @@ describe("GCS bucket.list()", () => {
     // Mock token endpoint so accessToken() works without real credentials
     mockFetch((url) => {
       if (url.includes("oauth2.googleapis.com")) {
-        return Promise.resolve(makeResponse(JSON.stringify({ access_token: "test-token" })));
+        return Promise.resolve(
+          makeResponse(JSON.stringify({ access_token: "test-token" })),
+        );
       }
       return Promise.resolve(makeResponse(GCS_LIST_RESPONSE));
     });
   });
 
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("parses GCS JSON list response", async () => {
     const bucket = GCS(TEST_BUCKET);
@@ -169,7 +185,10 @@ describe("GCS bucket.list()", () => {
   it("handles empty bucket", async () => {
     const bucket = GCS(TEST_BUCKET);
     mockFetch((url) => {
-      if (url.includes("oauth2")) return Promise.resolve(makeResponse(JSON.stringify({ access_token: "tok" })));
+      if (url.includes("oauth2"))
+        return Promise.resolve(
+          makeResponse(JSON.stringify({ access_token: "tok" })),
+        );
       return Promise.resolve(makeResponse(JSON.stringify({})));
     });
     const files = await bucket.list();
@@ -178,14 +197,28 @@ describe("GCS bucket.list()", () => {
 
   it("follows pagination via nextPageToken", async () => {
     const bucket = GCS(TEST_BUCKET);
-    const page1 = JSON.stringify({ items: [{ name: "a.txt", contentType: "text/plain", size: "1", updated: "" }], nextPageToken: "tok2" });
-    const page2 = JSON.stringify({ items: [{ name: "b.txt", contentType: "text/plain", size: "1", updated: "" }] });
+    const page1 = JSON.stringify({
+      items: [
+        { name: "a.txt", contentType: "text/plain", size: "1", updated: "" },
+      ],
+      nextPageToken: "tok2",
+    });
+    const page2 = JSON.stringify({
+      items: [
+        { name: "b.txt", contentType: "text/plain", size: "1", updated: "" },
+      ],
+    });
 
     const requests: string[] = [];
     mockFetch((url) => {
-      if (url.includes("oauth2")) return Promise.resolve(makeResponse(JSON.stringify({ access_token: "tok" })));
+      if (url.includes("oauth2"))
+        return Promise.resolve(
+          makeResponse(JSON.stringify({ access_token: "tok" })),
+        );
       requests.push(url);
-      return Promise.resolve(makeResponse(requests.length === 1 ? page1 : page2));
+      return Promise.resolve(
+        makeResponse(requests.length === 1 ? page1 : page2),
+      );
     });
 
     const files = await bucket.list();
@@ -198,7 +231,10 @@ describe("GCS bucket.list()", () => {
   it("throws on non-OK response", async () => {
     const bucket = GCS(TEST_BUCKET);
     mockFetch((url) => {
-      if (url.includes("oauth2")) return Promise.resolve(makeResponse(JSON.stringify({ access_token: "tok" })));
+      if (url.includes("oauth2"))
+        return Promise.resolve(
+          makeResponse(JSON.stringify({ access_token: "tok" })),
+        );
       return Promise.resolve(makeResponse("Forbidden", 403));
     });
     await expect(bucket.list()).rejects.toThrow("GCS list error: 403");
@@ -241,10 +277,14 @@ describe("GCS file().uploadUrl()", () => {
 });
 
 // Helper: mock fetch so oauth2 token exchange always succeeds, then delegate to handler
-function withTokenMock(handler: FetchHandler = () => Promise.resolve(makeResponse(null))): FetchHandler {
+function withTokenMock(
+  handler: FetchHandler = () => Promise.resolve(makeResponse(null)),
+): FetchHandler {
   return (url, init) => {
     if ((url as string).includes("oauth2.googleapis.com")) {
-      return Promise.resolve(makeResponse(JSON.stringify({ access_token: "test-token" })));
+      return Promise.resolve(
+        makeResponse(JSON.stringify({ access_token: "test-token" })),
+      );
     }
     return handler(url as string, init);
   };
@@ -253,20 +293,28 @@ function withTokenMock(handler: FetchHandler = () => Promise.resolve(makeRespons
 describe("GCS file().info()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns exists: true for an existing file", async () => {
     const bucket = GCS(TEST_BUCKET);
     globalThis.fetch = withTokenMock((url) => {
       if ((url as string).includes("/storage/v1/b/")) {
-        return Promise.resolve(makeResponse(JSON.stringify({
-          name: "hello.txt",
-          contentType: "text/plain",
-          size: "5",
-          updated: "2024-01-01T00:00:00Z",
-          mediaLink: "",
-        })));
+        return Promise.resolve(
+          makeResponse(
+            JSON.stringify({
+              name: "hello.txt",
+              contentType: "text/plain",
+              size: "5",
+              updated: "2024-01-01T00:00:00Z",
+              mediaLink: "",
+            }),
+          ),
+        );
       }
       return Promise.resolve(makeResponse(null));
     }) as typeof fetch;
@@ -296,15 +344,27 @@ describe("GCS file().info()", () => {
 describe("GCS file().exists()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns true for an existing file", async () => {
     const bucket = GCS(TEST_BUCKET);
     globalThis.fetch = withTokenMock(() =>
-      Promise.resolve(makeResponse(JSON.stringify({
-        name: "hello.txt", contentType: "text/plain", size: "5", updated: "", mediaLink: "",
-      }))),
+      Promise.resolve(
+        makeResponse(
+          JSON.stringify({
+            name: "hello.txt",
+            contentType: "text/plain",
+            size: "5",
+            updated: "",
+            mediaLink: "",
+          }),
+        ),
+      ),
     ) as typeof fetch;
     expect(await bucket.file("hello.txt").exists()).toBe(true);
   });
@@ -321,8 +381,12 @@ describe("GCS file().exists()", () => {
 describe("GCS file().text()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns file content as a string", async () => {
     const bucket = GCS(TEST_BUCKET);
@@ -337,20 +401,30 @@ describe("GCS file().text()", () => {
     globalThis.fetch = withTokenMock(() =>
       Promise.resolve(makeResponse("Not Found", 404)),
     ) as typeof fetch;
-    await expect(bucket.file("missing.txt").text()).rejects.toThrow("GCS GET error: 404");
+    await expect(bucket.file("missing.txt").text()).rejects.toThrow(
+      "GCS GET error: 404",
+    );
   });
 });
 
 describe("GCS file().json()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("parses and returns JSON content", async () => {
     const bucket = GCS(TEST_BUCKET);
     globalThis.fetch = withTokenMock(() =>
-      Promise.resolve(makeResponse('["John","Mary","Sarah"]', 200, { "content-type": "application/json" })),
+      Promise.resolve(
+        makeResponse('["John","Mary","Sarah"]', 200, {
+          "content-type": "application/json",
+        }),
+      ),
     ) as typeof fetch;
     const data = await bucket.file("people.json").json();
     expect(data).toEqual(["John", "Mary", "Sarah"]);
@@ -360,8 +434,12 @@ describe("GCS file().json()", () => {
 describe("GCS file().arrayBuffer()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns file content as ArrayBuffer", async () => {
     const bucket = GCS(TEST_BUCKET);
@@ -377,8 +455,12 @@ describe("GCS file().arrayBuffer()", () => {
 describe("GCS file().bytes()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns file content as Uint8Array", async () => {
     const bucket = GCS(TEST_BUCKET);
@@ -394,8 +476,12 @@ describe("GCS file().bytes()", () => {
 describe("GCS file().write()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a POST to the upload endpoint with string content", async () => {
     const bucket = GCS(TEST_BUCKET);
@@ -422,15 +508,21 @@ describe("GCS file().write()", () => {
     globalThis.fetch = withTokenMock(() =>
       Promise.resolve(makeResponse(null, 403)),
     ) as typeof fetch;
-    await expect(bucket.file("hello.txt").write("data")).rejects.toThrow("GCS PUT error: 403");
+    await expect(bucket.file("hello.txt").write("data")).rejects.toThrow(
+      "GCS PUT error: 403",
+    );
   });
 });
 
 describe("GCS file().remove()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a DELETE request", async () => {
     const bucket = GCS(TEST_BUCKET);
@@ -485,13 +577,17 @@ describe("GCS file().nodeWritable()", () => {
 describe("GCS bucket.remove()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("deletes all listed files and returns them", async () => {
     const bucket = GCS(TEST_BUCKET);
     const methods: string[] = [];
-    globalThis.fetch = withTokenMock((url, init) => {
+    globalThis.fetch = withTokenMock((_url, init) => {
       methods.push(init?.method ?? "GET");
       if ((init?.method ?? "GET") === "GET") {
         return Promise.resolve(makeResponse(GCS_LIST_RESPONSE));
@@ -515,8 +611,12 @@ describe("GCS bucket.remove()", () => {
 
 describe("GCS file().blob()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns file content as a Blob", async () => {
     const bucket = GCS(TEST_BUCKET);
@@ -531,8 +631,12 @@ describe("GCS file().blob()", () => {
 
 describe("GCS file().copyTo()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a POST to the copyTo endpoint", async () => {
     const bucket = GCS(TEST_BUCKET);
@@ -552,8 +656,12 @@ describe("GCS file().copyTo()", () => {
 
 describe("GCS file().moveTo()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("copies then deletes the original", async () => {
     const bucket = GCS(TEST_BUCKET);
@@ -570,25 +678,33 @@ describe("GCS file().moveTo()", () => {
 
 describe("GCS file().rename()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("renames within the same directory", async () => {
     const bucket = GCS(TEST_BUCKET);
     const capturedUrls: string[] = [];
-    globalThis.fetch = withTokenMock((url, init) => {
+    globalThis.fetch = withTokenMock((url) => {
       capturedUrls.push(url as string);
       return Promise.resolve(makeResponse(null, 204));
     }) as typeof fetch;
     await bucket.file("dir/old.txt").rename("new.txt");
-    expect(capturedUrls.some((u) => u.includes("dir%2Fnew.txt") || u.includes("dir/new.txt"))).toBe(true);
+    expect(
+      capturedUrls.some(
+        (u) => u.includes("dir%2Fnew.txt") || u.includes("dir/new.txt"),
+      ),
+    ).toBe(true);
   });
 
   it("throws when given a name with a slash", async () => {
     const bucket = GCS(TEST_BUCKET);
-    await expect(bucket.file("dir/old.txt").rename("sub/new.txt")).rejects.toThrow(
-      "rename() cannot change directory",
-    );
+    await expect(
+      bucket.file("dir/old.txt").rename("sub/new.txt"),
+    ).rejects.toThrow("rename() cannot change directory");
   });
 });
 
@@ -602,7 +718,9 @@ describe("GCS bucket.count()", () => {
     ) as typeof fetch;
   });
 
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns the number of files", async () => {
     const bucket = GCS(TEST_BUCKET);
@@ -612,8 +730,12 @@ describe("GCS bucket.count()", () => {
 
 describe("GCS file().write() content types", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a PUT request with Buffer content", async () => {
     const bucket = GCS(TEST_BUCKET);
@@ -640,8 +762,12 @@ describe("GCS file().write() content types", () => {
 
 describe("GCS async iteration", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("yields all files via for-await-of", async () => {
     const bucket = GCS(TEST_BUCKET);

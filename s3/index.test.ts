@@ -3,10 +3,14 @@
 
 import S3 from "./index.ts";
 
-// All tests use mocked fetch — no real credentials needed.
+// All tests use mocked fetch, no real credentials needed.
 
 const TEST_BUCKET = "test-bucket";
-const TEST_CONFIG = { id: "test-id", secret: "test-secret", region: "us-east-1" };
+const TEST_CONFIG = {
+  id: "test-id",
+  secret: "test-secret",
+  region: "us-east-1",
+};
 
 type FetchHandler = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -74,8 +78,12 @@ describe("S3 bucket info", () => {
 describe("S3 list()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("parses S3 XML list response correctly", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -127,12 +135,18 @@ describe("S3 list()", () => {
     const requests: string[] = [];
     mockFetch((url) => {
       requests.push(url);
-      return Promise.resolve(makeResponse(requests.length === 1 ? page1 : page2));
+      return Promise.resolve(
+        makeResponse(requests.length === 1 ? page1 : page2),
+      );
     });
 
     const files = await bucket.list();
     expect(files.length).toBe(3);
-    expect(files.map((f) => f.name)).toEqual(["file-a.txt", "file-b.txt", "file-c.txt"]);
+    expect(files.map((f) => f.name)).toEqual([
+      "file-a.txt",
+      "file-b.txt",
+      "file-c.txt",
+    ]);
     expect(requests.length).toBe(2);
     expect(requests[1]).toContain("continuation-token=token-page-2");
   });
@@ -141,8 +155,12 @@ describe("S3 list()", () => {
 describe("S3 file().info()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns exists: true for an existing file", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -179,8 +197,12 @@ describe("S3 file().info()", () => {
 describe("S3 file().exists()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("returns true for an existing file", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -206,8 +228,12 @@ describe("S3 file().exists()", () => {
 describe("S3 file().text()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("throws on non-OK response", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -221,8 +247,12 @@ describe("S3 file().text()", () => {
 describe("S3 file().write()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a PUT request with string content", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -252,8 +282,12 @@ describe("S3 file().write()", () => {
 describe("S3 file().remove()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a DELETE request", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -286,8 +320,12 @@ describe("S3 file().remove()", () => {
 describe("S3 bucket.remove()", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a POST DeleteObjects request", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -320,7 +358,10 @@ describe("S3 bucket.remove()", () => {
     });
 
     const deleted = await bucket.remove();
-    expect(deleted.map((f) => f.path)).toEqual(["hello.txt", "data/world.json"]);
+    expect(deleted.map((f) => f.path)).toEqual([
+      "hello.txt",
+      "data/world.json",
+    ]);
   });
 
   it("returns empty array when no files match filter", async () => {
@@ -347,7 +388,7 @@ describe("S3 bucket.remove()", () => {
 </ListBucketResult>`;
 
     let listCalls = 0;
-    mockFetch((url, init) => {
+    mockFetch((_url, init) => {
       if ((init?.method ?? "GET").toUpperCase() !== "POST") {
         return Promise.resolve(makeResponse(++listCalls === 1 ? page1 : page2));
       }
@@ -363,8 +404,12 @@ describe("S3 bucket.remove()", () => {
 describe("S3 file() pipe operations", () => {
   let originalFetch: typeof fetch;
 
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("can pipe a web stream to a writable and send PUT", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -393,8 +438,12 @@ describe("S3 file() pipe operations", () => {
 
 describe("S3 file().copyTo()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("sends a PUT with x-amz-copy-source header", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
@@ -402,7 +451,8 @@ describe("S3 file().copyTo()", () => {
     let capturedCopySource: string | undefined;
     mockFetch((_, init) => {
       capturedMethod = init?.method;
-      capturedCopySource = new Headers(init?.headers).get("x-amz-copy-source") ?? undefined;
+      capturedCopySource =
+        new Headers(init?.headers).get("x-amz-copy-source") ?? undefined;
       return Promise.resolve(makeResponse(null, 200));
     });
     await bucket.file("src.txt").copyTo("dst.txt");
@@ -413,15 +463,21 @@ describe("S3 file().copyTo()", () => {
 
 describe("S3 file().moveTo()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("copies then deletes the original", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
     const methods: string[] = [];
     mockFetch((_, init) => {
       methods.push(init?.method ?? "GET");
-      return Promise.resolve(makeResponse(null, init?.method === "DELETE" ? 204 : 200));
+      return Promise.resolve(
+        makeResponse(null, init?.method === "DELETE" ? 204 : 200),
+      );
     });
     await bucket.file("src.txt").moveTo("dst.txt");
     expect(methods).toContain("PUT");
@@ -431,15 +487,21 @@ describe("S3 file().moveTo()", () => {
 
 describe("S3 file().rename()", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = globalThis.fetch; });
-  afterEach(() => { globalThis.fetch = originalFetch; });
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
 
   it("renames within the same directory", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
     const capturedUrls: string[] = [];
     mockFetch((url, init) => {
       capturedUrls.push(url as string);
-      return Promise.resolve(makeResponse(null, init?.method === "DELETE" ? 204 : 200));
+      return Promise.resolve(
+        makeResponse(null, init?.method === "DELETE" ? 204 : 200),
+      );
     });
     await bucket.file("dir/old.txt").rename("new.txt");
     expect(capturedUrls.some((u) => u.includes("dir/new.txt"))).toBe(true);
@@ -447,9 +509,9 @@ describe("S3 file().rename()", () => {
 
   it("throws when given a name with a slash", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    await expect(bucket.file("dir/old.txt").rename("sub/new.txt")).rejects.toThrow(
-      "rename() cannot change directory",
-    );
+    await expect(
+      bucket.file("dir/old.txt").rename("sub/new.txt"),
+    ).rejects.toThrow("rename() cannot change directory");
   });
 });
 

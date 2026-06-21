@@ -1,4 +1,4 @@
-// Bucket — unified API for file storage services
+// Bucket: unified API for file storage services
 // Main entry point
 
 import S3 from "./s3/index.ts";

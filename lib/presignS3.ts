@@ -31,13 +31,22 @@ export function presignS3(
   u.searchParams.set("X-Amz-Date", timestamp);
   u.searchParams.set("X-Amz-Expires", String(expiresSeconds));
   u.searchParams.set("X-Amz-SignedHeaders", signedHeaders);
+  if (auth.sessionToken) {
+    u.searchParams.set("X-Amz-Security-Token", auth.sessionToken);
+  }
   u.searchParams.sort();
 
+  // S3 re-encodes the path it receives, so the signature must cover the
+  // percent-encoded form of any RFC-3986 sub-delimiters (! ' ( ) *).
+  const canonicalPath = u.pathname.replace(
+    /[!'()*]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
   const canonicalRequest = [
     method,
-    u.pathname,
+    canonicalPath,
     u.searchParams.toString(),
-    `host:${u.hostname}\n`,
+    `host:${u.host}\n`,
     signedHeaders,
     "UNSIGNED-PAYLOAD",
   ].join("\n");

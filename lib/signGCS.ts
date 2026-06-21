@@ -9,7 +9,10 @@ const hash = (str: string): string =>
   createHash("sha256").update(str).digest("hex");
 
 const plainDate = (): string =>
-  new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  new Date()
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d+Z$/, "Z");
 
 // Create a signed JWT and exchange it for an OAuth2 access token
 export async function getAccessToken(auth: GCSAuth): Promise<string> {

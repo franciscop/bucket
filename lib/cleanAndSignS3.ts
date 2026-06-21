@@ -11,22 +11,20 @@ const khash = (key: Buffer | string, str: string) => {
   return createHmac("sha256", key).update(str);
 };
 
-// Just copied from AWS
-const encode = (str: string): string => {
-  const escape = (output: string): string => {
-    output = output.replace(/[^A-Za-z0-9_.~\-%]+/g, escape);
-    output = output.replace(/[*]/g, (ch) => {
-      return "%" + ch.charCodeAt(0).toString(16).toUpperCase();
-    });
-    return output;
-  };
-  return str.split("/").map(escape).join("/");
-};
+// AWS canonicalizes the URI by percent-encoding RFC-3986 sub-delimiters that the
+// URL parser leaves raw (! ' ( ) *). The request is still SENT with the raw path;
+// S3 re-encodes what it receives, so the signature must cover the encoded form.
+// (Without this, keys containing those characters get a 403 from S3/R2.)
+const encodePath = (pathname: string): string =>
+  pathname.replace(
+    /[!'()*]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
 
 const canonical = ({ headers = {}, ...config }: S3Request): string => {
   const url = new URL(config.url);
   const method = (config.method || "GET").toUpperCase();
-  const path = url.pathname;
+  const path = encodePath(url.pathname);
   url.searchParams.sort();
   const query = url.searchParams.toString();
   const headersPlain =
@@ -111,11 +109,16 @@ export default function cleanAndSignS3(
   // We don't want this that is added by Axios
   delete (request.headers as Record<string, unknown>).Accept;
 
-  request.headers.host = new URL(request.url).hostname;
+  // .host (not .hostname) so a non-default port is included, required for
+  // MinIO / LocalStack / S3-compatible endpoints, and a no-op for AWS (port 443).
+  request.headers.host = new URL(request.url).host;
   request.headers["x-amz-content-sha256"] = hash(
     (request.body as string | Buffer) || "",
   );
   request.headers["x-amz-date"] = request.headers["x-amz-date"] || plainDate();
+  if (auth.sessionToken) {
+    request.headers["x-amz-security-token"] = auth.sessionToken;
+  }
 
   // Sort both query params and headers in alphabetic order
   request.params = sortValue(

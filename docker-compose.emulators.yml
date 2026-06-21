@@ -1,0 +1,33 @@
+# Local emulators for credential-free integration tests. See readme "Testing".
+#
+#   docker compose -f docker-compose.emulators.yml up -d
+#   npm run test:emulators
+#   docker compose -f docker-compose.emulators.yml down -v
+#
+# MinIO and Azurite verify request signatures (SigV4 / SharedKey), so a passing
+# run proves the signer end-to-end. fake-gcs-server fakes the data plane.
+services:
+  # S3 + R2 (S3-compatible; validates AWS Signature V4)
+  minio:
+    image: minio/minio
+    command: server /data --address ":9000" --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+  # Azure Blob (validates SharedKey)
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --skipApiVersionCheck
+    ports:
+      - "10000:10000"
+
+  # Google Cloud Storage (data-plane emulator; no auth)
+  fake-gcs:
+    image: fsouza/fake-gcs-server
+    command: -scheme http -port 4443 -external-url http://127.0.0.1:4443 -public-host 127.0.0.1:4443
+    ports:
+      - "4443:4443"

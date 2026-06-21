@@ -26,9 +26,9 @@ export interface BucketInfo {
   name?: string;
   /** Provider type (e.g. "S3", "GCS", "AZURE") */
   type?: string;
-  /** Root path — filesystem provider only */
+  /** Root path (filesystem provider only) */
   path?: string;
-  /** Base download URL — B2 only */
+  /** Base download URL (B2 only) */
   base?: string;
   /** API endpoint URL */
   endpoint?: string;
@@ -56,7 +56,7 @@ export type WriteContent =
 
 /** Options for `file.write()`, `file.writable()`, and `file.nodeWritable()` */
 export interface WriteOptions {
-  /** MIME type — auto-detected from file extension if omitted */
+  /** MIME type, auto-detected from file extension if omitted */
   type?: string;
   /** Cache-Control header value, e.g. `"max-age=31536000, public"` */
   cacheControl?: string;
@@ -100,7 +100,7 @@ export interface IBucketFile {
   moveTo(path: string): Promise<void>;
   /**
    * Renames the file within its current directory.
-   * Throws if `name` contains a `/` — use `moveTo()` to change directories.
+   * Throws if `name` contains a `/`, use `moveTo()` to change directories.
    */
   rename(name: string): Promise<void>;
   /** Deletes the file */
@@ -152,6 +152,7 @@ export interface S3Auth {
   id: string;
   secret: string;
   region: string;
+  sessionToken?: string;
 }
 
 export interface S3Request {
