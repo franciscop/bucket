@@ -2,6 +2,7 @@
   "name": "bucket",
   "version": "0.1.0",
   "description": "Access any of the popular file storage solutions with a unified API:",
+  "homepage": "https://bucketjs.com",
   "repository": "github:franciscop/bucket",
   "author": "Francisco Presencia <public@francisco.io> (https://francisco.io/)",
   "funding": "https://www.paypal.me/franciscopresencia/19",
@@ -55,6 +56,16 @@
   "files": [
     "dist"
   ],
+  "documentation.page": {
+    "title": "🪣 Bucket - A unified API for any file storage solution",
+    "homepage": "https://bucketjs.com/",
+    "menu": {
+      "Documentation": "/documentation",
+      "Issues": "https://github.com/franciscop/bucket/issues",
+      "Get help": "https://superpeer.com/francisco/-/javascript-and-react-help",
+      "Github": "https://github.com/franciscop/bucket"
+    }
+  },
   "dependencies": {},
   "devDependencies": {
     "@types/aws4": "^1.11.6",
