@@ -1,23 +1,41 @@
 name: tests
 
-on: [push]
+on:
+  push:
+  workflow_dispatch:
 
 jobs:
-  build:
+  # Lint + mocked suites + signer oracles + FileSystem, plus B2 live when the
+  # secrets are configured. No credentials or Docker required for the rest.
+  test:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v6
-      - name: Use Node.js latest
-        uses: actions/setup-node@v6
-        with:
-          node-version: "lts/*"
+      - uses: oven-sh/setup-bun@v2
       - name: Install dependencies
-        run: npm install
+        run: bun install
+      - name: Lint
+        run: bun run lint
       - name: Run the tests
-        run: npm test
+        run: bun test --timeout 30000
         env:
           CI: true
           B2_BUCKET: ${{ secrets.B2_BUCKET }}
           B2_APPLICATION_KEY_ID: ${{ secrets.B2_APPLICATION_KEY_ID }}
           B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+
+  # Full integration suite for S3, R2, GCS and Azure against local emulators.
+  # No cloud credentials needed. MinIO and Azurite verify request signatures.
+  emulators:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install
+      - name: Start emulators (MinIO, Azurite, fake-gcs-server)
+        run: docker compose -f docker-compose.emulators.yml up -d
+      - name: Create buckets/container
+        run: bun run emulators:setup
+      - name: Run integration suite against emulators
+        run: DOTENV_CONFIG_PATH=.env.emulators bun test test/index.test.ts --timeout 30000

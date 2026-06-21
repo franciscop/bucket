@@ -11,6 +11,18 @@ import {
 } from "./utils.ts";
 import buckets from "./buckets.ts";
 
+const FIXTURE_DIR = "./test/bucket/";
+const FIXTURES = [
+  "a-1*(a!.txt",
+  "capitals.json",
+  "data.csv",
+  "data.txt",
+  "deep/readme.txt",
+  "nero.jpg",
+  "people.json",
+  "readme.md",
+];
+
 const testFile = (ext = "txt"): string =>
   `test${Math.floor(Math.random() * 100000)}.${ext}`;
 
@@ -23,9 +35,30 @@ const removeTestFiles = async (
   } catch (_) {}
 };
 
-for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
+const seedBucket = async (
+  bucket: (typeof buckets)[string]["bucket"],
+): Promise<void> => {
+  await Promise.all(
+    FIXTURES.map(async (path) => {
+      const data = await fsp.readFile(FIXTURE_DIR + path);
+      await bucket.file(path).write(data);
+    }),
+  );
+};
+
+const unseedBucket = async (
+  bucket: (typeof buckets)[string]["bucket"],
+): Promise<void> => {
+  await Promise.all(FIXTURES.map((path) => bucket.file(path).remove()));
+};
+
+for (const [name, { bucket }] of Object.entries(buckets)) {
   describe(name, () => {
-    beforeAll(() => bucket.info()); // Warm up (auth, etc.)
+    beforeAll(async () => {
+      await bucket.info(); // Warm up (auth, etc.)
+      await seedBucket(bucket);
+    });
+    afterAll(() => unseedBucket(bucket));
     beforeEach(() => removeTestFiles(bucket));
     afterEach(() => removeTestFiles(bucket));
 
@@ -49,12 +82,10 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
         }
       });
 
-      if (seeded) {
-        it("has exactly the 8 seeded test files", async () => {
-          const files = await bucket.list();
-          expect(files.length).toEqual(8);
-        });
-      }
+      it("has exactly the 8 seeded fixture files", async () => {
+        const files = await bucket.list();
+        expect(files.length).toEqual(8);
+      });
     });
 
     // ── File info ─────────────────────────────────────────────────────────────
@@ -70,93 +101,89 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
         expect(info.url).toEqual(null);
       });
 
-      if (seeded) {
-        it("can get file info for nero.jpg", async () => {
-          const info = await bucket.file("nero.jpg").info();
-          expect(info.name).toEqual("nero.jpg");
-          expect(info.exists).toEqual(true);
-          expect(info.type).toEqual("image/jpeg");
-          expect(info.size).toEqual(175888);
-        });
+      it("can get file info for nero.jpg", async () => {
+        const info = await bucket.file("nero.jpg").info();
+        expect(info.name).toEqual("nero.jpg");
+        expect(info.exists).toEqual(true);
+        expect(info.type).toEqual("image/jpeg");
+        expect(info.size).toEqual(175888);
+      });
 
-        it("can get info for a deeply nested file", async () => {
-          const info = await bucket.file("deep/readme.txt").info();
-          expect(info.name).toEqual("readme.txt");
-          expect(info.path.split("/").slice(-2).join("/")).toEqual(
-            "deep/readme.txt",
-          );
-          expect(info.exists).toEqual(true);
-          expect(info.type).toEqual("text/plain");
-          expect(info.size).toEqual(9);
-        });
-      }
+      it("can get info for a deeply nested file", async () => {
+        const info = await bucket.file("deep/readme.txt").info();
+        expect(info.name).toEqual("readme.txt");
+        expect(info.path.split("/").slice(-2).join("/")).toEqual(
+          "deep/readme.txt",
+        );
+        expect(info.exists).toEqual(true);
+        expect(info.type).toEqual("text/plain");
+        expect(info.size).toEqual(9);
+      });
     });
 
-    // ── Reading (requires seeded data) ────────────────────────────────────────
+    // ── Reading ───────────────────────────────────────────────────────────────
 
-    if (seeded) {
-      describe("Reading data", () => {
-        it("can read a text file", async () => {
-          expect(await bucket.file("data.txt").text()).toBe("hello");
-        });
-
-        it("can read a json file", async () => {
-          expect(await bucket.file("people.json").json()).toEqual([
-            "John",
-            "Mary",
-            "Sarah",
-          ]);
-        });
-
-        it("can read a file as an ArrayBuffer", async () => {
-          const data = await bucket.file("nero.jpg").arrayBuffer();
-          expect(data instanceof ArrayBuffer).toBe(true);
-          expect(data.byteLength).toBe(175888);
-        });
-
-        it("can read a file as a Blob", async () => {
-          const data = await bucket.file("nero.jpg").blob();
-          expect(data instanceof Blob).toBe(true);
-          expect(data.size).toBe(175888);
-        });
-
-        it("can read a file as bytes", async () => {
-          const data = await bucket.file("nero.jpg").bytes();
-          expect(data instanceof Uint8Array).toBe(true);
-          expect(data.byteLength).toBe(175888);
-        });
-
-        it("arrayBuffer and bytes return the same binary content", async () => {
-          const ab = await bucket.file("nero.jpg").arrayBuffer();
-          const bytes = await bucket.file("nero.jpg").bytes();
-          expect(bytes).toEqual(new Uint8Array(ab));
-        });
-
-        it("can stream a file (web)", async () => {
-          const stream = bucket.file("data.txt").stream();
-          expect(
-            await webStreamToString(stream as ReadableStream<Uint8Array>),
-          ).toBe("hello");
-        });
-
-        it("can stream a file (node)", async () => {
-          const stream = bucket.file("data.txt").nodeReadable();
-          expect(
-            await nodeStreamToString(stream as NodeJS.ReadableStream),
-          ).toBe("hello");
-        });
-
-        it("stream() and nodeReadable() return the same content", async () => {
-          const fromWeb = await webStreamToString(
-            bucket.file("data.txt").stream() as ReadableStream<Uint8Array>,
-          );
-          const fromNode = await nodeStreamToString(
-            bucket.file("data.txt").nodeReadable() as NodeJS.ReadableStream,
-          );
-          expect(fromWeb).toBe(fromNode);
-        });
+    describe("Reading data", () => {
+      it("can read a text file", async () => {
+        expect(await bucket.file("data.txt").text()).toBe("hello");
       });
-    }
+
+      it("can read a json file", async () => {
+        expect(await bucket.file("people.json").json()).toEqual([
+          "John",
+          "Mary",
+          "Sarah",
+        ]);
+      });
+
+      it("can read a file as an ArrayBuffer", async () => {
+        const data = await bucket.file("nero.jpg").arrayBuffer();
+        expect(data instanceof ArrayBuffer).toBe(true);
+        expect(data.byteLength).toBe(175888);
+      });
+
+      it("can read a file as a Blob", async () => {
+        const data = await bucket.file("nero.jpg").blob();
+        expect(data instanceof Blob).toBe(true);
+        expect(data.size).toBe(175888);
+      });
+
+      it("can read a file as bytes", async () => {
+        const data = await bucket.file("nero.jpg").bytes();
+        expect(data instanceof Uint8Array).toBe(true);
+        expect(data.byteLength).toBe(175888);
+      });
+
+      it("arrayBuffer and bytes return the same binary content", async () => {
+        const ab = await bucket.file("nero.jpg").arrayBuffer();
+        const bytes = await bucket.file("nero.jpg").bytes();
+        expect(bytes).toEqual(new Uint8Array(ab));
+      });
+
+      it("can stream a file (web)", async () => {
+        const stream = bucket.file("data.txt").stream();
+        expect(
+          await webStreamToString(stream as ReadableStream<Uint8Array>),
+        ).toBe("hello");
+      });
+
+      it("can stream a file (node)", async () => {
+        const stream = bucket.file("data.txt").nodeReadable();
+        expect(await nodeStreamToString(stream as NodeJS.ReadableStream)).toBe(
+          "hello",
+        );
+      });
+
+      it("stream() and nodeReadable() return the same content", async () => {
+        const fromWeb = await webStreamToString(
+          bucket.file("data.txt").stream() as ReadableStream<Uint8Array>,
+        );
+        const fromNode = await nodeStreamToString(
+          bucket.file("data.txt").nodeReadable() as NodeJS.ReadableStream,
+        );
+        expect(fromWeb).toBe(fromNode);
+      });
+    });
 
     // ── Reading formats (self-contained) ──────────────────────────────────────
 
@@ -261,11 +288,6 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
       });
 
       it("can write a large Blob (binary)", async () => {
-        const data = await bucket
-          .file(testFile("jpg"))
-          .write(new Blob([await fsp.readFile("./test/bucket/nero.jpg")]))
-          .then(() => bucket.file(testFile("jpg")));
-        // write a fresh one instead
         const src = await fsp.readFile("./test/bucket/nero.jpg");
         const file = bucket.file(testFile(".jpg"));
         await file.write(new Blob([src]));
@@ -274,9 +296,6 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
         expect(info.type).toBe("image/jpeg");
       });
     });
-
-    // ── Write options ─────────────────────────────────────────────────────────
-
 
     // ── copy / move / rename ──────────────────────────────────────────────────
 
@@ -406,7 +425,9 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
         await bucket.file(testFile("jpg")).write("c");
         await bucket.remove(/^test[^/]*\.txt$/);
         expect(await bucket.count(/^test[^/]*\.txt$/)).toBe(0);
-        expect(await bucket.count(/^test[^/]*\.jpg$/)).toBeGreaterThanOrEqual(1);
+        expect(await bucket.count(/^test[^/]*\.jpg$/)).toBeGreaterThanOrEqual(
+          1,
+        );
       });
 
       it("returns the list of deleted files", async () => {
@@ -623,29 +644,64 @@ for (const [name, { bucket, seeded }] of Object.entries(buckets)) {
       });
 
       it("signedUrl() accepts string durations", async () => {
-        const url = await bucket.file("photo.jpg").signedUrl({ expires: "30min" });
+        const url = await bucket
+          .file("photo.jpg")
+          .signedUrl({ expires: "30min" });
         expect(url === null || typeof url === "string").toBe(true);
+      });
+    });
+
+    // ── Interop (Blob / Response / FormData) ──────────────────────────────────
+
+    describe("Interop", () => {
+      it("blob() yields a real Blob that serializes through Response", async () => {
+        const file = bucket.file(testFile());
+        await file.write("blob-interop");
+        const blob = await file.blob();
+        expect(blob instanceof Blob).toBe(true);
+        expect(await new Response(blob).text()).toBe("blob-interop");
+      });
+
+      it("stream() is usable directly as a Response body", async () => {
+        const file = bucket.file(testFile());
+        await file.write("stream-interop");
+        const body = file.stream() as ReadableStream<Uint8Array>;
+        expect(await new Response(body).text()).toBe("stream-interop");
+      });
+
+      it("blob() round-trips through FormData", async () => {
+        const file = bucket.file(testFile());
+        await file.write("form-interop");
+        const form = new FormData();
+        form.append("upload", await file.blob(), file.name);
+        const back = await new Response(form).formData();
+        expect(await (back.get("upload") as File).text()).toBe("form-interop");
+      });
+
+      it("can store a fetched Response body (Blob)", async () => {
+        const incoming = new Response(new Uint8Array([1, 2, 3, 4, 5]));
+        const file = bucket.file(testFile("bin"));
+        await file.write(await incoming.blob());
+        expect(await file.bytes()).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
       });
     });
 
     // ── Examples ──────────────────────────────────────────────────────────────
 
-    if (seeded) {
-      describe("Examples", () => {
-        it("can gzip a file using node pipeline()", async () => {
-          const source = bucket.file("a-1*(a!.txt");
-          const target = bucket.file(testFile("zip"));
-          await pipeline(
-            source.nodeReadable() as NodeJS.ReadableStream,
-            createGzip(),
-            target.nodeWritable() as NodeJS.WritableStream,
-          );
-          expect((await source.info()).size).toBe(447);
-          const info = await target.info();
-          expect(info.type).toBe("application/gzip");
-          expect(info.size).toBe(281);
-        });
+    describe("Examples", () => {
+      it("can gzip a file using node pipeline()", async () => {
+        const source = bucket.file("a-1*(a!.txt");
+        const target = bucket.file(testFile("gz"));
+        await pipeline(
+          source.nodeReadable() as NodeJS.ReadableStream,
+          createGzip(),
+          target.nodeWritable() as NodeJS.WritableStream,
+        );
+        expect((await source.info()).size).toBe(447);
+        const info = await target.info();
+        expect(info.type).toBe("application/gzip");
+        expect(info.size).toBe(281);
       });
-    }
+    });
   });
 }

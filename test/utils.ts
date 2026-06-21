@@ -25,10 +25,7 @@ export function textToNodeStream(text: string): Readable {
 }
 
 // Set chunk size of 1024 bytes
-export function textToWebStream(
-  text: string,
-  size = 1024,
-): ReadableStream<Uint8Array> {
+export function textToWebStream(text: string): ReadableStream<Uint8Array> {
   const arr = new TextEncoder().encode(text);
   return new Blob([arr]).stream() as ReadableStream<Uint8Array>;
 }

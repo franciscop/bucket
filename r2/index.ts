@@ -1,37 +1,24 @@
 import "dotenv/config";
 
-import { Readable, Writable } from "node:stream";
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
-import { presignS3 } from "../lib/presignS3.ts";
-import parse from "../lib/parse.ts";
-import promiseToReadable from "../lib/promiseToReadable.ts";
-import promiseToWritable from "../lib/promiseToWritable.ts";
-import { getContentType } from "../lib/fileTypes.ts";
-import type {
-  IBucket,
-  IBucketFile,
-  FileInfo,
-  BucketInfo,
-  WriteContent,
-  WriteOptions,
-  S3Auth,
-  S3Request,
-} from "../lib/types.ts";
+import type { IBucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
+import { R2File, type R2BucketContext } from "./File.ts";
 
 const {
   R2_ENDPOINT: ENV_ENDPOINT,
   R2_ACCESS_KEY_ID: ENV_ID,
   R2_SECRET_ACCESS_KEY: ENV_KEY,
+  R2_SESSION_TOKEN: ENV_SESSION_TOKEN,
   R2_REGION: ENV_REGION,
 } = process.env;
 
-interface R2Config {
+export interface R2Config {
   id?: string;
   secret?: string;
   region?: string;
+  sessionToken?: string;
 }
 
-// Extract bucket name from R2 endpoint: https://ACCOUNT.r2.cloudflarestorage.com/BUCKET
 function extractBucketName(endpoint: string): string {
   try {
     return new URL(endpoint).pathname.replace(/^\//, "").split("/")[0] ?? "";
@@ -44,193 +31,12 @@ function extractTags(xmlStr: string, tag: string): string[] {
   const results: string[] = [];
   const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "g");
   let match: RegExpExecArray | null;
-  while ((match = regex.exec(xmlStr)) !== null) {
-    results.push(match[1]);
-  }
+  while ((match = regex.exec(xmlStr)) !== null) results.push(match[1]);
   return results;
 }
 
 function getTag(xmlStr: string, tag: string): string {
   return extractTags(xmlStr, tag)[0] ?? "";
-}
-
-interface R2BucketContext {
-  makeUrl: (path?: string) => string;
-  doRequest: (
-    method: string,
-    path: string,
-    options?: { body?: string | Buffer; headers?: Record<string, string> },
-  ) => Promise<Response>;
-  auth: S3Auth;
-  bucketName: string;
-  endpoint: string;
-}
-
-class R2File implements IBucketFile {
-  id: string;
-  name: string;
-  path: string;
-  #ctx: R2BucketContext;
-
-  constructor(path: string, ctx: R2BucketContext) {
-    this.path = path.startsWith("/") ? path.slice(1) : path;
-    this.name = this.path.split("/").pop() || this.path;
-    this.id = this.path;
-    this.#ctx = ctx;
-  }
-
-  async info(): Promise<FileInfo> {
-    const res = await this.#ctx.doRequest("HEAD", this.path);
-    if (res.status === 404) {
-      return {
-        id: this.id,
-        name: this.name,
-        path: this.path,
-        exists: false,
-        type: null,
-        size: 0,
-        date: null,
-        url: null,
-      };
-    }
-    if (!res.ok) throw new Error(`R2 HEAD error: ${res.status}`);
-    return {
-      id: this.id,
-      name: this.name,
-      path: this.path,
-      exists: true,
-      type: res.headers.get("content-type"),
-      size: parseInt(res.headers.get("content-length") ?? "0", 10),
-      date: new Date(res.headers.get("last-modified") ?? Date.now()),
-      url: this.publicUrl(),
-    };
-  }
-
-  async exists(): Promise<boolean> {
-    return (await this.info()).exists;
-  }
-
-  async text(): Promise<string> {
-    const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok) throw new Error(`R2 GET error: ${res.status}`);
-    return res.text();
-  }
-
-  async json(): Promise<unknown> {
-    const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok) throw new Error(`R2 GET error: ${res.status}`);
-    return res.json();
-  }
-
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok) throw new Error(`R2 GET error: ${res.status}`);
-    return res.arrayBuffer();
-  }
-
-  async blob(): Promise<Blob> {
-    const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok) throw new Error(`R2 GET error: ${res.status}`);
-    return res.blob();
-  }
-
-  async bytes(): Promise<Uint8Array> {
-    return new Uint8Array(await this.arrayBuffer());
-  }
-
-  async #put(data: string | Buffer, options: WriteOptions = {}): Promise<void> {
-    const headers: Record<string, string> = {};
-    const type = options.type ?? getContentType(this.path);
-    if (type) headers["Content-Type"] = type;
-    if (options.cacheControl) headers["Cache-Control"] = options.cacheControl;
-    if (options.disposition) headers["Content-Disposition"] = options.disposition;
-    if (options.metadata) {
-      for (const [k, v] of Object.entries(options.metadata)) {
-        headers[`x-amz-meta-${k}`] = v;
-      }
-    }
-    const res = await this.#ctx.doRequest("PUT", this.path, { body: data, headers });
-    if (!res.ok) throw new Error(`R2 PUT error: ${res.status}`);
-  }
-
-  async write(content: WriteContent, options?: WriteOptions): Promise<void> {
-    if (typeof content === "string") return this.#put(content, options);
-    if (content instanceof Buffer || content instanceof Uint8Array)
-      return this.#put(Buffer.from(content), options);
-    if (content instanceof Blob)
-      return this.#put(Buffer.from(await content.arrayBuffer()), options);
-    if (content instanceof R2File)
-      return this.#put(Buffer.from(await content.arrayBuffer()), options);
-    if (typeof (content as ReadableStream).pipeTo === "function")
-      return (content as ReadableStream).pipeTo(this.writable(options));
-    if (content instanceof Readable)
-      return Readable.toWeb(content).pipeTo(this.writable(options));
-    throw new Error("Invalid content type");
-  }
-
-  async copyTo(path: string): Promise<void> {
-    const dst = path.startsWith("/") ? path.slice(1) : path;
-    const res = await this.#ctx.doRequest("PUT", dst, {
-      headers: {
-        "x-amz-copy-source": `/${this.#ctx.bucketName}/${this.path}`,
-      },
-    });
-    if (!res.ok) throw new Error(`R2 COPY error: ${res.status}`);
-  }
-
-  async moveTo(path: string): Promise<void> {
-    await this.copyTo(path);
-    await this.remove();
-  }
-
-  async rename(name: string): Promise<void> {
-    if (name.includes("/"))
-      throw new Error("rename() cannot change directory — use moveTo() instead");
-    const dir = this.path.split("/").slice(0, -1).join("/");
-    await this.moveTo(dir ? dir + "/" + name : name);
-  }
-
-  async remove(): Promise<void> {
-    const res = await this.#ctx.doRequest("DELETE", this.path);
-    if (!res.ok && res.status !== 204)
-      throw new Error(`R2 DELETE error: ${res.status}`);
-  }
-
-  stream(): ReadableStream {
-    return promiseToReadable(async () => {
-      const res = await this.#ctx.doRequest("GET", this.path);
-      if (!res.ok) throw new Error(`R2 GET error: ${res.status}`);
-      return res.body!;
-    });
-  }
-
-  nodeReadable(): NodeJS.ReadableStream {
-    return Readable.fromWeb(
-      this.stream() as unknown as import("node:stream/web").ReadableStream<Uint8Array>,
-    );
-  }
-
-  writable(options?: WriteOptions): WritableStream {
-    return promiseToWritable((data: Buffer) => this.#put(data, options));
-  }
-
-  nodeWritable(options?: WriteOptions): NodeJS.WritableStream {
-    return Writable.fromWeb(this.writable(options) as unknown as WritableStream<Uint8Array>);
-  }
-
-  publicUrl(): string {
-    return this.#ctx.makeUrl(this.path);
-  }
-
-  async signedUrl(opts: { expires: number | string }): Promise<string> {
-    const seconds = parse(opts.expires) ?? 3600;
-    return presignS3(this.#ctx.makeUrl(this.path), "GET", this.#ctx.auth, seconds);
-  }
-
-  async uploadUrl(opts: { expires: number | string }): Promise<string> {
-    const seconds = parse(opts.expires) ?? 3600;
-    return presignS3(this.#ctx.makeUrl(this.path), "PUT", this.#ctx.auth, seconds);
-  }
 }
 
 class CloudflareR2Bucket implements IBucket {
@@ -245,11 +51,12 @@ class CloudflareR2Bucket implements IBucket {
       id = ENV_ID || "",
       secret = ENV_KEY || "",
       region = ENV_REGION || "auto",
+      sessionToken = ENV_SESSION_TOKEN,
     }: R2Config = {},
   ) {
     this.endpoint = endpoint.replace(/\/$/, "");
     this.bucketName = extractBucketName(this.endpoint);
-    this.auth = { id, secret, region };
+    this.auth = { id, secret, region, sessionToken };
   }
 
   private makeUrl(path: string = ""): string {
@@ -270,7 +77,6 @@ class CloudflareR2Bucket implements IBucket {
       body: options.body,
     };
     cleanAndSignS3(req, this.auth);
-
     return fetch(url, {
       method: method.toUpperCase(),
       headers: req.headers,
@@ -309,7 +115,6 @@ class CloudflareR2Bucket implements IBucket {
         method: "GET",
         headers: req.headers,
       });
-
       if (!res.ok) throw new Error(`R2 list error: ${res.status}`);
 
       const xmlStr = await res.text();
@@ -370,7 +175,7 @@ class CloudflareR2Bucket implements IBucket {
     const ctx: R2BucketContext = {
       makeUrl: (p) => this.makeUrl(p),
       doRequest: (m, p, opts) => this.doRequest(m, p, opts),
-      auth: this.auth,
+      getAuth: () => this.auth,
       bucketName: this.bucketName,
       endpoint: this.endpoint,
     };
@@ -382,9 +187,7 @@ class CloudflareR2Bucket implements IBucket {
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<R2File> {
-    for (const file of await this.list()) {
-      yield file;
-    }
+    for (const file of await this.list()) yield file;
   }
 }
 
@@ -392,9 +195,10 @@ class CloudflareR2Bucket implements IBucket {
  * Create a Cloudflare R2 bucket handle.
  *
  * @param endpoint - Full R2 endpoint URL: `https://<account>.r2.cloudflarestorage.com/<bucket>`
- *                   (falls back to `R2_ENDPOINT` env var)
+ *   (falls back to `R2_ENDPOINT` env var)
  * @param config.id - Access Key ID (falls back to `R2_ACCESS_KEY_ID`)
  * @param config.secret - Secret Access Key (falls back to `R2_SECRET_ACCESS_KEY`)
+ * @param config.sessionToken - Session token for temporary credentials (falls back to `R2_SESSION_TOKEN`)
  * @param config.region - Region, default `"auto"` (falls back to `R2_REGION`)
  *
  * @example
