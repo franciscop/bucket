@@ -1,6 +1,6 @@
 {
   "name": "bucket",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Access any of the popular file storage solutions with a unified API:",
   "repository": "github:franciscop/bucket",
   "author": "Francisco Presencia <public@francisco.io> (https://francisco.io/)",
