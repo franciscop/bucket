@@ -1,11 +1,5 @@
-import { createHash, createHmac } from "node:crypto";
 import type { S3Auth } from "./types.ts";
-
-const hash = (str: string): string =>
-  createHash("sha256").update(str).digest("hex");
-
-const khash = (key: Buffer | string, str: string) =>
-  createHmac("sha256", key).update(str);
+import { sha256hex, hmacSha256, toHex } from "./webcrypto.ts";
 
 const plainDate = (): string =>
   new Date()
@@ -14,12 +8,12 @@ const plainDate = (): string =>
     .replace(/:/g, "")
     .replace(/\.\d+/, "");
 
-export function presignS3(
+export async function presignS3(
   url: string,
   method: "GET" | "PUT",
   auth: S3Auth,
   expiresSeconds: number,
-): string {
+): Promise<string> {
   const u = new URL(url);
   const timestamp = plainDate();
   const datestamp = timestamp.slice(0, 8);
@@ -56,14 +50,14 @@ export function presignS3(
     "AWS4-HMAC-SHA256",
     timestamp,
     scope,
-    hash(canonicalRequest),
+    await sha256hex(canonicalRequest),
   ].join("\n");
 
-  const kDate = khash(`AWS4${auth.secret}`, datestamp).digest();
-  const kRegion = khash(kDate, auth.region).digest();
-  const kService = khash(kRegion, "s3").digest();
-  const kSigning = khash(kService, "aws4_request").digest();
-  const signature = khash(kSigning, stringToSign).digest("hex");
+  const kDate = await hmacSha256(`AWS4${auth.secret}`, datestamp);
+  const kRegion = await hmacSha256(kDate, auth.region);
+  const kService = await hmacSha256(kRegion, "s3");
+  const kSigning = await hmacSha256(kService, "aws4_request");
+  const signature = toHex(await hmacSha256(kSigning, stringToSign));
 
   u.searchParams.set("X-Amz-Signature", signature);
   return u.toString();

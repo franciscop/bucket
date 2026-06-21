@@ -547,3 +547,22 @@ describe("S3 file().uploadUrl()", () => {
     expect(url).toContain("X-Amz-Expires=3600");
   });
 });
+
+describe("S3 file().presign() (Bun-style alias)", () => {
+  it("defaults to a download URL (signedUrl), honouring expiresIn", async () => {
+    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
+    const url = await bucket.file("file.txt").presign({ expiresIn: 3600 });
+    expect(url).toContain("X-Amz-Signature");
+    expect(url).toContain("X-Amz-Expires=3600");
+  });
+
+  it("delegates to an upload URL for method PUT", async () => {
+    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
+    const url = await bucket.file("file.txt").presign({
+      method: "PUT",
+      expiresIn: 900,
+    });
+    expect(url).toContain("X-Amz-Signature");
+    expect(url).toContain("X-Amz-Expires=900");
+  });
+});

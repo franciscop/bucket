@@ -1,5 +1,3 @@
-import "dotenv/config";
-
 import type { IBucket, BucketInfo } from "../lib/types.ts";
 import { B2File, type B2BucketContext } from "./File.ts";
 
@@ -59,10 +57,10 @@ class BackBlazeInstance implements IBucket, B2BucketContext {
   async info(): Promise<BucketInfo> {
     await this.initPromise;
     return {
-      id: this.id,
-      name: this.name,
       type: this.type,
-      base: this.base,
+      name: this.name,
+      endpoint: this.base,
+      id: this.id,
     };
   }
 
@@ -169,3 +167,11 @@ export default function BackBlaze(
 }
 
 export { BackBlazeInstance, B2File };
+
+export type {
+  FileInfo,
+  BucketInfo,
+  FileEntry,
+  WriteContent,
+  WriteOptions,
+} from "../lib/types.ts";

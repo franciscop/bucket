@@ -62,7 +62,7 @@ export class AzureFile implements IBucketFile {
     };
 
     if (this.#auth.type === "shared-key") {
-      const headers = signAzure(method, blobPath, allExtra, {
+      const headers = await signAzure(method, blobPath, allExtra, {
         account: this.#account,
         key: this.#auth.key,
       });
@@ -191,7 +191,7 @@ export class AzureFile implements IBucketFile {
     const blobPath = `${accountPathPrefix(this.#endpoint)}/${this.#container}/${dst.path}`;
 
     if (this.#auth.type === "shared-key") {
-      const headers = signAzure(
+      const headers = await signAzure(
         "PUT",
         blobPath,
         { "x-ms-copy-source": src },
@@ -230,6 +230,23 @@ export class AzureFile implements IBucketFile {
     const res = await this.#request("DELETE");
     if (!res.ok && res.status !== 202)
       throw new Error(`Azure DELETE error: ${res.status}`);
+  }
+
+  // Bun-style aliases, so muscle memory from Bun's S3File carries over
+  unlink(): Promise<void> {
+    return this.remove();
+  }
+
+  presign(opts?: {
+    method?: string;
+    expiresIn?: number;
+    expires?: number | string;
+  }): Promise<string | null> {
+    const expires = opts?.expires ?? opts?.expiresIn ?? 3600;
+    const method = (opts?.method ?? "GET").toUpperCase();
+    return method === "PUT" || method === "POST"
+      ? this.uploadUrl({ expires })
+      : this.signedUrl({ expires });
   }
 
   stream(): ReadableStream {

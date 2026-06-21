@@ -1,12 +1,19 @@
-import { createHash, createSign } from "node:crypto";
+import {
+  sha256hex,
+  importRsaPkcs8,
+  rsaSha256,
+  toHex,
+  toBase64Url,
+} from "./webcrypto.ts";
 
 export interface GCSAuth {
   clientEmail: string;
   privateKey: string; // PEM
 }
 
-const hash = (str: string): string =>
-  createHash("sha256").update(str).digest("hex");
+const enc = new TextEncoder();
+const b64urlJson = (o: unknown): string =>
+  toBase64Url(enc.encode(JSON.stringify(o)));
 
 const plainDate = (): string =>
   new Date()
@@ -17,22 +24,17 @@ const plainDate = (): string =>
 // Create a signed JWT and exchange it for an OAuth2 access token
 export async function getAccessToken(auth: GCSAuth): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  const header = Buffer.from(
-    JSON.stringify({ alg: "RS256", typ: "JWT" }),
-  ).toString("base64url");
-  const payload = Buffer.from(
-    JSON.stringify({
-      iss: auth.clientEmail,
-      scope: "https://www.googleapis.com/auth/devstorage.read_write",
-      aud: "https://oauth2.googleapis.com/token",
-      exp: now + 3600,
-      iat: now,
-    }),
-  ).toString("base64url");
+  const header = b64urlJson({ alg: "RS256", typ: "JWT" });
+  const payload = b64urlJson({
+    iss: auth.clientEmail,
+    scope: "https://www.googleapis.com/auth/devstorage.read_write",
+    aud: "https://oauth2.googleapis.com/token",
+    exp: now + 3600,
+    iat: now,
+  });
 
-  const sign = createSign("RSA-SHA256");
-  sign.update(`${header}.${payload}`);
-  const signature = sign.sign(auth.privateKey, "base64url");
+  const key = await importRsaPkcs8(auth.privateKey);
+  const signature = toBase64Url(await rsaSha256(key, `${header}.${payload}`));
   const jwt = `${header}.${payload}.${signature}`;
 
   const res = await fetch("https://oauth2.googleapis.com/token", {
@@ -59,13 +61,13 @@ export async function getMetadataToken(): Promise<string> {
 }
 
 // GCS V4 presigned URL
-export function presignGCS(
+export async function presignGCS(
   bucket: string,
   objectPath: string,
   auth: GCSAuth,
   method: "GET" | "PUT",
   expiresSeconds: number,
-): string {
+): Promise<string> {
   const timestamp = plainDate();
   const datestamp = timestamp.slice(0, 8);
   const credential = `${auth.clientEmail}/${datestamp}/auto/storage/goog4_request`;
@@ -95,12 +97,11 @@ export function presignGCS(
     "GOOG4-RSA-SHA256",
     timestamp,
     `${datestamp}/auto/storage/goog4_request`,
-    hash(canonicalRequest),
+    await sha256hex(canonicalRequest),
   ].join("\n");
 
-  const sign = createSign("RSA-SHA256");
-  sign.update(stringToSign);
-  const signature = sign.sign(auth.privateKey, "hex");
+  const key = await importRsaPkcs8(auth.privateKey);
+  const signature = toHex(await rsaSha256(key, stringToSign));
 
   params.set("X-Goog-Signature", signature);
   return `https://${host}${path}?${params}`;

@@ -1,5 +1,3 @@
-import "dotenv/config";
-
 import { signAzure, accountPathPrefix } from "../lib/signAzure.ts";
 import type { IBucket, BucketInfo } from "../lib/types.ts";
 import { AzureFile, type AzureFileAuth } from "./File.ts";
@@ -93,10 +91,10 @@ class AzureBucket implements IBucket {
 
   async info(): Promise<BucketInfo> {
     return {
-      id: this.#account,
-      name: this.#container,
       type: this.type,
+      name: this.#container,
       endpoint: `${this.#endpoint}/${this.#container}`,
+      id: this.#account,
     };
   }
 
@@ -117,7 +115,7 @@ class AzureBucket implements IBucket {
 
       let headers: Record<string, string>;
       if (this.#auth.type === "shared-key") {
-        headers = signAzure(
+        headers = await signAzure(
           "GET",
           containerPath,
           {},
@@ -233,3 +231,11 @@ export default function Azure(
 }
 
 export { AzureBucket, AzureFile };
+
+export type {
+  FileInfo,
+  BucketInfo,
+  FileEntry,
+  WriteContent,
+  WriteOptions,
+} from "../lib/types.ts";

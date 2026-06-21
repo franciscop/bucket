@@ -1,5 +1,3 @@
-import "dotenv/config";
-
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
 import type { IBucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
 import { R2File, type R2BucketContext } from "./File.ts";
@@ -76,7 +74,7 @@ class CloudflareR2Bucket implements IBucket {
       headers: { ...(options.headers || {}) },
       body: options.body,
     };
-    cleanAndSignS3(req, this.auth);
+    await cleanAndSignS3(req, this.auth);
     return fetch(url, {
       method: method.toUpperCase(),
       headers: req.headers,
@@ -86,10 +84,10 @@ class CloudflareR2Bucket implements IBucket {
 
   async info(): Promise<BucketInfo> {
     return {
-      id: this.auth.id,
-      name: this.bucketName,
       type: this.type,
+      name: this.bucketName,
       endpoint: this.endpoint,
+      id: this.auth.id,
     };
   }
 
@@ -109,7 +107,7 @@ class CloudflareR2Bucket implements IBucket {
         method: "get",
         headers: {},
       };
-      cleanAndSignS3(req, this.auth);
+      await cleanAndSignS3(req, this.auth);
 
       const res = await fetch(url.toString(), {
         method: "GET",
@@ -153,7 +151,7 @@ class CloudflareR2Bucket implements IBucket {
         headers: { "content-md5": "" },
         body,
       };
-      cleanAndSignS3(req, this.auth);
+      await cleanAndSignS3(req, this.auth);
 
       const res = await fetch(url.toString(), {
         method: "POST",
@@ -216,3 +214,11 @@ export default function CloudflareR2(
 }
 
 export { CloudflareR2Bucket, R2File };
+
+export type {
+  FileInfo,
+  BucketInfo,
+  FileEntry,
+  WriteContent,
+  WriteOptions,
+} from "../lib/types.ts";

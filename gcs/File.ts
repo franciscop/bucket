@@ -228,6 +228,23 @@ export class GCSFile implements IBucketFile {
       throw new Error(`GCS DELETE error: ${res.status}`);
   }
 
+  // Bun-style aliases, so muscle memory from Bun's S3File carries over
+  unlink(): Promise<void> {
+    return this.remove();
+  }
+
+  presign(opts?: {
+    method?: string;
+    expiresIn?: number;
+    expires?: number | string;
+  }): Promise<string | null> {
+    const expires = opts?.expires ?? opts?.expiresIn ?? 3600;
+    const method = (opts?.method ?? "GET").toUpperCase();
+    return method === "PUT" || method === "POST"
+      ? this.uploadUrl({ expires })
+      : this.signedUrl({ expires });
+  }
+
   stream(): ReadableStream {
     return promiseToReadable(async () => {
       const res = await fetch(this.#mediaUrl(), {

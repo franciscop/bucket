@@ -1,6 +1,6 @@
 import { userInfo } from "node:os";
 import fsp from "node:fs/promises";
-import { join, resolve, isAbsolute } from "node:path";
+import { basename, join, resolve, isAbsolute } from "node:path";
 
 import type { IBucket, BucketInfo } from "../lib/types.ts";
 import { FSFile } from "./File.ts";
@@ -14,12 +14,11 @@ class FileSystemBucket implements IBucket {
   }
 
   info(): Promise<BucketInfo> {
-    const id = userInfo().username;
     return Promise.resolve({
-      id,
-      name: this.type,
       type: this.type,
-      path: this.path,
+      name: basename(this.path) || this.path,
+      endpoint: this.path,
+      id: userInfo().username,
     });
   }
 
@@ -86,3 +85,11 @@ export default function FileSystem(path: string): FileSystemBucket {
 }
 
 export { FileSystemBucket, FSFile };
+
+export type {
+  FileInfo,
+  BucketInfo,
+  FileEntry,
+  WriteContent,
+  WriteOptions,
+} from "../lib/types.ts";

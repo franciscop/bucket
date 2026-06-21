@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { hmacSha256, base64ToBytes, toBase64 } from "./webcrypto.ts";
 
 export interface AzureAuth {
   account: string;
@@ -10,7 +10,7 @@ const plainDate = (): string => new Date().toUTCString();
 // The canonicalized resource must mirror the request's actual URL path. Real
 // Azure keeps the account in the host, so the path is `/container/blob` and the
 // prefix is empty. Emulators (Azurite) and path-style endpoints keep the account
-// in the URL path, so it must be repeated in the signature; derive that prefix
+// in the URL path, so it must be repeated in the signature — derive that prefix
 // from the endpoint, e.g. "http://127.0.0.1:10000/devstoreaccount1" → "/devstoreaccount1".
 export const accountPathPrefix = (endpoint: string): string =>
   new URL(endpoint).pathname.replace(/\/$/, "");
@@ -36,13 +36,13 @@ function canonicalResource(
   return base + sorted;
 }
 
-export function signAzure(
+export async function signAzure(
   method: string,
   path: string,
   headers: Record<string, string>,
   auth: AzureAuth,
   params: Record<string, string> = {},
-): Record<string, string> {
+): Promise<Record<string, string>> {
   const date = plainDate();
   const allHeaders: Record<string, string> = {
     ...headers,
@@ -70,9 +70,9 @@ export function signAzure(
     canonicalResource(auth.account, path, params),
   ].join("\n");
 
-  const signature = createHmac("sha256", Buffer.from(auth.key, "base64"))
-    .update(stringToSign)
-    .digest("base64");
+  const signature = toBase64(
+    await hmacSha256(base64ToBytes(auth.key), stringToSign),
+  );
 
   return {
     ...allHeaders,
@@ -80,14 +80,14 @@ export function signAzure(
   };
 }
 
-export function presignAzure(
+export async function presignAzure(
   account: string,
   container: string,
   blobPath: string,
   key: string,
   method: "r" | "w",
   expiresSeconds: number,
-): string {
+): Promise<string> {
   const now = new Date();
   const expiry = new Date(now.getTime() + expiresSeconds * 1000);
   const format = (d: Date) => d.toISOString().replace(/\.\d+Z$/, "Z");
@@ -116,9 +116,9 @@ export function presignAzure(
     "", // rsct
   ].join("\n");
 
-  const signature = createHmac("sha256", Buffer.from(key, "base64"))
-    .update(stringToSign)
-    .digest("base64");
+  const signature = toBase64(
+    await hmacSha256(base64ToBytes(key), stringToSign),
+  );
 
   const params = new URLSearchParams({
     sv: "2020-10-02",

@@ -1,5 +1,3 @@
-import "dotenv/config";
-
 import { getAccessToken, getMetadataToken } from "../lib/signGCS.ts";
 import type { IBucket, BucketInfo } from "../lib/types.ts";
 import { GCSFile, type GCSAuth, type GCSObjectMeta } from "./File.ts";
@@ -75,10 +73,10 @@ class GCSBucket implements IBucket {
 
   async info(): Promise<BucketInfo> {
     return {
-      id: this.#bucket,
-      name: this.#bucket,
       type: this.type,
+      name: this.#bucket,
       endpoint: `${this.#endpoint}/${this.#bucket}`,
+      id: this.#bucket,
     };
   }
 
@@ -175,3 +173,11 @@ export default function GCS(
 }
 
 export { GCSBucket, GCSFile };
+
+export type {
+  FileInfo,
+  BucketInfo,
+  FileEntry,
+  WriteContent,
+  WriteOptions,
+} from "../lib/types.ts";

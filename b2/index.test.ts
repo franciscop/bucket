@@ -86,7 +86,7 @@ describe("B2 bucket.info()", () => {
     expect(info.id).toBe("test-bucket-id");
     expect(info.name).toBe("test-bucket");
     expect(info.type).toBe("BACKBLAZE");
-    expect(info.base).toBe("https://f001.backblazeb2.com/");
+    expect(info.endpoint).toBe("https://f001.backblazeb2.com/");
   });
 });
 
@@ -412,9 +412,11 @@ describe("B2 file().publicUrl()", () => {
     globalThis.fetch = originalFetch;
   });
 
-  it("returns null for a fresh file (url only populated after list)", async () => {
+  it("builds the URL from the bucket base once authenticated", async () => {
     const bucket = await makeBucket();
-    expect(bucket.file("hello.txt").publicUrl()).toBeNull();
+    expect(bucket.file("hello.txt").publicUrl()).toBe(
+      "https://f001.backblazeb2.com/file/test-bucket/hello.txt",
+    );
   });
 
   it("returns a URL for files returned from list()", async () => {
