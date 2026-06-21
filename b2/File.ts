@@ -1,6 +1,6 @@
 import { Readable, Writable } from "node:stream";
 import parse from "../lib/parse.ts";
-import { createHash } from "node:crypto";
+import { sha1hex } from "../lib/webcrypto.ts";
 import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
 import { getContentType } from "../lib/fileTypes.ts";
@@ -12,11 +12,6 @@ import type {
   WriteOptions,
 } from "../lib/types.ts";
 
-const hashString = (str: string | Buffer): string =>
-  createHash("sha1")
-    .update(str as string)
-    .digest("hex");
-
 export interface B2UploadAuth {
   uploadUrl: string;
   authorizationToken: string;
@@ -26,6 +21,8 @@ export interface B2BucketContext {
   info(): Promise<BucketInfo>;
   fetch(url: string, options?: RequestInit): Promise<Response>;
   apiBase: string;
+  base: string;
+  name: string;
   list(prefix: string): Promise<B2File[]>;
 }
 
@@ -79,28 +76,28 @@ export class B2File implements IBucketFile {
 
   async text(): Promise<string> {
     const bucket = await this.#bucket.info();
-    const url = bucket.base + "file/" + bucket.name + "/" + this.path;
+    const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
     const res = await this.#bucket.fetch(url);
     return res.text();
   }
 
   async json(): Promise<unknown> {
     const bucket = await this.#bucket.info();
-    const url = bucket.base + "file/" + bucket.name + "/" + this.path;
+    const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
     const res = await this.#bucket.fetch(url);
     return res.json();
   }
 
   async arrayBuffer(): Promise<ArrayBuffer> {
     const bucket = await this.#bucket.info();
-    const url = bucket.base + "file/" + bucket.name + "/" + this.path;
+    const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
     const res = await this.#bucket.fetch(url);
     return res.arrayBuffer();
   }
 
   async blob(): Promise<Blob> {
     const bucket = await this.#bucket.info();
-    const url = bucket.base + "file/" + bucket.name + "/" + this.path;
+    const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
     const res = await this.#bucket.fetch(url);
     return res.blob();
   }
@@ -126,7 +123,7 @@ export class B2File implements IBucketFile {
     const headers: Record<string, string | number> = {
       Authorization: auth.authorizationToken,
       "X-Bz-File-Name": this.path,
-      "X-Bz-Content-Sha1": hashString(data),
+      "X-Bz-Content-Sha1": await sha1hex(data),
       "Content-Length": Buffer.byteLength(data as string),
       "Content-Type": type,
     };
@@ -221,10 +218,27 @@ export class B2File implements IBucketFile {
     this.id = "";
   }
 
+  // Bun-style aliases, so muscle memory from Bun's S3File carries over
+  unlink(): Promise<void> {
+    return this.remove();
+  }
+
+  presign(opts?: {
+    method?: string;
+    expiresIn?: number;
+    expires?: number | string;
+  }): Promise<string | null> {
+    const expires = opts?.expires ?? opts?.expiresIn ?? 3600;
+    const method = (opts?.method ?? "GET").toUpperCase();
+    return method === "PUT" || method === "POST"
+      ? this.uploadUrl({ expires })
+      : this.signedUrl({ expires });
+  }
+
   stream(): ReadableStream {
     return promiseToReadable(async () => {
       const bucket = await this.#bucket.info();
-      const url = bucket.base + "file/" + bucket.name + "/" + this.path;
+      const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
       const res = await this.#bucket.fetch(url);
       return res.body as unknown as ReadableStream;
     });
@@ -247,7 +261,11 @@ export class B2File implements IBucketFile {
   }
 
   publicUrl(): string | null {
-    return this.url ?? null;
+    // Built from the bucket's download base, like the other providers. The base
+    // is only known once the bucket has authenticated, so it is null before then.
+    return this.#bucket.base
+      ? `${this.#bucket.base}file/${this.#bucket.name}/${this.path}`
+      : null;
   }
 
   async signedUrl(opts: { expires: number | string }): Promise<string> {
@@ -267,7 +285,7 @@ export class B2File implements IBucketFile {
       authorizationToken: string;
     };
     return (
-      bucket.base +
+      bucket.endpoint +
       "file/" +
       bucket.name +
       "/" +

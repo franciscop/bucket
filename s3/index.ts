@@ -1,5 +1,3 @@
-import "dotenv/config";
-
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
 import type { IBucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
 import { S3File, type S3BucketContext } from "./File.ts";
@@ -167,7 +165,7 @@ class S3Bucket implements IBucket {
       headers: { ...(options.headers || {}) },
       body: options.body,
     };
-    cleanAndSignS3(req, auth);
+    await cleanAndSignS3(req, auth);
     return fetch(url, {
       method: method.toUpperCase(),
       headers: req.headers,
@@ -178,10 +176,10 @@ class S3Bucket implements IBucket {
   async info(): Promise<BucketInfo> {
     const auth = await this.#getAuth();
     return {
-      id: auth.id,
-      name: this.bucketName,
       type: this.type,
+      name: this.bucketName,
       endpoint: this.endpoint,
+      id: auth.id,
     };
   }
 
@@ -202,7 +200,7 @@ class S3Bucket implements IBucket {
         method: "get",
         headers: {},
       };
-      cleanAndSignS3(req, auth);
+      await cleanAndSignS3(req, auth);
 
       const res = await fetch(url.toString(), {
         method: "GET",
@@ -247,7 +245,7 @@ class S3Bucket implements IBucket {
         headers: { "content-md5": "" },
         body,
       };
-      cleanAndSignS3(req, auth);
+      await cleanAndSignS3(req, auth);
 
       const res = await fetch(url.toString(), {
         method: "POST",
@@ -307,3 +305,11 @@ export default function S3(bucket?: string, config?: S3Config): S3Bucket {
 }
 
 export { S3Bucket, S3File };
+
+export type {
+  FileInfo,
+  BucketInfo,
+  FileEntry,
+  WriteContent,
+  WriteOptions,
+} from "../lib/types.ts";

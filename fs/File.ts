@@ -1,4 +1,4 @@
-import hash from "hash-it";
+import hash from "../lib/hash.ts";
 
 import { Blob } from "node:buffer";
 import { exec } from "node:child_process";
@@ -26,13 +26,13 @@ const mimeType = (file: string): Promise<string> =>
   cmd(`file -b --mime-type '${file}'`);
 
 export class FSFile implements IBucketFile {
-  id: number;
+  id: string;
   name: string;
   path: string;
   #root: string;
 
   constructor(path: string, root: string) {
-    this.id = hash(path) as number;
+    this.id = String(hash(path));
     this.name = path.split("/").pop()!;
     this.path = path;
     this.#root = root;
@@ -146,6 +146,23 @@ export class FSFile implements IBucketFile {
 
   async remove(): Promise<void> {
     return fsp.unlink(this.path);
+  }
+
+  // Bun-style aliases, so muscle memory from Bun's S3File carries over
+  unlink(): Promise<void> {
+    return this.remove();
+  }
+
+  presign(opts?: {
+    method?: string;
+    expiresIn?: number;
+    expires?: number | string;
+  }): Promise<string | null> {
+    const expires = opts?.expires ?? opts?.expiresIn ?? 3600;
+    const method = (opts?.method ?? "GET").toUpperCase();
+    return method === "PUT" || method === "POST"
+      ? this.uploadUrl({ expires })
+      : this.signedUrl({ expires });
   }
 
   publicUrl(): null {

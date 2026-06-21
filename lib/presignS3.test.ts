@@ -59,51 +59,56 @@ describe("presignS3 vs aws4 (presigned URL oracle)", () => {
   const host = "my-bucket.s3.us-east-1.amazonaws.com";
   const url = (key: string) => `https://${host}/${key}`;
 
-  it("GET (download) URL matches the reference", () => {
-    const ours = presignS3(url("file.txt"), "GET", auth, 3600);
+  it("GET (download) URL matches the reference", async () => {
+    const ours = await presignS3(url("file.txt"), "GET", auth, 3600);
     expect(sigOf(ours)).toBe(
       reference(host, "/file.txt", "GET", 3600, auth.region),
     );
   });
 
-  it("PUT (upload) URL matches the reference", () => {
-    const ours = presignS3(url("upload.bin"), "PUT", auth, 900);
+  it("PUT (upload) URL matches the reference", async () => {
+    const ours = await presignS3(url("upload.bin"), "PUT", auth, 900);
     expect(sigOf(ours)).toBe(
       reference(host, "/upload.bin", "PUT", 900, auth.region),
     );
   });
 
-  it("nested key matches the reference", () => {
-    const ours = presignS3(url("a/b/c.txt"), "GET", auth, 3600);
+  it("nested key matches the reference", async () => {
+    const ours = await presignS3(url("a/b/c.txt"), "GET", auth, 3600);
     expect(sigOf(ours)).toBe(
       reference(host, "/a/b/c.txt", "GET", 3600, auth.region),
     );
   });
 
-  it("special-character key matches the reference", () => {
-    const ours = presignS3(url("a-1*(a!.txt"), "GET", auth, 3600);
+  it("special-character key matches the reference", async () => {
+    const ours = await presignS3(url("a-1*(a!.txt"), "GET", auth, 3600);
     expect(sigOf(ours)).toBe(
       reference(host, "/a-1*(a!.txt", "GET", 3600, auth.region),
     );
   });
 
-  it("non-default region matches the reference", () => {
+  it("non-default region matches the reference", async () => {
     const h = "b.s3.eu-west-1.amazonaws.com";
     const a: S3Auth = { ...auth, region: "eu-west-1" };
-    const ours = presignS3(`https://${h}/x.txt`, "GET", a, 3600);
+    const ours = await presignS3(`https://${h}/x.txt`, "GET", a, 3600);
     expect(sigOf(ours)).toBe(reference(h, "/x.txt", "GET", 3600, "eu-west-1"));
   });
 
-  it("custom endpoint with port matches the reference", () => {
+  it("custom endpoint with port matches the reference", async () => {
     const h = "127.0.0.1:9000";
-    const ours = presignS3(`http://${h}/bucket/key.txt`, "GET", auth, 3600);
+    const ours = await presignS3(
+      `http://${h}/bucket/key.txt`,
+      "GET",
+      auth,
+      3600,
+    );
     expect(sigOf(ours)).toBe(
       reference(h, "/bucket/key.txt", "GET", 3600, auth.region),
     );
   });
 
-  it("produces a structurally valid SigV4 query", () => {
-    const u = new URL(presignS3(url("x.txt"), "GET", auth, 3600));
+  it("produces a structurally valid SigV4 query", async () => {
+    const u = new URL(await presignS3(url("x.txt"), "GET", auth, 3600));
     expect(u.searchParams.get("X-Amz-Algorithm")).toBe("AWS4-HMAC-SHA256");
     expect(u.searchParams.get("X-Amz-Expires")).toBe("3600");
     expect(u.searchParams.get("X-Amz-SignedHeaders")).toBe("host");

@@ -393,6 +393,13 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         await file.remove();
         expect(await file.exists()).toBe(false);
       });
+
+      it("unlink() removes the file (alias of remove)", async () => {
+        const file = bucket.file(testFile());
+        await file.write("via unlink");
+        await file.unlink();
+        expect(await file.exists()).toBe(false);
+      });
     });
 
     // ── count() ───────────────────────────────────────────────────────────────
@@ -647,6 +654,18 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         const url = await bucket
           .file("photo.jpg")
           .signedUrl({ expires: "30min" });
+        expect(url === null || typeof url === "string").toBe(true);
+      });
+
+      it("presign() returns a string or null (alias of signedUrl)", async () => {
+        const url = await bucket.file("photo.jpg").presign();
+        expect(url === null || typeof url === "string").toBe(true);
+      });
+
+      it("presign({ method: 'PUT' }) returns a string or null (alias of uploadUrl)", async () => {
+        const url = await bucket
+          .file("photo.jpg")
+          .presign({ method: "PUT", expiresIn: 3600 });
         expect(url === null || typeof url === "string").toBe(true);
       });
     });

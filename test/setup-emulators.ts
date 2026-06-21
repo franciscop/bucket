@@ -3,9 +3,8 @@
 // are left alone. Each block is gated on its endpoint env var, so it also works
 // with only a subset of emulators running.
 //
-//   DOTENV_CONFIG_PATH=.env.emulators bun test/setup-emulators.ts
+//   bun --env-file=.env.emulators test/setup-emulators.ts
 
-import "dotenv/config";
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
 import { signAzure, accountPathPrefix } from "../lib/signAzure.ts";
 
@@ -80,7 +79,7 @@ if (process.env.AZURE_ENDPOINT) {
   const container = process.env.AZURE_CONTAINER || "";
   await waitFor(endpoint, "Azurite");
   const path = `${accountPathPrefix(endpoint)}/${container}`;
-  const headers = signAzure(
+  const headers = await signAzure(
     "PUT",
     path,
     {},

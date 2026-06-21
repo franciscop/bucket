@@ -1,15 +1,5 @@
-import { createHash, createHmac } from "node:crypto";
 import type { S3Auth, S3Request } from "./types.ts";
-
-const hash = (str: string | Buffer): string => {
-  return createHash("sha256")
-    .update(str as string)
-    .digest("hex");
-};
-
-const khash = (key: Buffer | string, str: string) => {
-  return createHmac("sha256", key).update(str);
-};
+import { sha256hex, hmacSha256, toHex } from "./webcrypto.ts";
 
 // AWS canonicalizes the URI by percent-encoding RFC-3986 sub-delimiters that the
 // URL parser leaves raw (! ' ( ) *). The request is still SENT with the raw path;
@@ -21,7 +11,10 @@ const encodePath = (pathname: string): string =>
     (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
   );
 
-const canonical = ({ headers = {}, ...config }: S3Request): string => {
+const canonical = async ({
+  headers = {},
+  ...config
+}: S3Request): Promise<string> => {
   const url = new URL(config.url);
   const method = (config.method || "GET").toUpperCase();
   const path = encodePath(url.pathname);
@@ -36,37 +29,43 @@ const canonical = ({ headers = {}, ...config }: S3Request): string => {
     .sort()
     .map((h) => h.toLowerCase())
     .join(";");
-  const payload = hash((config.body as string | Buffer) || "");
+  const payload = await sha256hex((config.body as string | Uint8Array) || "");
   return [method, path, query, headersPlain, headerKeys, payload].join("\n");
 };
 
-const getStringToSign = (request: S3Request, region: string): string => {
+const getStringToSign = async (
+  request: S3Request,
+  region: string,
+): Promise<string> => {
   const name = "AWS4-HMAC-SHA256";
   const timestamp = request.headers["x-amz-date"];
   const scope = [timestamp.slice(0, 8), region, "s3", "aws4_request"].join("/");
-  const canon = hash(canonical(request));
+  const canon = await sha256hex(await canonical(request));
   return [name, timestamp, scope, canon].join("\n");
 };
 
-const createSignature = (
+const createSignature = async (
   request: S3Request,
   key: string,
   region: string,
-): string => {
+): Promise<string> => {
   if (!key) throw new Error("Key is required");
-  const stringToSign = getStringToSign(request, region);
+  const stringToSign = await getStringToSign(request, region);
   const dateStamp = request.headers["x-amz-date"].slice(0, 8);
-  const kDate = khash(`AWS4${key}`, dateStamp).digest();
-  const kRegion = khash(kDate, region).digest();
-  const kService = khash(kRegion, "s3").digest();
-  const kSigning = khash(kService, "aws4_request").digest();
-  return khash(kSigning, stringToSign).digest("hex");
+  const kDate = await hmacSha256(`AWS4${key}`, dateStamp);
+  const kRegion = await hmacSha256(kDate, region);
+  const kService = await hmacSha256(kRegion, "s3");
+  const kSigning = await hmacSha256(kService, "aws4_request");
+  return toHex(await hmacSha256(kSigning, stringToSign));
 };
 
-const createAuth = (auth: S3Auth, request: S3Request): string => {
+const createAuth = async (
+  auth: S3Auth,
+  request: S3Request,
+): Promise<string> => {
   if (!auth.id) throw new Error("ID is required");
   if (!auth.secret) throw new Error("Secret is required");
-  const signature = createSignature(request, auth.secret, auth.region);
+  const signature = await createSignature(request, auth.secret, auth.region);
   const date = request.headers["x-amz-date"].slice(0, 8);
   const credential = `${auth.id}/${date}/${auth.region}/s3/aws4_request`;
   const headers = Object.keys(request.headers)
@@ -96,10 +95,10 @@ const plainDate = (): string =>
 
 // Adds necessary headers and config, and signs the request
 // by adding the `Authorization` header
-export default function cleanAndSignS3(
+export default async function cleanAndSignS3(
   request: S3Request,
   auth: S3Auth,
-): S3Request {
+): Promise<S3Request> {
   if (!request.method) request.method = "get";
   if (!request.headers) request.headers = {};
   if (request.method === "get" || request.method === "head") {
@@ -109,11 +108,11 @@ export default function cleanAndSignS3(
   // We don't want this that is added by Axios
   delete (request.headers as Record<string, unknown>).Accept;
 
-  // .host (not .hostname) so a non-default port is included, required for
+  // .host (not .hostname) so a non-default port is included — required for
   // MinIO / LocalStack / S3-compatible endpoints, and a no-op for AWS (port 443).
   request.headers.host = new URL(request.url).host;
-  request.headers["x-amz-content-sha256"] = hash(
-    (request.body as string | Buffer) || "",
+  request.headers["x-amz-content-sha256"] = await sha256hex(
+    (request.body as string | Uint8Array) || "",
   );
   request.headers["x-amz-date"] = request.headers["x-amz-date"] || plainDate();
   if (auth.sessionToken) {
@@ -126,7 +125,7 @@ export default function cleanAndSignS3(
   );
   request.headers = sortValue(request.headers);
 
-  request.headers.Authorization = createAuth(auth, request);
+  request.headers.Authorization = await createAuth(auth, request);
 
   return request;
 }

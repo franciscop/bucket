@@ -38,4 +38,4 @@ jobs:
       - name: Create buckets/container
         run: bun run emulators:setup
       - name: Run integration suite against emulators
-        run: DOTENV_CONFIG_PATH=.env.emulators bun test test/index.test.ts --timeout 30000
+        run: bun --env-file=.env.emulators test test/index.test.ts --timeout 30000

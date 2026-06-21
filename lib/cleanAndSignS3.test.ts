@@ -32,7 +32,7 @@ interface Case {
 }
 
 // Sign with our implementation.
-function ours(c: Case) {
+async function ours(c: Case) {
   const auth: S3Auth = {
     id: ID,
     secret: SECRET,
@@ -45,7 +45,7 @@ function ours(c: Case) {
     headers: { "x-amz-date": DATE, ...(c.headers ?? {}) },
     body: c.body,
   };
-  cleanAndSignS3(req, auth);
+  await cleanAndSignS3(req, auth);
   return parseAuth(req.headers.Authorization!);
 }
 
@@ -131,8 +131,8 @@ const cases: Case[] = [
 
 describe("cleanAndSignS3 vs aws4 (SigV4 oracle)", () => {
   for (const c of cases) {
-    it(`matches the reference signature: ${c.name}`, () => {
-      const a = ours(c);
+    it(`matches the reference signature: ${c.name}`, async () => {
+      const a = await ours(c);
       const b = reference(c);
       expect(a.signedHeaders).toBe(b.signedHeaders);
       expect(a.signature).toBe(b.signature);

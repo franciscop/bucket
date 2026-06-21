@@ -16,7 +16,7 @@ Or import a specific provider:
 ```js
 import BackBlaze from "bucket/b2"; // or /s3, /r2, /fs, etc
 
-const bucket = BackBlaze("bucket-name", { id, key });
+const bucket = BackBlaze("bucket-name", { id, secret });
 ```
 
 It has different engines and they all behave the same. It also has a "filesystem" Bucket, which will treat a local folder as a bucket:
@@ -27,9 +27,8 @@ import FileSystem from "bucket/fs";
 import BackBlaze from "bucket/b2";
 
 const fs = FileSystem("./public/");
-const b2 = BackBlaze("mybucketname", { id, key });
+const b2 = BackBlaze("mybucketname", { id, secret });
 
-// Zip all of the local files and upload those zips to B2
 const source = fs.file("local.txt").stream();
 const target = b2.file("newfile.txt").writable();
 await source.pipeTo(target);
@@ -56,11 +55,14 @@ There are two main APIs, the `Bucket` one and the `File` one:
   - `.copyTo(path)`: creates a duplicate of a file with a different name (keeping the original).
   - `.moveTo(path)`: change the location of the file (removing the original).
   - `.rename(name)`: change the name of the file enforcing it remains in the same folder (removing the original).
-  - `.remove()`: deletes the file completely.
+  - `.remove()`: deletes the file completely (alias: `.unlink()`).
   - `.stream()`: returns a web `ReadableStream` that can be piped to a writable stream.
   - `.nodeReadable()`: returns a Node.js `Readable` stream for use with `pipeline()` etc.
   - `.writable()`: returns a web `WritableStream` that can receive data from a readable stream.
   - `.nodeWritable()`: returns a Node.js `Writable` stream for use with `pipeline()` etc.
+  - `.publicUrl()`: the permanent public URL of the file (or `null`).
+  - `.signedUrl(opts)` / `.uploadUrl(opts)`: a time-limited download / upload URL.
+  - `.presign(opts?)`: Bun-style alias of the two above (`.uploadUrl()` for `{ method: "PUT" }`, otherwise `.signedUrl()`).
 
 ### Bucket()
 
@@ -163,7 +165,7 @@ const info = await bucket.file("photo.jpg").info();
 
 If the file does not exist, `exists` is `false`, `type` is `null`, `size` is `0`, and `date`/`url` are `null`.
 
-The `url` field is only populated when the file is publicly accessible: remote buckets return the public URL if the file is public, `null` otherwise. The local filesystem always returns `null`.
+The `url` field is the file's public URL when it exists (the canonical address; whether it is actually reachable depends on the bucket or object being public). It is `null` for the local filesystem, and `null` when the file does not exist.
 
 ### file.exists()
 
@@ -192,7 +194,7 @@ const data = await bucket.file("config.json").json();
 
 ### file.arrayBuffer()
 
-Returns `Promise<ArrayBuffer>` with the raw binary contents. Works in all environments including Cloudflare Workers. Matches the `Blob`/`Response` API.
+Returns `Promise<ArrayBuffer>` with the raw binary contents. Works in any runtime (see [Which runtimes are supported?](#which-runtimes-are-supported)). Matches the `Blob`/`Response` API.
 
 ```js
 const buf = await bucket.file("photo.jpg").arrayBuffer();
@@ -212,7 +214,7 @@ formData.append("photo", blob, "photo.jpg");
 
 ### file.bytes()
 
-Returns `Promise<Uint8Array>` with the raw binary contents as a typed array. Works in all environments. Matches the `Blob`/`Response` API.
+Returns `Promise<Uint8Array>` with the raw binary contents as a typed array. Works in any runtime. Matches the `Blob`/`Response` API.
 
 ```js
 const bytes = await bucket.file("photo.jpg").bytes();
@@ -289,11 +291,11 @@ await bucket.file("temp.txt").remove();
 
 ### file.stream()
 
-Returns a web `ReadableStream<Uint8Array>` synchronously. Works in all environments. Matches `Blob.stream()`.
+Returns a web `ReadableStream<Uint8Array>` synchronously. Works in any runtime. Matches `Blob.stream()`.
 
 ```js
 const stream = bucket.file("video.mp4").stream();
-await stream.pipeTo(response.body);
+return new Response(stream); // e.g. stream it straight to an HTTP response
 ```
 
 ### file.nodeReadable()
@@ -377,7 +379,7 @@ import S3 from "bucket/s3";
 
 const bucket = S3("my-bucket-name", {
   id: "...", // Access Key ID
-  key: "...", // Secret Access Key
+  secret: "...", // Secret Access Key
   region: "us-east-1", // defaults to us-east-1
   endpoint: "...", // optional: override endpoint URL
 });
@@ -400,11 +402,13 @@ The `endpoint` option lets you point at any S3-compatible service (MinIO, Digita
 ```js
 import R2 from "bucket/r2";
 
-const bucket = R2("my-bucket-name", {
+const bucket = R2("https://<account>.r2.cloudflarestorage.com/my-bucket", {
   id: "...", // Access Key ID
   secret: "...", // Secret Access Key
 });
 ```
+
+The first argument is the full R2 endpoint URL, including the bucket name at the end.
 
 Environment variable fallbacks:
 
@@ -414,57 +418,68 @@ Environment variable fallbacks:
 | `id`       | `R2_ACCESS_KEY_ID`     |
 | `secret`   | `R2_SECRET_ACCESS_KEY` |
 
+### Google Cloud Storage
+
+```js
+import GCS from "bucket/gcs";
+
+const bucket = GCS("my-bucket");
+```
+
+Credentials are resolved automatically, in order:
+
+1. `GOOGLE_APPLICATION_CREDENTIALS` (path to a service-account JSON file)
+2. `GCS_CLIENT_EMAIL` + `GCS_PRIVATE_KEY`
+3. The GCP metadata server (Cloud Run, GKE, Compute Engine)
+
+| Option        | Env var                          |
+| ------------- | -------------------------------- |
+| bucket name   | `GCS_BUCKET`                     |
+| service email | `GCS_CLIENT_EMAIL`               |
+| private key   | `GCS_PRIVATE_KEY`                |
+| credentials   | `GOOGLE_APPLICATION_CREDENTIALS` |
+
+Pass `{ endpoint, anonymous }` (or set `GCS_ENDPOINT` / `GCS_ANONYMOUS`) to point at an emulator such as fake-gcs-server:
+
+```js
+const bucket = GCS("my-bucket", {
+  endpoint: "http://localhost:4443",
+  anonymous: true,
+});
+```
+
+### Azure Blob Storage
+
+```js
+import Azure from "bucket/azure";
+
+const bucket = Azure("my-account", "my-container", "base64-account-key");
+```
+
+You can also pass a full connection string, or omit the key to use Managed Identity on Azure-hosted infrastructure:
+
+```js
+// Connection string (its BlobEndpoint is honoured automatically)
+const bucket = Azure(
+  "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;",
+);
+
+// Managed Identity, no key needed
+const bucket = Azure("my-account", "my-container");
+```
+
+| Option     | Env var           |
+| ---------- | ----------------- |
+| account    | `AZURE_ACCOUNT`   |
+| container  | `AZURE_CONTAINER` |
+| `key`      | `AZURE_KEY`       |
+| `endpoint` | `AZURE_ENDPOINT`  |
+
+The `endpoint` option (4th argument, `{ endpoint }`) points at the Azurite emulator or a custom/sovereign cloud, e.g. `http://127.0.0.1:10000/devstoreaccount1`.
+
 ### More?
 
 Open an issue or PR if you'd like to see another service supported.
-
-## Advanced
-
-### Pipes introduction
-
-This tutorial focuses on best practices around pipes and streaming. A pipe is an operation that moves data from a source to a destination, with optionally some transformation operations in the middle. It's useful to **keep the memory consumption low** when working with large files and **to perform transformation operations** to files.
-
-The simplest example I can think is copying a file; read the original one and copying everything to the destination path:
-
-```js
-// The native operation
-await bucket.file("/myfile.txt").copyTo("/copied.txt");
-
-// Similar to the above but using streams (for demonstration purposes):
-const source = bucket.file("/myfile.txt").stream();
-const target = bucket.file("/copied.txt").writable();
-await source.pipeTo(target);
-
-// If we knew the files are small, we could do this instead:
-const data = await bucket.file("/myfile.txt").text();
-await bucket.file("/copied.txt").write(data);
-```
-
-Something you might've noticed is that we don't know when the pipe finishes executing, for that we can use the helper `pipeline()` from Node.js that makes the operation awaitable:
-
-```js
-import { pipeline } from "node:stream/promises";
-
-// Same as above but awaitable, using Node.js streams:
-await pipeline(
-  bucket.file("/myfile.txt").nodeReadable(),
-  bucket.file("/copied.txt").nodeWritable(),
-);
-```
-
-Let's say we want to resize an image with `sharp`, then we can pipe through a transform as well:
-
-```js
-import { pipeline } from "node:stream/promises";
-import sharp from "sharp";
-
-const srcImg = bucket.file("/myimg.png").nodeReadable();
-const resize = sharp().resize(200, 200);
-const dstImg = bucket.file("/preview/myimg.png").nodeWritable();
-
-// Perform the operation while creating a new file and not wasting memory
-await pipeline(srcImg, resize, dstImg);
-```
 
 ## Combining with other APIs
 
@@ -543,6 +558,8 @@ await s3.file("report.pdf").write(fs.file("report.pdf")); // upload disk → S3
 await s3.file("a.bin").stream().pipeTo(fs.file("a.bin").writable());
 ```
 
+**Direction:** `dst.write(src)` is a _pull_, so the file you call it on is the destination and it reads from the argument. To _push_ within a single bucket, use the source-side `src.copyTo(dst)` or `src.moveTo(dst)` instead. Cross-provider copies always use the pull form above, since `copyTo` / `moveTo` stay inside one bucket.
+
 ### Combine with Bun's file APIs
 
 A `Bun.file()` is a `Blob`, so it drops straight into `write()`, and a bucket file's `.blob()` drops into `Bun.write()`:
@@ -616,26 +633,6 @@ declare namespace Bun {
 }
 ```
 
-## Examples
-
-### Uploading and downloading local files
-
-There's no dedicated `.upload()` / `.download()` method. Instead, use the `FileSystem` bucket as one side of the transfer:
-
-```js
-import S3 from "bucket/s3";
-import FileSystem from "bucket/fs";
-
-const s3 = S3("my-bucket");
-const fs = FileSystem("./exports");
-
-// upload
-await s3.file("report.pdf").write(fs.file("report.pdf"));
-
-// download
-await fs.file("report.pdf").write(s3.file("report.pdf"));
-```
-
 ### Zip and upload files
 
 ```js
@@ -675,6 +672,12 @@ import type { FileInfo, BucketInfo } from "bucket/s3";
 const bucket = S3("my-bucket");
 const info: FileInfo = await bucket.file("photo.jpg").info();
 ```
+
+### Which runtimes are supported?
+
+Node, Bun, Deno, browsers, and Cloudflare Workers. Request signing uses **WebCrypto** (`crypto.subtle`), and reads/writes use the Web `fetch`, `Blob`, and Streams APIs, so there is no `node:crypto` dependency. The only Node-specific imports are `node:stream` (used solely by the optional `.nodeReadable()` / `.nodeWritable()` helpers) and `node:fs` / `node:os` (the FileSystem provider only).
+
+On Cloudflare Workers, use a remote provider with the web helpers (`.stream()`, `.writable()`); enable the `nodejs_compat` flag if you also want the `.nodeReadable()` / `.nodeWritable()` helpers.
 
 ### What happens when a file doesn't exist?
 
@@ -745,8 +748,8 @@ Configuration lives in [`.env.emulators`](.env.emulators) (well-known emulator d
 
 ```bash
 npx azurite-blob --silent --location /tmp/azurite &
-DOTENV_CONFIG_PATH=.env.emulators bun run emulators:setup
-DOTENV_CONFIG_PATH=.env.emulators BUCKET=Azure bun test test/index.test.ts
+bun run emulators:setup
+BUCKET=Azure bun --env-file=.env.emulators test test/index.test.ts
 ```
 
 ### With real cloud credentials

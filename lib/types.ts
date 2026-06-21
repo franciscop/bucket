@@ -1,7 +1,7 @@
 /** Metadata returned by `file.info()` */
 export interface FileInfo {
-  /** Provider-specific file identifier */
-  id: string | number;
+  /** File identifier: the path for remote stores, a hash for the filesystem */
+  id: string;
   /** Filename only (no directory) */
   name: string;
   /** Full path within the bucket */
@@ -18,20 +18,16 @@ export interface FileInfo {
   url: string | null;
 }
 
-/** Metadata returned by `bucket.info()` */
+/** Metadata returned by `bucket.info()`. Every provider returns the same shape. */
 export interface BucketInfo {
-  /** Account or credential identifier */
+  /** Provider type, e.g. "S3", "R2", "GCS", "AZURE", "BACKBLAZE", "FILESYSTEM" */
+  type: string;
+  /** Bucket, container, or folder name */
+  name: string;
+  /** Base URL of the bucket (the root folder path for the filesystem) */
+  endpoint: string;
+  /** Account or credential identifier (provider-specific) */
   id: string;
-  /** Bucket or container name */
-  name?: string;
-  /** Provider type (e.g. "S3", "GCS", "AZURE") */
-  type?: string;
-  /** Root path (filesystem provider only) */
-  path?: string;
-  /** Base download URL (B2 only) */
-  base?: string;
-  /** API endpoint URL */
-  endpoint?: string;
 }
 
 export interface FileEntry {
@@ -68,8 +64,8 @@ export interface WriteOptions {
 
 /** A handle to a single file within a bucket */
 export interface IBucketFile {
-  /** Provider-specific file identifier */
-  id: string | number;
+  /** File identifier: the path for remote stores, a hash for the filesystem */
+  id: string;
   /** Filename only (no directory) */
   name: string;
   /** Full path within the bucket */
@@ -103,8 +99,10 @@ export interface IBucketFile {
    * Throws if `name` contains a `/`, use `moveTo()` to change directories.
    */
   rename(name: string): Promise<void>;
-  /** Deletes the file */
+  /** Deletes the file. Aliases: `unlink()`, `delete()` */
   remove(): Promise<void>;
+  /** Alias of `remove()` (Bun `S3File.unlink()`) */
+  unlink(): Promise<void>;
 
   /** Returns a web `ReadableStream` of the file content */
   stream(): ReadableStream;
@@ -121,6 +119,16 @@ export interface IBucketFile {
   signedUrl(opts: { expires: number | string }): Promise<string | null>;
   /** Returns a time-limited signed URL for uploading to this file path */
   uploadUrl(opts: { expires: number | string }): Promise<string | null>;
+  /**
+   * Bun-style presigned URL (matches `Bun.s3` `.presign()`). Delegates to
+   * `uploadUrl()` for `method: "PUT"`/`"POST"`, otherwise `signedUrl()`.
+   * Accepts `expiresIn` (seconds, Bun-style) or `expires` (number or duration string).
+   */
+  presign(opts?: {
+    method?: string;
+    expiresIn?: number;
+    expires?: number | string;
+  }): Promise<string | null>;
 }
 
 /** A bucket (or container) that holds files */
