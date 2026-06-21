@@ -42,7 +42,7 @@ async function createBucket(
     method: "put",
     headers: {} as Record<string, string>,
   };
-  cleanAndSignS3(req, { id, secret, region });
+  await cleanAndSignS3(req, { id, secret, region });
   const res = await fetch(endpoint, { method: "PUT", headers: req.headers });
   console.log(
     `  ${label} bucket → ${res.status}${ok(res.status) ? " (ok)" : " " + (await res.text())}`,
