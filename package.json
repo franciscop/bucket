@@ -1,6 +1,6 @@
 {
   "name": "bucket",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Access any of the popular file storage solutions with a unified API:",
   "homepage": "https://bucketjs.com",
   "repository": "github:franciscop/bucket",
