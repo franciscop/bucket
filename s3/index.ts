@@ -1,4 +1,5 @@
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
+import { sha256base64 } from "../lib/webcrypto.ts";
 import type { IBucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
 import { S3File, type S3BucketContext } from "./File.ts";
 
@@ -239,10 +240,11 @@ class S3Bucket implements IBucket {
       const url = new URL(this.makeUrl(""));
       url.searchParams.set("delete", "");
       const auth = await this.#getAuth();
+      // DeleteObjects requires a body integrity header; S3/R2/MinIO 400 without it.
       const req: S3Request = {
         url: url.toString(),
         method: "post",
-        headers: { "content-md5": "" },
+        headers: { "x-amz-checksum-sha256": await sha256base64(body) },
         body,
       };
       await cleanAndSignS3(req, auth);
@@ -252,7 +254,8 @@ class S3Bucket implements IBucket {
         headers: req.headers,
         body,
       });
-      if (!res.ok) throw new Error(`S3 delete error: ${res.status}`);
+      if (!res.ok)
+        throw new Error(`S3 delete error: ${res.status} ${await res.text()}`);
 
       const xmlStr = await res.text();
       const keys = extractTags(xmlStr, "Deleted").map((d) => getTag(d, "Key"));
