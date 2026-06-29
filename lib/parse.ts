@@ -26,8 +26,7 @@ interface ParseFunction {
   month: number;
   b: number;
   [key: string]:
-    | number
-    | ((str: string | number | null | undefined) => number | null);
+    number | ((str: string | number | null | undefined) => number | null);
 }
 
 const parse = function (
