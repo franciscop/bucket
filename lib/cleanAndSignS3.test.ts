@@ -99,7 +99,9 @@ const cases: Case[] = [
     url: `${B}/?delete=`,
     method: "post",
     body: "<Delete><Object><Key>a.txt</Key></Object></Delete>",
-    headers: { "content-md5": "" },
+    headers: {
+      "x-amz-checksum-sha256": "XdTEZdpLcGp4q+3bRpH9fAIdT4YgmdlXr5J/Fa2MTdM=",
+    },
   },
   // The case the FS/B2 fixture `a-1*(a!.txt` is designed to surface: RFC-3986
   // sub-delimiters must be percent-encoded in the canonical URI, or S3 → 403.

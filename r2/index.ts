@@ -1,4 +1,5 @@
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
+import { sha256base64 } from "../lib/webcrypto.ts";
 import type { IBucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
 import { R2File, type R2BucketContext } from "./File.ts";
 
@@ -145,10 +146,11 @@ class CloudflareR2Bucket implements IBucket {
 
       const url = new URL(this.makeUrl(""));
       url.searchParams.set("delete", "");
+      // DeleteObjects requires a body integrity header; S3/R2/MinIO 400 without it.
       const req: S3Request = {
         url: url.toString(),
         method: "post",
-        headers: { "content-md5": "" },
+        headers: { "x-amz-checksum-sha256": await sha256base64(body) },
         body,
       };
       await cleanAndSignS3(req, this.auth);
@@ -158,7 +160,8 @@ class CloudflareR2Bucket implements IBucket {
         headers: req.headers,
         body,
       });
-      if (!res.ok) throw new Error(`R2 delete error: ${res.status}`);
+      if (!res.ok)
+        throw new Error(`R2 delete error: ${res.status} ${await res.text()}`);
 
       const xmlStr = await res.text();
       const keys = extractTags(xmlStr, "Deleted").map((d) => getTag(d, "Key"));

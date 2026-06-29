@@ -75,3 +75,12 @@ export async function rsaSha256(
     await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, src(data)),
   );
 }
+
+// Base64-encoded SHA-256 digest, for the S3 `x-amz-checksum-sha256` header.
+// The multi-object-delete API (POST /?delete) requires a body integrity header
+// (Content-MD5 or an x-amz-checksum-*); we use SHA-256 since WebCrypto provides
+// it and S3, R2 and MinIO all accept it.
+export async function sha256base64(data: string | Uint8Array): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", src(data));
+  return toBase64(new Uint8Array(buf));
+}
