@@ -1,4 +1,5 @@
 import { signAzure, accountPathPrefix } from "../lib/signAzure.ts";
+import BucketError from "../lib/BucketError.ts";
 import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
 import type { Bucket, BucketInfo } from "../lib/types.ts";
 import { AzureFile, type AzureFileAuth } from "./File.ts";
@@ -100,8 +101,7 @@ class AzureBucket implements Bucket {
     };
   }
 
-  async list(filter?: string | RegExp): Promise<AzureFile[]> {
-    const files: AzureFile[] = [];
+  async *#pages(filter?: RegExp): AsyncGenerator<AzureFile[]> {
     let marker: string | undefined;
     const s = scope(this.PREFIX, filter);
 
@@ -135,13 +135,18 @@ class AzureBucket implements Bucket {
       }
 
       const res = await fetch(url, { headers });
-      if (!res.ok) throw new Error(`Azure list error: ${res.status}`);
+      if (!res.ok)
+        throw new BucketError(`Azure list error: ${res.status}`, {
+          provider: "Azure",
+          status: res.status,
+        });
 
       const xml = await res.text();
+      const page: AzureFile[] = [];
       for (const item of extractXmlTags(xml, "Blob")) {
         const name = getXmlTag(item, "Name");
         if (!s.test(name)) continue;
-        files.push(
+        page.push(
           new AzureFile(
             name,
             this.#account,
@@ -151,10 +156,19 @@ class AzureBucket implements Bucket {
           ),
         );
       }
+      yield page;
 
       marker = getXmlTag(xml, "NextMarker") || undefined;
     } while (marker);
+  }
 
+  async *scan(filter?: RegExp): AsyncGenerator<AzureFile> {
+    for await (const page of this.#pages(filter)) yield* page;
+  }
+
+  async list(filter?: RegExp): Promise<AzureFile[]> {
+    const files: AzureFile[] = [];
+    for await (const page of this.#pages(filter)) files.push(...page);
     return files;
   }
 
@@ -181,18 +195,18 @@ class AzureBucket implements Bucket {
     return sub;
   }
 
-  async remove(filter?: string | RegExp): Promise<AzureFile[]> {
+  async remove(filter?: RegExp): Promise<AzureFile[]> {
     const files = await this.list(filter);
     await Promise.all(files.map((f) => f.remove()));
     return files;
   }
 
-  async count(filter?: string | RegExp): Promise<number> {
+  async count(filter?: RegExp): Promise<number> {
     return (await this.list(filter)).length;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<AzureFile> {
-    for (const file of await this.list()) yield file;
+    yield* this.scan();
   }
 }
 

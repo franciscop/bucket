@@ -3,7 +3,8 @@ import parse from "../lib/parse.ts";
 import { sha1hex } from "../lib/webcrypto.ts";
 import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
-import { getContentType } from "../lib/fileTypes.ts";
+import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
+import metaFromHeaders from "../lib/meta.ts";
 import type {
   BucketFile,
   FileInfo,
@@ -23,7 +24,6 @@ export interface B2BucketContext {
   apiBase: string;
   base: string;
   name: string;
-  list(prefix: string): Promise<B2File[]>;
 }
 
 export class B2File implements BucketFile {
@@ -44,33 +44,45 @@ export class B2File implements BucketFile {
   }
 
   async info(): Promise<FileInfo> {
-    const files = await this.#bucket.list(this.path);
-    const match = (files as B2File[]).find((f) => f.path === this.path);
-    if (match) {
-      this.id = match.id;
-      this.type = match.type;
-      this.size = match.size;
-      this.date = match.date;
+    // B2 has no metadata-by-name endpoint, but a HEAD on the download-by-name
+    // URL returns it in headers. `bucket.fetch` throws on any non-2xx, so a
+    // missing file (404) surfaces as a throw; per the documented contract
+    // info()/exists() never throw, so any failure means "does not exist".
+    const bucket = await this.#bucket.info();
+    const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
+    let res: Response;
+    try {
+      res = await this.#bucket.fetch(url, { method: "HEAD" });
+    } catch {
       return {
-        id: match.id,
-        name: match.name,
-        path: match.path,
-        exists: true,
-        type: match.type ?? null,
-        size: match.size ?? 0,
-        date: match.date ?? null,
-        url: match.url ?? null,
+        id: this.id,
+        name: this.name,
+        path: this.path,
+        exists: false,
+        type: null,
+        size: 0,
+        date: null,
+        url: null,
+        metadata: {},
       };
     }
+    this.id = res.headers.get("x-bz-file-id") ?? this.id;
+    this.type = res.headers.get("content-type") ?? undefined;
+    this.size = Number(res.headers.get("content-length") ?? 0);
+    const ts = res.headers.get("x-bz-upload-timestamp");
+    this.date = ts ? new Date(Number(ts)) : undefined;
     return {
       id: this.id,
       name: this.name,
       path: this.path,
-      exists: false,
-      type: null,
-      size: 0,
-      date: null,
-      url: null,
+      exists: true,
+      type: this.type ?? null,
+      size: this.size,
+      date: this.date ?? null,
+      url,
+      metadata: metaFromHeaders(res.headers, "x-bz-info-", (k) =>
+        k.startsWith("b2-"),
+      ),
     };
   }
 
@@ -133,7 +145,7 @@ export class B2File implements BucketFile {
       headers["X-Bz-Info-b2-content-disposition"] = options.disposition;
     if (options.metadata) {
       for (const [k, v] of Object.entries(options.metadata)) {
-        headers[`X-Bz-Info-${k}`] = v;
+        headers[`X-Bz-Info-${k.toLowerCase()}`] = v;
       }
     }
     const res2 = await this.#bucket.fetch(auth.uploadUrl, {
@@ -150,7 +162,10 @@ export class B2File implements BucketFile {
     if (content instanceof Buffer || content instanceof Uint8Array)
       return this.#put(Buffer.from(content), options);
     if (content instanceof Blob)
-      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+      return this.#put(Buffer.from(await content.arrayBuffer()), {
+        ...options,
+        type: resolveContentType(this.path, content, options),
+      });
     if (content instanceof B2File)
       return this.#put(Buffer.from(await content.arrayBuffer()), options);
     if (typeof (content as ReadableStream).pipeTo === "function")
@@ -160,12 +175,16 @@ export class B2File implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(path: string): Promise<void> {
-    await new B2File(path, this.#bucket).write(this);
+  async copyTo(dest: string | BucketFile): Promise<void> {
+    if (typeof dest !== "string") {
+      await dest.write(this);
+      return;
+    }
+    await new B2File(dest, this.#bucket).write(this);
   }
 
-  async moveTo(path: string): Promise<void> {
-    await this.copyTo(path);
+  async moveTo(dest: string | BucketFile): Promise<void> {
+    await this.copyTo(dest);
     await this.remove();
   }
 

@@ -85,4 +85,18 @@ export function getContentType(path: string): string | undefined {
   return ext ? fileTypes[ext] : undefined;
 }
 
+// Content-type for a write: explicit option first, then the destination path's
+// extension, then the type a Blob/File input carries. Undefined if none apply.
+export function resolveContentType(
+  path: string,
+  content: unknown,
+  options?: { type?: string },
+): string | undefined {
+  return (
+    options?.type ??
+    getContentType(path) ??
+    (content instanceof Blob && content.type ? content.type : undefined)
+  );
+}
+
 export default fileTypes;

@@ -7,7 +7,8 @@ import {
   getMetadataToken,
   presignGCS,
 } from "../lib/signGCS.ts";
-import { getContentType } from "../lib/fileTypes.ts";
+import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
+import BucketError from "../lib/BucketError.ts";
 import type {
   BucketFile,
   FileInfo,
@@ -21,6 +22,7 @@ export interface GCSObjectMeta {
   size: string;
   updated: string;
   mediaLink: string;
+  metadata?: Record<string, string>;
 }
 
 export type GCSAuth = { clientEmail: string; privateKey: string } | null;
@@ -80,9 +82,14 @@ export class GCSFile implements BucketFile {
         size: 0,
         date: null,
         url: null,
+        metadata: {},
       };
     }
-    if (!res.ok) throw new Error(`GCS info error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`GCS info error: ${res.status}`, {
+        provider: "GCS",
+        status: res.status,
+      });
     const meta = (await res.json()) as GCSObjectMeta;
     return {
       id: this.id,
@@ -93,6 +100,7 @@ export class GCSFile implements BucketFile {
       size: parseInt(meta.size, 10),
       date: new Date(meta.updated),
       url: this.publicUrl(),
+      metadata: meta.metadata ?? {},
     };
   }
 
@@ -104,7 +112,11 @@ export class GCSFile implements BucketFile {
     const res = await fetch(this.#mediaUrl(), {
       headers: await this.#headers(),
     });
-    if (!res.ok) throw new Error(`GCS GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`GCS GET error: ${res.status}`, {
+        provider: "GCS",
+        status: res.status,
+      });
     return res.text();
   }
 
@@ -112,7 +124,11 @@ export class GCSFile implements BucketFile {
     const res = await fetch(this.#mediaUrl(), {
       headers: await this.#headers(),
     });
-    if (!res.ok) throw new Error(`GCS GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`GCS GET error: ${res.status}`, {
+        provider: "GCS",
+        status: res.status,
+      });
     return res.json();
   }
 
@@ -120,7 +136,11 @@ export class GCSFile implements BucketFile {
     const res = await fetch(this.#mediaUrl(), {
       headers: await this.#headers(),
     });
-    if (!res.ok) throw new Error(`GCS GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`GCS GET error: ${res.status}`, {
+        provider: "GCS",
+        status: res.status,
+      });
     return res.arrayBuffer();
   }
 
@@ -128,7 +148,11 @@ export class GCSFile implements BucketFile {
     const res = await fetch(this.#mediaUrl(), {
       headers: await this.#headers(),
     });
-    if (!res.ok) throw new Error(`GCS GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`GCS GET error: ${res.status}`, {
+        provider: "GCS",
+        status: res.status,
+      });
     return res.blob();
   }
 
@@ -147,7 +171,13 @@ export class GCSFile implements BucketFile {
       if (type) metaObj.contentType = type;
       if (options.cacheControl) metaObj.cacheControl = options.cacheControl;
       if (options.disposition) metaObj.contentDisposition = options.disposition;
-      if (options.metadata) metaObj.metadata = options.metadata;
+      if (options.metadata)
+        metaObj.metadata = Object.fromEntries(
+          Object.entries(options.metadata).map(([k, v]) => [
+            k.toLowerCase(),
+            v,
+          ]),
+        );
 
       const metaJson = JSON.stringify(metaObj);
       const contentType = type ?? "application/octet-stream";
@@ -168,7 +198,11 @@ export class GCSFile implements BucketFile {
         }),
         body,
       });
-      if (!res.ok) throw new Error(`GCS PUT error: ${res.status}`);
+      if (!res.ok)
+        throw new BucketError(`GCS PUT error: ${res.status}`, {
+          provider: "GCS",
+          status: res.status,
+        });
     } else {
       const url = `${this.#endpoint}/upload/storage/v1/b/${this.#bucket}/o?uploadType=media&name=${encodeURIComponent(this.path)}`;
       const extra: Record<string, string> = {};
@@ -178,7 +212,11 @@ export class GCSFile implements BucketFile {
         headers: await this.#headers(extra),
         body: data as BodyInit,
       });
-      if (!res.ok) throw new Error(`GCS PUT error: ${res.status}`);
+      if (!res.ok)
+        throw new BucketError(`GCS PUT error: ${res.status}`, {
+          provider: "GCS",
+          status: res.status,
+        });
     }
   }
 
@@ -187,7 +225,10 @@ export class GCSFile implements BucketFile {
     if (content instanceof Buffer || content instanceof Uint8Array)
       return this.#put(Buffer.from(content), options);
     if (content instanceof Blob)
-      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+      return this.#put(Buffer.from(await content.arrayBuffer()), {
+        ...options,
+        type: resolveContentType(this.path, content, options),
+      });
     if (content instanceof GCSFile)
       return this.#put(Buffer.from(await content.arrayBuffer()), options);
     if (typeof (content as ReadableStream).pipeTo === "function")
@@ -197,18 +238,26 @@ export class GCSFile implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(path: string): Promise<void> {
-    const dst = path.startsWith("/") ? path.slice(1) : path;
+  async copyTo(dest: string | BucketFile): Promise<void> {
+    if (typeof dest !== "string") {
+      await dest.write(this);
+      return;
+    }
+    const dst = dest.startsWith("/") ? dest.slice(1) : dest;
     const url = `${this.#endpoint}/storage/v1/b/${this.#bucket}/o/${encodeURIComponent(this.path)}/copyTo/b/${this.#bucket}/o/${encodeURIComponent(dst)}`;
     const res = await fetch(url, {
       method: "POST",
       headers: await this.#headers(),
     });
-    if (!res.ok) throw new Error(`GCS COPY error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`GCS COPY error: ${res.status}`, {
+        provider: "GCS",
+        status: res.status,
+      });
   }
 
-  async moveTo(path: string): Promise<void> {
-    await this.copyTo(path);
+  async moveTo(dest: string | BucketFile): Promise<void> {
+    await this.copyTo(dest);
     await this.remove();
   }
 
@@ -225,7 +274,10 @@ export class GCSFile implements BucketFile {
       headers: await this.#headers(),
     });
     if (!res.ok && res.status !== 204)
-      throw new Error(`GCS DELETE error: ${res.status}`);
+      throw new BucketError(`GCS DELETE error: ${res.status}`, {
+        provider: "GCS",
+        status: res.status,
+      });
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
@@ -250,7 +302,11 @@ export class GCSFile implements BucketFile {
       const res = await fetch(this.#mediaUrl(), {
         headers: await this.#headers(),
       });
-      if (!res.ok) throw new Error(`GCS GET error: ${res.status}`);
+      if (!res.ok)
+        throw new BucketError(`GCS GET error: ${res.status}`, {
+          provider: "GCS",
+          status: res.status,
+        });
       return res.body!;
     });
   }

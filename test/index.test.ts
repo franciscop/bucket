@@ -485,6 +485,100 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
       });
     });
 
+    // ── nested-path filtering ────────────────────────────────────────────────
+
+    describe("nested-path filtering", () => {
+      it("filters a RegExp against the full key, not the basename", async () => {
+        const name = testFile("txt");
+        await bucket.file("nested/" + name).write("x");
+        const matched = await bucket.list(new RegExp("^nested/"));
+        // `^nested/` can only match via the full key, never the basename, so
+        // finding the file proves full-key matching (FS reports absolute paths).
+        expect(matched.some((f) => f.name === name)).toBe(true);
+        // A basename-only pattern must NOT match the nested key.
+        const byBase = await bucket.list(
+          new RegExp("^" + name.replace(".", "\\.") + "$"),
+        );
+        expect(byBase.length).toBe(0);
+      });
+    });
+
+    // ── error paths ────────────────────────────────────────────────────────────
+
+    describe("error paths", () => {
+      it("reading a missing file throws a BucketError with code NOT_FOUND", async () => {
+        const missing = bucket.file("missing-" + testFile("txt"));
+        let err: { code?: string } | undefined;
+        await missing.text().catch((e) => (err = e));
+        expect(err?.code).toBe("NOT_FOUND");
+      });
+    });
+
+    // ── metadata ────────────────────────────────────────────────────────────
+
+    describe("metadata", () => {
+      it("round-trips custom metadata (lowercased) via info()", async () => {
+        const name = testFile("txt");
+        await bucket.file(name).write("x", { metadata: { Foo: "bar" } });
+        const info = await bucket.file(name).info();
+        expect(typeof info.metadata).toBe("object");
+        // Remote providers store and return custom metadata with lowercase keys;
+        // the filesystem has no metadata store and returns {}.
+        if (bucket.type !== "FILESYSTEM") {
+          expect(info.metadata.foo).toBe("bar");
+        }
+      });
+    });
+
+    // ── copyTo / moveTo a File ───────────────────────────────────────────────
+
+    describe("copyTo / moveTo a File", () => {
+      it("copyTo(file) writes to the destination and keeps the original", async () => {
+        const src = bucket.file(testFile("txt"));
+        await src.write("payload");
+        const dst = bucket.file("copied-" + testFile("txt"));
+        await src.copyTo(dst);
+        expect(await dst.text()).toBe("payload");
+        expect(await src.exists()).toBe(true);
+        await dst.remove();
+      });
+
+      it("moveTo(file) writes to the destination and removes the original", async () => {
+        const src = bucket.file(testFile("txt"));
+        await src.write("payload");
+        const dst = bucket.file("moved-" + testFile("txt"));
+        await src.moveTo(dst);
+        expect(await dst.text()).toBe("payload");
+        expect(await src.exists()).toBe(false);
+        await dst.remove();
+      });
+    });
+
+    // ── scan() ──────────────────────────────────────────────────────────────
+
+    describe("scan()", () => {
+      it("yields only files matching the filter", async () => {
+        await bucket.file(testFile("txt")).write("a");
+        await bucket.file(testFile("jpg")).write("b");
+        const names: string[] = [];
+        for await (const f of bucket.scan(/^test[^/]*\.txt$/))
+          names.push(f.name);
+        expect(names.length).toBeGreaterThanOrEqual(1);
+        expect(names.every((n) => n.endsWith(".txt"))).toBe(true);
+      });
+
+      it("can be stopped early with break", async () => {
+        await bucket.file(testFile("txt")).write("a");
+        await bucket.file(testFile("txt")).write("b");
+        let count = 0;
+        for await (const _ of bucket.scan()) {
+          count++;
+          break;
+        }
+        expect(count).toBe(1);
+      });
+    });
+
     // ── async iteration ───────────────────────────────────────────────────────
 
     describe("async iteration (for await)", () => {

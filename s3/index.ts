@@ -1,5 +1,6 @@
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
 import { sha256base64 } from "../lib/webcrypto.ts";
+import BucketError from "../lib/BucketError.ts";
 import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
 import type { Bucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
 import { S3File, type S3BucketContext } from "./File.ts";
@@ -186,8 +187,7 @@ class S3Bucket implements Bucket {
     };
   }
 
-  async list(filter?: string | RegExp): Promise<S3File[]> {
-    const files: S3File[] = [];
+  async *#pages(filter?: RegExp): AsyncGenerator<S3File[]> {
     let token: string | undefined;
     const s = scope(this.PREFIX, filter);
 
@@ -209,25 +209,39 @@ class S3Bucket implements Bucket {
         method: "GET",
         headers: req.headers,
       });
-      if (!res.ok) throw new Error(`S3 list error: ${res.status}`);
+      if (!res.ok)
+        throw new BucketError(`S3 list error: ${res.status}`, {
+          provider: "S3",
+          status: res.status,
+        });
 
       const xmlStr = await res.text();
+      const page: S3File[] = [];
       for (const item of extractTags(xmlStr, "Contents")) {
         const key = getTag(item, "Key");
         if (!s.test(key)) continue;
-        files.push(this.#handle(key));
+        page.push(this.#handle(key));
       }
+      yield page;
 
       token =
         getTag(xmlStr, "IsTruncated") === "true"
           ? getTag(xmlStr, "NextContinuationToken")
           : undefined;
     } while (token);
+  }
 
+  async *scan(filter?: RegExp): AsyncGenerator<S3File> {
+    for await (const page of this.#pages(filter)) yield* page;
+  }
+
+  async list(filter?: RegExp): Promise<S3File[]> {
+    const files: S3File[] = [];
+    for await (const page of this.#pages(filter)) files.push(...page);
     return files;
   }
 
-  async remove(filter?: string | RegExp): Promise<S3File[]> {
+  async remove(filter?: RegExp): Promise<S3File[]> {
     const files = await this.list(filter);
     if (!files.length) return [];
 
@@ -257,7 +271,10 @@ class S3Bucket implements Bucket {
         body,
       });
       if (!res.ok)
-        throw new Error(`S3 delete error: ${res.status} ${await res.text()}`);
+        throw new BucketError(
+          `S3 delete error: ${res.status} ${await res.text()}`,
+          { provider: "S3", status: res.status },
+        );
 
       const xmlStr = await res.text();
       const keys = extractTags(xmlStr, "Deleted").map((d) => getTag(d, "Key"));
@@ -296,12 +313,12 @@ class S3Bucket implements Bucket {
     return sub;
   }
 
-  async count(filter?: string | RegExp): Promise<number> {
+  async count(filter?: RegExp): Promise<number> {
     return (await this.list(filter)).length;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<S3File> {
-    for (const file of await this.list()) yield file;
+    yield* this.scan();
   }
 }
 

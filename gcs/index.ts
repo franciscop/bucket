@@ -1,4 +1,5 @@
 import { getAccessToken, getMetadataToken } from "../lib/signGCS.ts";
+import BucketError from "../lib/BucketError.ts";
 import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
 import type { Bucket, BucketInfo } from "../lib/types.ts";
 import { GCSFile, type GCSAuth, type GCSObjectMeta } from "./File.ts";
@@ -82,8 +83,7 @@ class GCSBucket implements Bucket {
     };
   }
 
-  async list(filter?: string | RegExp): Promise<GCSFile[]> {
-    const files: GCSFile[] = [];
+  async *#pages(filter?: RegExp): AsyncGenerator<GCSFile[]> {
     let pageToken: string | undefined;
     const s = scope(this.PREFIX, filter);
 
@@ -97,16 +97,21 @@ class GCSBucket implements Bucket {
         `${this.#endpoint}/storage/v1/b/${this.#bucket}/o?${params}`,
         { headers: token ? { Authorization: `Bearer ${token}` } : {} },
       );
-      if (!res.ok) throw new Error(`GCS list error: ${res.status}`);
+      if (!res.ok)
+        throw new BucketError(`GCS list error: ${res.status}`, {
+          provider: "GCS",
+          status: res.status,
+        });
 
       const data = (await res.json()) as {
         items?: GCSObjectMeta[];
         nextPageToken?: string;
       };
 
+      const page: GCSFile[] = [];
       for (const item of data.items ?? []) {
         if (!s.test(item.name)) continue;
-        files.push(
+        page.push(
           new GCSFile(
             item.name,
             this.#bucket,
@@ -116,10 +121,19 @@ class GCSBucket implements Bucket {
           ),
         );
       }
+      yield page;
 
       pageToken = data.nextPageToken;
     } while (pageToken);
+  }
 
+  async *scan(filter?: RegExp): AsyncGenerator<GCSFile> {
+    for await (const page of this.#pages(filter)) yield* page;
+  }
+
+  async list(filter?: RegExp): Promise<GCSFile[]> {
+    const files: GCSFile[] = [];
+    for await (const page of this.#pages(filter)) files.push(...page);
     return files;
   }
 
@@ -143,18 +157,18 @@ class GCSBucket implements Bucket {
     return sub;
   }
 
-  async remove(filter?: string | RegExp): Promise<GCSFile[]> {
+  async remove(filter?: RegExp): Promise<GCSFile[]> {
     const files = await this.list(filter);
     await Promise.all(files.map((f) => f.remove()));
     return files;
   }
 
-  async count(filter?: string | RegExp): Promise<number> {
+  async count(filter?: RegExp): Promise<number> {
     return (await this.list(filter)).length;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<GCSFile> {
-    for (const file of await this.list()) yield file;
+    yield* this.scan();
   }
 }
 

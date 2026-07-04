@@ -19,24 +19,22 @@ export const withPrefix = (prefix: string, name: string): string =>
 export const joinPrefix = (parent: string, path: string): string =>
   withPrefix(parent, cleanPrefix(path));
 
-// Translate a caller's filter into what a provider `list()` needs: `query` is the
-// string prefix to send to the provider, and `test(key)` re-checks each returned
-// full key so results never leak outside the folder. For a RegExp the match is
-// folder-relative (tested against the path below the folder). `test` alone is
-// sufficient (providers without server-side prefixing can rely on it).
+// Translate the current folder plus an optional RegExp into what a provider
+// `list()` needs: `query` is the folder prefix to send to the provider, and
+// `test(key)` re-checks each returned full key so results never leak outside the
+// folder. The RegExp is matched folder-relative (against the path below the
+// folder). `test` alone is sufficient, so providers without server-side
+// prefixing (the filesystem) can rely on it.
 export function scope(
   prefix: string,
-  filter?: string | RegExp,
+  filter?: RegExp,
 ): { query: string; test: (key: string) => boolean } {
   const dir = prefix ? prefix + "/" : "";
-  if (filter instanceof RegExp) {
-    return {
-      query: dir,
-      test: (key) => key.startsWith(dir) && filter.test(key.slice(dir.length)),
-    };
-  }
-  const query = dir + (filter ?? "");
-  return { query, test: (key) => key.startsWith(query) };
+  return {
+    query: dir,
+    test: (key) =>
+      key.startsWith(dir) && (!filter || filter.test(key.slice(dir.length))),
+  };
 }
 
 // Copy a bucket instance and set a new PREFIX. Works for backends whose state is

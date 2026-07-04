@@ -192,7 +192,7 @@ describe("B2 bucket.list()", () => {
     expect(listCalls).toBe(2);
   });
 
-  it("filters by string prefix", async () => {
+  it("filters by folder prefix", async () => {
     const bucket = await makeBucket((url) => {
       if ((url as string).includes("b2_list_file_names"))
         return Promise.resolve(makeResponse(JSON.stringify(B2_LIST_RESPONSE)));
@@ -205,7 +205,7 @@ describe("B2 bucket.list()", () => {
         return Promise.resolve(makeResponse(JSON.stringify(B2_LIST_RESPONSE)));
       return Promise.resolve(makeResponse(null));
     }) as typeof fetch;
-    await bucket.list("data/");
+    await bucket.folder("data").list();
     const listReq = requests.find((u) => u.includes("b2_list_file_names"));
     expect(listReq).toContain("prefix=data%2F");
   });
@@ -220,10 +220,17 @@ describe("B2 file().info()", () => {
     globalThis.fetch = originalFetch;
   });
 
-  it("returns exists: true for a listed file", async () => {
-    const bucket = await makeBucket((url) => {
-      if ((url as string).includes("b2_list_file_names"))
-        return Promise.resolve(makeResponse(JSON.stringify(B2_LIST_RESPONSE)));
+  it("returns exists: true from a HEAD on the file", async () => {
+    const bucket = await makeBucket((url, init) => {
+      if ((url as string).includes("/file/") && init?.method === "HEAD")
+        return Promise.resolve(
+          makeResponse(null, 200, {
+            "content-length": "5",
+            "content-type": "text/plain",
+            "x-bz-upload-timestamp": "1700000000000",
+            "x-bz-file-id": "id123",
+          }),
+        );
       return Promise.resolve(makeResponse(null));
     });
     const info = await bucket.file("hello.txt").info();
@@ -232,12 +239,10 @@ describe("B2 file().info()", () => {
     expect(info.size).toBe(5);
   });
 
-  it("returns exists: false when not in list", async () => {
-    const bucket = await makeBucket((url) => {
-      if ((url as string).includes("b2_list_file_names"))
-        return Promise.resolve(
-          makeResponse(JSON.stringify({ files: [], nextFileName: null })),
-        );
+  it("returns exists: false when the HEAD 404s", async () => {
+    const bucket = await makeBucket((url, init) => {
+      if ((url as string).includes("/file/") && init?.method === "HEAD")
+        return Promise.resolve(makeResponse(null, 404));
       return Promise.resolve(makeResponse(null));
     });
     const info = await bucket.file("nonexistent.txt").info();
@@ -258,21 +263,19 @@ describe("B2 file().exists()", () => {
     globalThis.fetch = originalFetch;
   });
 
-  it("returns true for a file in the listing", async () => {
-    const bucket = await makeBucket((url) => {
-      if ((url as string).includes("b2_list_file_names"))
-        return Promise.resolve(makeResponse(JSON.stringify(B2_LIST_RESPONSE)));
+  it("returns true when the HEAD succeeds", async () => {
+    const bucket = await makeBucket((url, init) => {
+      if ((url as string).includes("/file/") && init?.method === "HEAD")
+        return Promise.resolve(makeResponse("hi", 200));
       return Promise.resolve(makeResponse(null));
     });
     expect(await bucket.file("hello.txt").exists()).toBe(true);
   });
 
-  it("returns false for a file not in the listing", async () => {
-    const bucket = await makeBucket((url) => {
-      if ((url as string).includes("b2_list_file_names"))
-        return Promise.resolve(
-          makeResponse(JSON.stringify({ files: [], nextFileName: null })),
-        );
+  it("returns false when the HEAD 404s", async () => {
+    const bucket = await makeBucket((url, init) => {
+      if ((url as string).includes("/file/") && init?.method === "HEAD")
+        return Promise.resolve(makeResponse(null, 404));
       return Promise.resolve(makeResponse(null));
     });
     expect(await bucket.file("missing.txt").exists()).toBe(false);
