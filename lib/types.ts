@@ -16,6 +16,8 @@ export interface FileInfo {
   date: Date | null;
   /** Public URL, or null if not publicly accessible */
   url: string | null;
+  /** Custom metadata (lowercase keys); empty when none or unsupported */
+  metadata: Record<string, string>;
 }
 
 /** Metadata returned by `bucket.info()`. Every provider returns the same shape. */
@@ -80,10 +82,10 @@ export interface BucketFile {
   /** Writes content to the file, replacing any existing content */
   write(content: WriteContent, options?: WriteOptions): Promise<void>;
 
-  /** Copies this file to `path` within the same bucket */
-  copyTo(path: string): Promise<void>;
-  /** Moves this file to `path` (copy + delete original) */
-  moveTo(path: string): Promise<void>;
+  /** Copies this file to a path (same bucket) or a file in any bucket */
+  copyTo(dest: string | BucketFile): Promise<void>;
+  /** Moves this file (copy + delete) to a path or a file in any bucket */
+  moveTo(dest: string | BucketFile): Promise<void>;
   /**
    * Renames the file within its current directory.
    * Throws if `name` contains a `/`, use `moveTo()` to change directories.
@@ -128,18 +130,20 @@ export interface Bucket {
 
   /** Returns metadata about the bucket */
   info(): Promise<BucketInfo>;
+  /** Lists all files in the bucket, optionally filtered by a `RegExp`. */
+  list(filter?: RegExp): Promise<BucketFile[]>;
   /**
-   * Lists all files in the bucket.
-   * Pass a string for prefix filtering, or a `RegExp` for pattern filtering.
+   * Lazily iterates files, streaming provider pages as they arrive (bounded
+   * memory, supports early `break`). Optionally filtered by a `RegExp`.
    */
-  list(filter?: RegExp | string): Promise<BucketFile[]>;
+  scan(filter?: RegExp): AsyncGenerator<BucketFile>;
   /**
    * Deletes all files matching the optional filter.
    * Returns the deleted file objects.
    */
-  remove(filter?: RegExp | string): Promise<BucketFile[]>;
+  remove(filter?: RegExp): Promise<BucketFile[]>;
   /** Returns the number of files matching the optional filter */
-  count(filter?: RegExp | string): Promise<number>;
+  count(filter?: RegExp): Promise<number>;
   /** Returns a file handle for the given path (does not check existence) */
   file(name: string): BucketFile;
   /** Returns a folder: a copy of this bucket scoped to the given path prefix */

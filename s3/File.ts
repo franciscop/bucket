@@ -3,7 +3,9 @@ import { presignS3 } from "../lib/presignS3.ts";
 import parse from "../lib/parse.ts";
 import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
-import { getContentType } from "../lib/fileTypes.ts";
+import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
+import BucketError from "../lib/BucketError.ts";
+import metaFromHeaders from "../lib/meta.ts";
 import type {
   BucketFile,
   FileInfo,
@@ -49,9 +51,14 @@ export class S3File implements BucketFile {
         size: 0,
         date: null,
         url: null,
+        metadata: {},
       };
     }
-    if (!res.ok) throw new Error(`S3 HEAD error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`S3 HEAD error: ${res.status}`, {
+        provider: "S3",
+        status: res.status,
+      });
     return {
       id: this.id,
       name: this.name,
@@ -61,6 +68,7 @@ export class S3File implements BucketFile {
       size: parseInt(res.headers.get("content-length") ?? "0", 10),
       date: new Date(res.headers.get("last-modified") ?? Date.now()),
       url: this.#ctx.makeUrl(this.path),
+      metadata: metaFromHeaders(res.headers, "x-amz-meta-"),
     };
   }
 
@@ -70,25 +78,41 @@ export class S3File implements BucketFile {
 
   async text(): Promise<string> {
     const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok) throw new Error(`S3 GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`S3 GET error: ${res.status}`, {
+        provider: "S3",
+        status: res.status,
+      });
     return res.text();
   }
 
   async json(): Promise<unknown> {
     const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok) throw new Error(`S3 GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`S3 GET error: ${res.status}`, {
+        provider: "S3",
+        status: res.status,
+      });
     return res.json();
   }
 
   async arrayBuffer(): Promise<ArrayBuffer> {
     const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok) throw new Error(`S3 GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`S3 GET error: ${res.status}`, {
+        provider: "S3",
+        status: res.status,
+      });
     return res.arrayBuffer();
   }
 
   async blob(): Promise<Blob> {
     const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok) throw new Error(`S3 GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`S3 GET error: ${res.status}`, {
+        provider: "S3",
+        status: res.status,
+      });
     return res.blob();
   }
 
@@ -105,14 +129,18 @@ export class S3File implements BucketFile {
       headers["Content-Disposition"] = options.disposition;
     if (options.metadata) {
       for (const [k, v] of Object.entries(options.metadata)) {
-        headers[`x-amz-meta-${k}`] = v;
+        headers[`x-amz-meta-${k.toLowerCase()}`] = v;
       }
     }
     const res = await this.#ctx.doRequest("PUT", this.path, {
       body: data,
       headers,
     });
-    if (!res.ok) throw new Error(`S3 PUT error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`S3 PUT error: ${res.status}`, {
+        provider: "S3",
+        status: res.status,
+      });
   }
 
   async write(content: WriteContent, options?: WriteOptions): Promise<void> {
@@ -120,7 +148,10 @@ export class S3File implements BucketFile {
     if (content instanceof Buffer || content instanceof Uint8Array)
       return this.#put(Buffer.from(content), options);
     if (content instanceof Blob)
-      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+      return this.#put(Buffer.from(await content.arrayBuffer()), {
+        ...options,
+        type: resolveContentType(this.path, content, options),
+      });
     if (content instanceof S3File)
       return this.#put(Buffer.from(await content.arrayBuffer()), options);
     if (typeof (content as ReadableStream).pipeTo === "function")
@@ -130,16 +161,24 @@ export class S3File implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(path: string): Promise<void> {
-    const dst = path.startsWith("/") ? path.slice(1) : path;
+  async copyTo(dest: string | BucketFile): Promise<void> {
+    if (typeof dest !== "string") {
+      await dest.write(this);
+      return;
+    }
+    const dst = dest.startsWith("/") ? dest.slice(1) : dest;
     const res = await this.#ctx.doRequest("PUT", dst, {
       headers: { "x-amz-copy-source": `/${this.#ctx.bucketName}/${this.path}` },
     });
-    if (!res.ok) throw new Error(`S3 COPY error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`S3 COPY error: ${res.status}`, {
+        provider: "S3",
+        status: res.status,
+      });
   }
 
-  async moveTo(path: string): Promise<void> {
-    await this.copyTo(path);
+  async moveTo(dest: string | BucketFile): Promise<void> {
+    await this.copyTo(dest);
     await this.remove();
   }
 
@@ -153,7 +192,10 @@ export class S3File implements BucketFile {
   async remove(): Promise<void> {
     const res = await this.#ctx.doRequest("DELETE", this.path);
     if (!res.ok && res.status !== 204)
-      throw new Error(`S3 DELETE error: ${res.status}`);
+      throw new BucketError(`S3 DELETE error: ${res.status}`, {
+        provider: "S3",
+        status: res.status,
+      });
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
@@ -176,7 +218,11 @@ export class S3File implements BucketFile {
   stream(): ReadableStream {
     return promiseToReadable(async () => {
       const res = await this.#ctx.doRequest("GET", this.path);
-      if (!res.ok) throw new Error(`S3 GET error: ${res.status}`);
+      if (!res.ok)
+        throw new BucketError(`S3 GET error: ${res.status}`, {
+          provider: "S3",
+          status: res.status,
+        });
       return res.body!;
     });
   }

@@ -1,6 +1,6 @@
 import { userInfo } from "node:os";
 import fsp from "node:fs/promises";
-import { basename, join, resolve, isAbsolute } from "node:path";
+import { basename, join, resolve, isAbsolute, relative } from "node:path";
 
 import type { Bucket, BucketInfo } from "../lib/types.ts";
 import { cleanPrefix } from "../lib/prefix.ts";
@@ -23,7 +23,7 @@ class FileSystemBucket implements Bucket {
     });
   }
 
-  async list(filter?: RegExp | string): Promise<FSFile[]> {
+  async list(filter?: RegExp): Promise<FSFile[]> {
     let raw: import("node:fs").Dirent[];
     try {
       raw = await fsp.readdir(this.path, {
@@ -45,10 +45,9 @@ class FileSystemBucket implements Bucket {
           ),
         ),
       );
-    const result =
-      filter instanceof RegExp
-        ? files.filter((f: FSFile) => filter.test(f.name))
-        : files;
+    const result = filter
+      ? files.filter((f: FSFile) => filter.test(relative(this.path, f.path)))
+      : files;
     return result.sort((a, b) => a.path.localeCompare(b.path));
   }
 
@@ -62,20 +61,23 @@ class FileSystemBucket implements Bucket {
     return new FileSystemBucket(join(this.path, cleanPrefix(path)));
   }
 
-  async remove(filter?: RegExp | string): Promise<FSFile[]> {
+  async remove(filter?: RegExp): Promise<FSFile[]> {
     const files = await this.list(filter);
     await Promise.all(files.map((f) => f.remove()));
     return files;
   }
 
-  async count(filter?: RegExp | string): Promise<number> {
+  async count(filter?: RegExp): Promise<number> {
     return (await this.list(filter)).length;
   }
 
+  async *scan(filter?: RegExp): AsyncGenerator<FSFile> {
+    // The filesystem has no pagination; readdir already returns everything.
+    for (const file of await this.list(filter)) yield file;
+  }
+
   async *[Symbol.asyncIterator](): AsyncGenerator<FSFile> {
-    for (const file of await this.list()) {
-      yield file;
-    }
+    yield* this.scan();
   }
 }
 

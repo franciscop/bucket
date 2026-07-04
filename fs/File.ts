@@ -1,15 +1,14 @@
 import hash from "../lib/hash.ts";
 
 import { Blob } from "node:buffer";
-import { exec } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
 import fsp from "node:fs/promises";
 import { dirname, join, resolve, isAbsolute } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { WritableStream } from "node:stream/web";
-import { promisify } from "node:util";
 
 import { getContentType } from "../lib/fileTypes.ts";
+import BucketError from "../lib/BucketError.ts";
 import type {
   BucketFile,
   FileInfo,
@@ -17,13 +16,21 @@ import type {
   WriteOptions,
 } from "../lib/types.ts";
 
-const execP = promisify(exec) as (
-  cmd: string,
-) => Promise<{ stdout: string; stderr: string }>;
-const cmd = (txt: string): Promise<string> =>
-  execP(txt).then((res) => res.stdout.trim());
-const mimeType = (file: string): Promise<string> =>
-  cmd(`file -b --mime-type '${file}'`);
+// Map a Node filesystem error to a BucketError so `.code` is uniform with the
+// remote providers (ENOENT → NOT_FOUND, permission → FORBIDDEN).
+function fsError(err: unknown): never {
+  const code = (err as NodeJS.ErrnoException).code;
+  throw new BucketError((err as Error).message, {
+    provider: "FILESYSTEM",
+    code:
+      code === "ENOENT"
+        ? "NOT_FOUND"
+        : code === "EACCES" || code === "EPERM"
+          ? "FORBIDDEN"
+          : "UNKNOWN",
+    cause: err,
+  });
+}
 
 export class FSFile implements BucketFile {
   id: string;
@@ -39,13 +46,13 @@ export class FSFile implements BucketFile {
   }
 
   async info(): Promise<FileInfo> {
-    const [exists, info, type] = await Promise.all([
+    const [exists, info] = await Promise.all([
       this.exists(),
       fsp
         .stat(this.path)
         .catch(() => ({ size: 0, mtime: null as Date | null })),
-      mimeType(this.path),
     ]);
+    const type = getContentType(this.path) ?? null;
     return {
       id: this.id,
       name: this.name,
@@ -55,6 +62,7 @@ export class FSFile implements BucketFile {
       size: (info as { size: number }).size,
       date: exists ? new Date((info as { mtime: Date }).mtime) : null,
       url: null,
+      metadata: {},
     };
   }
 
@@ -65,18 +73,20 @@ export class FSFile implements BucketFile {
       .catch(() => false);
   }
 
+  #read() {
+    return fsp.readFile(this.path).catch(fsError);
+  }
+
   async text(): Promise<string> {
-    return fsp.readFile(this.path, "utf-8");
+    return (await this.#read()).toString("utf-8");
   }
 
   async json(): Promise<unknown> {
-    return fsp
-      .readFile(this.path, "utf-8")
-      .then((data: string) => JSON.parse(data));
+    return JSON.parse((await this.#read()).toString("utf-8"));
   }
 
   async arrayBuffer(): Promise<ArrayBuffer> {
-    const buf = await fsp.readFile(this.path);
+    const buf = await this.#read();
     return buf.buffer.slice(
       buf.byteOffset,
       buf.byteOffset + buf.byteLength,
@@ -87,7 +97,7 @@ export class FSFile implements BucketFile {
     // Carry a content-type (from the extension) so the Blob round-trips through
     // FormData / Response with the right type, like the remote providers do.
     const type = getContentType(this.path);
-    return new Blob([await fsp.readFile(this.path)], type ? { type } : {});
+    return new Blob([await this.#read()], type ? { type } : {});
   }
 
   async bytes(): Promise<Uint8Array> {
@@ -121,16 +131,25 @@ export class FSFile implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(path: string): Promise<void> {
-    const dst = resolve(isAbsolute(path) ? path : join(this.#root, path));
+  async copyTo(dest: string | BucketFile): Promise<void> {
+    if (typeof dest !== "string") {
+      await dest.write(this);
+      return;
+    }
+    const dst = resolve(isAbsolute(dest) ? dest : join(this.#root, dest));
     await fsp.mkdir(dirname(dst), { recursive: true });
-    await fsp.copyFile(this.path, dst);
+    await fsp.copyFile(this.path, dst).catch(fsError);
   }
 
-  async moveTo(path: string): Promise<void> {
-    const dst = resolve(isAbsolute(path) ? path : join(this.#root, path));
+  async moveTo(dest: string | BucketFile): Promise<void> {
+    if (typeof dest !== "string") {
+      await dest.write(this);
+      await this.remove();
+      return;
+    }
+    const dst = resolve(isAbsolute(dest) ? dest : join(this.#root, dest));
     await fsp.mkdir(dirname(dst), { recursive: true });
-    await fsp.rename(this.path, dst);
+    await fsp.rename(this.path, dst).catch(fsError);
   }
 
   async rename(name: string): Promise<void> {

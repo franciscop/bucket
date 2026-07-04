@@ -1,5 +1,6 @@
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
 import { sha256base64 } from "../lib/webcrypto.ts";
+import BucketError from "../lib/BucketError.ts";
 import { withPrefix, scope, subBucket } from "../lib/prefix.ts";
 import type { Bucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
 import { R2File, type R2BucketContext } from "./File.ts";
@@ -94,8 +95,7 @@ class CloudflareR2Bucket implements Bucket {
     };
   }
 
-  async list(filter?: string | RegExp): Promise<R2File[]> {
-    const files: R2File[] = [];
+  private async *pages(filter?: RegExp): AsyncGenerator<R2File[]> {
     let token: string | undefined;
     const s = scope(this.PREFIX, filter);
 
@@ -116,25 +116,39 @@ class CloudflareR2Bucket implements Bucket {
         method: "GET",
         headers: req.headers,
       });
-      if (!res.ok) throw new Error(`R2 list error: ${res.status}`);
+      if (!res.ok)
+        throw new BucketError(`R2 list error: ${res.status}`, {
+          provider: "R2",
+          status: res.status,
+        });
 
       const xmlStr = await res.text();
+      const page: R2File[] = [];
       for (const item of extractTags(xmlStr, "Contents")) {
         const key = getTag(item, "Key");
         if (!s.test(key)) continue;
-        files.push(this.handle(key));
+        page.push(this.handle(key));
       }
+      yield page;
 
       token =
         getTag(xmlStr, "IsTruncated") === "true"
           ? getTag(xmlStr, "NextContinuationToken")
           : undefined;
     } while (token);
+  }
 
+  async *scan(filter?: RegExp): AsyncGenerator<R2File> {
+    for await (const page of this.pages(filter)) yield* page;
+  }
+
+  async list(filter?: RegExp): Promise<R2File[]> {
+    const files: R2File[] = [];
+    for await (const page of this.pages(filter)) files.push(...page);
     return files;
   }
 
-  async remove(filter?: string | RegExp): Promise<R2File[]> {
+  async remove(filter?: RegExp): Promise<R2File[]> {
     const files = await this.list(filter);
     if (!files.length) return [];
 
@@ -163,7 +177,10 @@ class CloudflareR2Bucket implements Bucket {
         body,
       });
       if (!res.ok)
-        throw new Error(`R2 delete error: ${res.status} ${await res.text()}`);
+        throw new BucketError(
+          `R2 delete error: ${res.status} ${await res.text()}`,
+          { provider: "R2", status: res.status },
+        );
 
       const xmlStr = await res.text();
       const keys = extractTags(xmlStr, "Deleted").map((d) => getTag(d, "Key"));
@@ -193,12 +210,12 @@ class CloudflareR2Bucket implements Bucket {
     return subBucket(this, path);
   }
 
-  async count(filter?: string | RegExp): Promise<number> {
+  async count(filter?: RegExp): Promise<number> {
     return (await this.list(filter)).length;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<R2File> {
-    for (const file of await this.list()) yield file;
+    yield* this.scan();
   }
 }
 

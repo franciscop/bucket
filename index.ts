@@ -14,7 +14,9 @@ export { default as CloudflareR2 } from "./r2/index.ts";
 export { default as S3 } from "./s3/index.ts";
 export { default as GCS } from "./gcs/index.ts";
 export { default as Azure } from "./azure/index.ts";
+export { default as BucketError } from "./lib/BucketError.ts";
 
+export type { BucketErrorCode } from "./lib/BucketError.ts";
 export type {
   Bucket,
   BucketFile,

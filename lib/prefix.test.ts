@@ -38,12 +38,6 @@ describe("scope (unscoped bucket is back-compatible)", () => {
     expect(s.query).toBe("");
     expect(s.test("anything/at/all.txt")).toBe(true);
   });
-  it("string filter becomes the query prefix", () => {
-    const s = scope("", "logs/");
-    expect(s.query).toBe("logs/");
-    expect(s.test("logs/a.txt")).toBe(true);
-    expect(s.test("other.txt")).toBe(false);
-  });
   it("RegExp matches the full key", () => {
     const s = scope("", /\.txt$/);
     expect(s.query).toBe("");
@@ -59,12 +53,6 @@ describe("scope (inside a folder)", () => {
     expect(s.test("public/app.css")).toBe(true); // relative "app.css"
     expect(s.test("public/other.css")).toBe(false);
     expect(s.test("outside/app.css")).toBe(false);
-  });
-  it("string filter combines with the folder", () => {
-    const s = scope("public", "img");
-    expect(s.query).toBe("public/img");
-    expect(s.test("public/img/logo.png")).toBe(true);
-    expect(s.test("public/js/a.js")).toBe(false);
   });
 });
 

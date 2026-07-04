@@ -7,7 +7,9 @@ import {
 import parse from "../lib/parse.ts";
 import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
-import { getContentType } from "../lib/fileTypes.ts";
+import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
+import BucketError from "../lib/BucketError.ts";
+import metaFromHeaders from "../lib/meta.ts";
 import type {
   BucketFile,
   FileInfo,
@@ -98,9 +100,14 @@ export class AzureFile implements BucketFile {
         size: 0,
         date: null,
         url: null,
+        metadata: {},
       };
     }
-    if (!res.ok) throw new Error(`Azure HEAD error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`Azure HEAD error: ${res.status}`, {
+        provider: "Azure",
+        status: res.status,
+      });
     return {
       id: this.id,
       name: this.name,
@@ -110,6 +117,7 @@ export class AzureFile implements BucketFile {
       size: parseInt(res.headers.get("content-length") ?? "0", 10),
       date: new Date(res.headers.get("last-modified") ?? Date.now()),
       url: this.publicUrl(),
+      metadata: metaFromHeaders(res.headers, "x-ms-meta-"),
     };
   }
 
@@ -119,25 +127,41 @@ export class AzureFile implements BucketFile {
 
   async text(): Promise<string> {
     const res = await this.#request("GET");
-    if (!res.ok) throw new Error(`Azure GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`Azure GET error: ${res.status}`, {
+        provider: "Azure",
+        status: res.status,
+      });
     return res.text();
   }
 
   async json(): Promise<unknown> {
     const res = await this.#request("GET");
-    if (!res.ok) throw new Error(`Azure GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`Azure GET error: ${res.status}`, {
+        provider: "Azure",
+        status: res.status,
+      });
     return res.json();
   }
 
   async arrayBuffer(): Promise<ArrayBuffer> {
     const res = await this.#request("GET");
-    if (!res.ok) throw new Error(`Azure GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`Azure GET error: ${res.status}`, {
+        provider: "Azure",
+        status: res.status,
+      });
     return res.arrayBuffer();
   }
 
   async blob(): Promise<Blob> {
     const res = await this.#request("GET");
-    if (!res.ok) throw new Error(`Azure GET error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`Azure GET error: ${res.status}`, {
+        provider: "Azure",
+        status: res.status,
+      });
     return res.blob();
   }
 
@@ -157,11 +181,15 @@ export class AzureFile implements BucketFile {
       extraHeaders["x-ms-blob-content-disposition"] = options.disposition;
     if (options.metadata) {
       for (const [k, v] of Object.entries(options.metadata)) {
-        extraHeaders[`x-ms-meta-${k}`] = v;
+        extraHeaders[`x-ms-meta-${k.toLowerCase()}`] = v;
       }
     }
     const res = await this.#request("PUT", extraHeaders, data);
-    if (!res.ok) throw new Error(`Azure PUT error: ${res.status}`);
+    if (!res.ok)
+      throw new BucketError(`Azure PUT error: ${res.status}`, {
+        provider: "Azure",
+        status: res.status,
+      });
   }
 
   async write(content: WriteContent, options?: WriteOptions): Promise<void> {
@@ -169,7 +197,10 @@ export class AzureFile implements BucketFile {
     if (content instanceof Buffer || content instanceof Uint8Array)
       return this.#put(Buffer.from(content), options);
     if (content instanceof Blob)
-      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+      return this.#put(Buffer.from(await content.arrayBuffer()), {
+        ...options,
+        type: resolveContentType(this.path, content, options),
+      });
     if (content instanceof AzureFile)
       return this.#put(Buffer.from(await content.arrayBuffer()), options);
     if (typeof (content as ReadableStream).pipeTo === "function")
@@ -179,10 +210,14 @@ export class AzureFile implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(path: string): Promise<void> {
+  async copyTo(dest: string | BucketFile): Promise<void> {
+    if (typeof dest !== "string") {
+      await dest.write(this);
+      return;
+    }
     const src = this.#baseUrl();
     const dst = new AzureFile(
-      path,
+      dest,
       this.#account,
       this.#container,
       this.#auth,
@@ -198,7 +233,11 @@ export class AzureFile implements BucketFile {
         { account: this.#account, key: this.#auth.key },
       );
       const res = await fetch(dst.#baseUrl(), { method: "PUT", headers });
-      if (!res.ok) throw new Error(`Azure COPY error: ${res.status}`);
+      if (!res.ok)
+        throw new BucketError(`Azure COPY error: ${res.status}`, {
+          provider: "Azure",
+          status: res.status,
+        });
     } else {
       const token = await this.#auth.getToken();
       const res = await fetch(dst.#baseUrl(), {
@@ -210,12 +249,16 @@ export class AzureFile implements BucketFile {
           Authorization: `Bearer ${token}`,
         },
       });
-      if (!res.ok) throw new Error(`Azure COPY error: ${res.status}`);
+      if (!res.ok)
+        throw new BucketError(`Azure COPY error: ${res.status}`, {
+          provider: "Azure",
+          status: res.status,
+        });
     }
   }
 
-  async moveTo(path: string): Promise<void> {
-    await this.copyTo(path);
+  async moveTo(dest: string | BucketFile): Promise<void> {
+    await this.copyTo(dest);
     await this.remove();
   }
 
@@ -229,7 +272,10 @@ export class AzureFile implements BucketFile {
   async remove(): Promise<void> {
     const res = await this.#request("DELETE");
     if (!res.ok && res.status !== 202)
-      throw new Error(`Azure DELETE error: ${res.status}`);
+      throw new BucketError(`Azure DELETE error: ${res.status}`, {
+        provider: "Azure",
+        status: res.status,
+      });
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
@@ -252,7 +298,11 @@ export class AzureFile implements BucketFile {
   stream(): ReadableStream {
     return promiseToReadable(async () => {
       const res = await this.#request("GET");
-      if (!res.ok) throw new Error(`Azure GET error: ${res.status}`);
+      if (!res.ok)
+        throw new BucketError(`Azure GET error: ${res.status}`, {
+          provider: "Azure",
+          status: res.status,
+        });
       return res.body!;
     });
   }

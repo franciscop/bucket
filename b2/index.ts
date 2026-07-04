@@ -1,5 +1,6 @@
 import type { Bucket, BucketInfo } from "../lib/types.ts";
 import { withPrefix, scope, subBucket } from "../lib/prefix.ts";
+import BucketError from "../lib/BucketError.ts";
 import { B2File, type B2BucketContext } from "./File.ts";
 
 const API_VERSION_URL = "/b2api/v2/";
@@ -81,9 +82,15 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
           code: string;
           message: string;
         };
-        throw new Error(`[${status}] "${code}" on ${path}\n${message}`);
+        throw new BucketError(`[${status}] "${code}" on ${path}\n${message}`, {
+          provider: "BACKBLAZE",
+          status,
+        });
       } else {
-        throw new Error(`Error ${res.status}: ${path}\n${await res.text()}`);
+        throw new BucketError(
+          `Error ${res.status}: ${path}\n${await res.text()}`,
+          { provider: "BACKBLAZE", status: res.status },
+        );
       }
     }
     return res;
@@ -98,21 +105,18 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
     return subBucket(this, path);
   }
 
-  async count(filter?: string | RegExp): Promise<number> {
+  async count(filter?: RegExp): Promise<number> {
     return (await this.list(filter)).length;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<B2File> {
-    for (const file of await this.list()) {
-      yield file;
-    }
+    yield* this.scan();
   }
 
-  async list(prefix: string | RegExp = ""): Promise<B2File[]> {
+  private async *pages(filter?: RegExp): AsyncGenerator<B2File[]> {
     await this.initPromise;
-    const files: B2File[] = [];
     let nextFileName: string | undefined;
-    const s = scope(this.PREFIX, prefix);
+    const s = scope(this.PREFIX, filter);
 
     do {
       let url =
@@ -129,6 +133,7 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
         nextFileName?: string;
       };
 
+      const page: B2File[] = [];
       for (const fileData of data.files) {
         if (!s.test(fileData.fileName)) continue;
         const f = new B2File(fileData.fileName, this);
@@ -137,17 +142,26 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
         f.size = fileData.contentLength;
         f.date = new Date(fileData.uploadTimestamp);
         f.url = this.base + "file/" + this.name + "/" + fileData.fileName;
-        files.push(f);
+        page.push(f);
       }
+      yield page;
 
       nextFileName = data.nextFileName;
     } while (nextFileName);
+  }
 
+  async *scan(filter?: RegExp): AsyncGenerator<B2File> {
+    for await (const page of this.pages(filter)) yield* page;
+  }
+
+  async list(filter?: RegExp): Promise<B2File[]> {
+    const files: B2File[] = [];
+    for await (const page of this.pages(filter)) files.push(...page);
     return files;
   }
 
-  async remove(filter?: string | RegExp): Promise<B2File[]> {
-    const files = await this.list(filter ?? "");
+  async remove(filter?: RegExp): Promise<B2File[]> {
+    const files = await this.list(filter);
     await Promise.all(files.map((file) => file.remove()));
     return files;
   }

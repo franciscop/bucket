@@ -3,20 +3,13 @@
 A small library to talk to any of the popular file storage solutions with a unified API:
 
 ```js
-// Default import is a ready-to-use S3 bucket (reads AWS_BUCKET, AWS_ACCESS_KEY_ID, etc. from env)
-import bucket from "bucket";
+import BackBlaze from "bucket/b2"; // or /s3, /r2, /fs, etc
+
+const bucket = BackBlaze("bucket-name", { id, secret });
 
 const file = bucket.file("demo.txt");
 await file.write("hello world");
 console.log(await file.text());
-```
-
-Or import a specific provider:
-
-```js
-import BackBlaze from "bucket/b2"; // or /s3, /r2, /fs, etc
-
-const bucket = BackBlaze("bucket-name", { id, secret });
 ```
 
 It has different engines and they all behave the same. It also has a "filesystem" Bucket, which will treat a local folder as a bucket:
@@ -41,6 +34,7 @@ There are two main APIs, the `Bucket` one and the `File` one:
 - `Bucket()` initialize the instance attached to a single bucket.
   - `.info()`: display the information about the current bucket.
   - `.list(filter?)`: return the list of all files in the bucket.
+  - `.scan(filter?)`: async generator that lazily yields files (streams pages).
   - `.count(filter?)`: return the Number of items in the bucket.
   - `.remove(filter?)`: delete all files matching the filter, returning them.
   - `.file(path)`: creates a File instance for the given path
@@ -105,15 +99,15 @@ const info = await bucket.info();
 
 ### bucket.list()
 
-Returns `Promise<File[]>` with all files in the bucket. Accepts an optional filter:
+Returns `Promise<File[]>` with all files in the bucket. Accepts an optional `RegExp` to filter by pattern; to scope to a path prefix, use [`.folder()`](#bucketfolder).
 
 ```js
 const all = await bucket.list();
 const images = await bucket.list(/\.jpe?g$/);
-const logs = await bucket.list("logs/"); // prefix match
+const logs = await bucket.folder("logs").list(); // everything under logs/
 ```
 
-You can instead iterate through files lazily with `for await`:
+You can also iterate the bucket directly with `for await`, which streams pages lazily and stops fetching if you `break`:
 
 ```js
 for await (const file of bucket) {
@@ -122,6 +116,18 @@ for await (const file of bucket) {
   }
 }
 ```
+
+### bucket.scan()
+
+Returns an async generator that yields files, fetching provider pages as they're consumed instead of buffering the whole listing. Unlike the bare `for await (const f of bucket)` form it accepts an optional `RegExp` filter, so you can filter while streaming, which is ideal for very large buckets or when you may stop early:
+
+```js
+for await (const file of bucket.scan(/\.log$/)) {
+  if (await shouldStop(file)) break; // no further pages are fetched
+}
+```
+
+`list()` is simply `scan()` collected into an array, and `for await (const f of bucket)` delegates to it.
 
 ### bucket.count()
 
@@ -134,11 +140,11 @@ const images = await bucket.count(/\.jpe?g$/);
 
 ### bucket.remove()
 
-Deletes every file matching the optional filter and returns the deleted `File` objects. Accepts the same filter as `.list()` (a string prefix or a `RegExp`); with no filter it empties the bucket. On S3 and R2 the deletion is batched into as few requests as possible.
+Deletes every file matching the optional `RegExp` and returns the deleted `File` objects; with no filter it empties the bucket (or the folder, when called on one). On S3 and R2 the deletion is batched into as few requests as possible.
 
 ```js
 await bucket.remove(/\.tmp$/); // delete every .tmp file
-const deleted = await bucket.remove("cache/"); // delete everything under cache/
+const deleted = await bucket.folder("cache").remove(); // delete everything under cache/
 console.log(`removed ${deleted.length} files`);
 ```
 
@@ -183,13 +189,16 @@ const info = await bucket.file("photo.jpg").info();
 //   type: "image/jpeg",
 //   size: 175888,
 //   date: Date,
-//   url: "https://..."   // null for local filesystem
+//   url: "https://...",  // null for local filesystem
+//   metadata: {}         // custom metadata, lowercase keys
 // }
 ```
 
-If the file does not exist, `exists` is `false`, `type` is `null`, `size` is `0`, and `date`/`url` are `null`.
+If the file does not exist, `exists` is `false`, `type` is `null`, `size` is `0`, `date`/`url` are `null`, and `metadata` is `{}`.
 
 The `url` field is the file's public URL when it exists (the canonical address; whether it is actually reachable depends on the bucket or object being public). It is `null` for the local filesystem, and `null` when the file does not exist.
+
+The `metadata` field holds the custom key-value metadata set with `write(..., { metadata })`. Keys are normalized to lowercase on both write and read so they round-trip consistently. The local filesystem has no metadata store, so it always returns `{}`.
 
 ### file.exists()
 
@@ -503,7 +512,7 @@ The `endpoint` option (4th argument, `{ endpoint }`) points at the Azurite emula
 
 ### More?
 
-Open an issue or PR if you'd like to see another service supported.
+Open an [issue or PR](https://github.com/franciscop/bucket) if you'd like to see another service supported.
 
 ## Guides
 
@@ -514,7 +523,7 @@ A `File` is a **lazy remote handle, not a `Blob`**. It exposes the same read met
 
 > Passing the `File` object _itself_ to `new Response(file)` or `FormData.append(name, file)` will **not** work: it is not a `Blob`, and would serialize as empty. Always use `.stream()` or `.blob()`.
 
-### Serve a file over HTTP
+### Serve over HTTP
 
 ```js
 // Bun.serve, Next.js, Hono, or any fetch handler
@@ -527,7 +536,7 @@ export default {
 };
 ```
 
-### Attach a file to `FormData`
+### Attach to `FormData`
 
 ```js
 const form = new FormData();
@@ -537,7 +546,7 @@ form.append("avatar", await file.blob(), file.name);
 await fetch("https://api.example.com/upload", { method: "POST", body: form });
 ```
 
-### Stream a file into an outbound request
+### Streaming with fetch()
 
 ```js
 await fetch("https://api.example.com/ingest", {
@@ -547,7 +556,7 @@ await fetch("https://api.example.com/ingest", {
 });
 ```
 
-### Store an incoming request / response body
+### Store fetch() file
 
 ```js
 // Buffered
@@ -564,7 +573,7 @@ async fetch(req) {
 }
 ```
 
-### Combine buckets (copy across providers)
+### Combine buckets
 
 `write()` accepts a `File` from **any** provider, so moving data between services is one call:
 
@@ -584,7 +593,7 @@ await s3.file("a.bin").stream().pipeTo(fs.file("a.bin").writable());
 
 **Direction:** `dst.write(src)` is a _pull_, so the file you call it on is the destination and it reads from the argument. To _push_ within a single bucket, use the source-side `src.copyTo(dst)` or `src.moveTo(dst)` instead. Cross-provider copies always use the pull form above, since `copyTo` / `moveTo` stay inside one bucket.
 
-### Combine with Bun's file APIs
+### Bun's File
 
 A `Bun.file()` is a `Blob`, so it drops straight into `write()`, and a bucket file's `.blob()` drops into `Bun.write()`:
 
@@ -596,7 +605,20 @@ await bucket.file("photo.jpg").write(Bun.file("./local/photo.jpg"));
 await Bun.write("./local/photo.jpg", await bucket.file("photo.jpg").blob());
 ```
 
-### Resize an image with `Bun.Image`
+### Resize with sharp
+
+```js
+import { pipeline } from "node:stream/promises";
+import sharp from "sharp";
+
+await pipeline(
+  bucket.file("original.jpg").nodeReadable(),
+  sharp().resize(200, 200),
+  bucket.file("thumbnail.jpg").nodeWritable(),
+);
+```
+
+### Resize with `Bun.Image`
 
 Bun ships a native image processor, [`Bun.Image`](https://bun.sh/docs/api/image), with no dependencies. It reads `Uint8Array` / `Buffer` / `ArrayBuffer` / `Blob` and outputs the same, so it plugs straight into a bucket file: read the bytes, transform, then write the result back.
 
@@ -626,7 +648,7 @@ A few things to know:
 
 - Read the dimensions from `await img.metadata()`. The sync `.width` / `.height` getters report `-1` until the image has been decoded.
 - `Bun.Image` buffers the whole image, so read with `.bytes()`, not `.stream()`.
-- It is Bun only. On Node or other runtimes use `sharp`, which streams and pipes through `.nodeReadable()` / `.nodeWritable()` directly (see [Resize and upload images](#resize-and-upload-images) below).
+- It is Bun only. On Node or other runtimes use `sharp`, which streams and pipes through `.nodeReadable()` / `.nodeWritable()` directly (see [Resize with sharp](#resize-with-sharp) above).
 
 **TypeScript:** `Bun.Image` is not in `@types/bun` yet, so the compiler reports `Property 'Image' does not exist`. Add a small ambient declaration until the types ship:
 
@@ -657,7 +679,7 @@ declare namespace Bun {
 }
 ```
 
-### Zip and upload files
+### Zip files
 
 ```js
 import { pipeline } from "node:stream/promises";
@@ -667,19 +689,6 @@ await pipeline(
   bucket.file("data.csv").nodeReadable(),
   createGzip(),
   bucket.file("data.csv.gz").nodeWritable(),
-);
-```
-
-### Resize and upload images
-
-```js
-import { pipeline } from "node:stream/promises";
-import sharp from "sharp";
-
-await pipeline(
-  bucket.file("original.jpg").nodeReadable(),
-  sharp().resize(200, 200),
-  bucket.file("thumbnail.jpg").nodeWritable(),
 );
 ```
 
@@ -710,13 +719,23 @@ On Cloudflare Workers, use a remote provider with the web helpers (`.stream()`, 
 
 ### What happens on a network or auth error?
 
-Methods throw a `Error` with a message containing the HTTP status code, e.g. `"S3 GET error: 403"`. There is no automatic retry. Wrap calls in try/catch if you need to handle errors gracefully:
+Methods throw a `BucketError` (a subclass of `Error`). Alongside the human-readable `message` it carries structured fields you can branch on:
+
+- `code`: a normalized, uppercase string, one of `"NOT_FOUND" | "FORBIDDEN" | "UNAUTHORIZED" | "CONFLICT" | "UNKNOWN"`. It means the same thing across every provider, including the filesystem.
+- `status`: the raw HTTP status, when the failure came from an HTTP response (absent for the filesystem).
+- `provider`: which backend produced it (e.g. `"S3"`).
+
+There is no automatic retry.
 
 ```js
+import { BucketError } from "bucket";
+
 try {
   const text = await bucket.file("data.txt").text();
 } catch (err) {
-  console.error("Failed to read file:", err.message);
+  if (err instanceof BucketError && err.code === "NOT_FOUND") {
+    // handle a missing file
+  }
 }
 ```
 
@@ -760,7 +779,7 @@ The test suite has three layers, the first two of which need **no credentials**:
    - GCS V4 signatures are verified cryptographically against the public key.
 3. **Integration tests** (`test/index.test.ts`): the full API against a real backend. FileSystem always runs; the cloud providers (S3, R2, GCS, Azure, B2) are opt-in and run only with `EXPENSIVE=true` set, plus their credentials (or an emulator endpoint). A plain `bun test` stays local and makes no network calls.
 
-### Without cloud credentials (emulators)
+### Emulators
 
 S3, R2, GCS and Azure can be tested end-to-end against local emulators. MinIO and Azurite **validate request signatures**, so a green run proves the signer against a real server.
 
@@ -778,7 +797,7 @@ bun run emulators:setup
 BUCKET=Azure bun --env-file=.env.emulators test test/index.test.ts
 ```
 
-### With real cloud credentials
+### Real credentials
 
 Copy `.env.sample` to `.env` and fill in the providers you want to exercise, then opt in with `EXPENSIVE=true`; the buckets whose credentials are present are picked up automatically.
 
