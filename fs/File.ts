@@ -11,7 +11,7 @@ import { promisify } from "node:util";
 
 import { getContentType } from "../lib/fileTypes.ts";
 import type {
-  IBucketFile,
+  BucketFile,
   FileInfo,
   WriteContent,
   WriteOptions,
@@ -25,7 +25,7 @@ const cmd = (txt: string): Promise<string> =>
 const mimeType = (file: string): Promise<string> =>
   cmd(`file -b --mime-type '${file}'`);
 
-export class FSFile implements IBucketFile {
+export class FSFile implements BucketFile {
   id: string;
   name: string;
   path: string;

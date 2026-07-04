@@ -1,6 +1,7 @@
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
 import { sha256base64 } from "../lib/webcrypto.ts";
-import type { IBucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
+import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
+import type { Bucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
 import { S3File, type S3BucketContext } from "./File.ts";
 
 const {
@@ -111,13 +112,14 @@ function getTag(xmlStr: string, tag: string): string {
 
 // ── S3Bucket ──────────────────────────────────────────────────────────────────
 
-class S3Bucket implements IBucket {
+class S3Bucket implements Bucket {
   readonly type = "S3";
   private bucketName: string;
   private region: string;
   private endpoint: string;
   #staticAuth: S3Auth | null;
   #cachedAuth: CachedAuth | null = null;
+  PREFIX = "";
 
   constructor(
     bucketName: string = ENV_BUCKET || "",
@@ -187,12 +189,12 @@ class S3Bucket implements IBucket {
   async list(filter?: string | RegExp): Promise<S3File[]> {
     const files: S3File[] = [];
     let token: string | undefined;
+    const s = scope(this.PREFIX, filter);
 
     do {
       const url = new URL(this.makeUrl(""));
       url.searchParams.set("list-type", "2");
-      if (filter && typeof filter === "string")
-        url.searchParams.set("prefix", filter);
+      if (s.query) url.searchParams.set("prefix", s.query);
       if (token) url.searchParams.set("continuation-token", token);
 
       const auth = await this.#getAuth();
@@ -212,8 +214,8 @@ class S3Bucket implements IBucket {
       const xmlStr = await res.text();
       for (const item of extractTags(xmlStr, "Contents")) {
         const key = getTag(item, "Key");
-        if (filter instanceof RegExp && !filter.test(key)) continue;
-        files.push(this.file(key));
+        if (!s.test(key)) continue;
+        files.push(this.#handle(key));
       }
 
       token =
@@ -265,8 +267,7 @@ class S3Bucket implements IBucket {
     return deleted;
   }
 
-  file(name: string): S3File {
-    if (!name) throw new Error("No name");
+  #handle(path: string): S3File {
     const ctx: S3BucketContext = {
       makeUrl: (p) => this.makeUrl(p),
       doRequest: (m, p, opts) => this.doRequest(m, p, opts),
@@ -274,7 +275,25 @@ class S3Bucket implements IBucket {
       bucketName: this.bucketName,
       endpoint: this.endpoint,
     };
-    return new S3File(name, ctx);
+    return new S3File(path, ctx);
+  }
+
+  file(name: string): S3File {
+    if (!name) throw new Error("No name");
+    return this.#handle(withPrefix(this.PREFIX, name));
+  }
+
+  folder(path: string): S3Bucket {
+    const a = this.#staticAuth;
+    const sub = new S3Bucket(this.bucketName, {
+      id: a?.id,
+      secret: a?.secret,
+      region: this.region,
+      sessionToken: a?.sessionToken,
+      endpoint: this.endpoint,
+    });
+    sub.PREFIX = joinPrefix(this.PREFIX, path);
+    return sub;
   }
 
   async count(filter?: string | RegExp): Promise<number> {
@@ -307,12 +326,11 @@ export default function S3(bucket?: string, config?: S3Config): S3Bucket {
   return new S3Bucket(bucket, config);
 }
 
-export { S3Bucket, S3File };
-
 export type {
+  Bucket,
+  BucketFile,
   FileInfo,
   BucketInfo,
-  FileEntry,
   WriteContent,
   WriteOptions,
 } from "../lib/types.ts";

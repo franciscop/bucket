@@ -42,7 +42,9 @@ There are two main APIs, the `Bucket` one and the `File` one:
   - `.info()`: display the information about the current bucket.
   - `.list(filter?)`: return the list of all files in the bucket.
   - `.count(filter?)`: return the Number of items in the bucket.
+  - `.remove(filter?)`: delete all files matching the filter, returning them.
   - `.file(path)`: creates a File instance for the given path
+  - `.folder(path)`: a Bucket scoped to a path prefix (see below).
 - `File` instance (created with `.file()`, or each item in the `list()`). It has `id`, `name` and `path` already:
   - `.info()`: returns some more details of the file, like `date` (creation time), `type` (mime type) and `size`.
   - `.exists()`: checks whether a file exists, returning true if it does.
@@ -130,9 +132,19 @@ const total = await bucket.count();
 const images = await bucket.count(/\.jpe?g$/);
 ```
 
+### bucket.remove()
+
+Deletes every file matching the optional filter and returns the deleted `File` objects. Accepts the same filter as `.list()` (a string prefix or a `RegExp`); with no filter it empties the bucket. On S3 and R2 the deletion is batched into as few requests as possible.
+
+```js
+await bucket.remove(/\.tmp$/); // delete every .tmp file
+const deleted = await bucket.remove("cache/"); // delete everything under cache/
+console.log(`removed ${deleted.length} files`);
+```
+
 ### bucket.file()
 
-Returns a `File` handle for the given path. It mirrors the `Blob` read API (`.text()`, `.json()`, `.arrayBuffer()`, `.bytes()`, `.blob()`, `.stream()`), but it is a **lazy remote handle, not a `Blob` itself**, so to hand it to `FormData`, `Response`, or `fetch`, materialize it first with `await file.blob()` (buffered) or `file.stream()` (streaming). See [Combining with other APIs](#combining-with-other-apis). This is a synchronous operation. It does not make any network requests or check whether the file exists.
+Returns a `File` handle for the given path. It mirrors the `Blob` read API (`.text()`, `.json()`, `.arrayBuffer()`, `.bytes()`, `.blob()`, `.stream()`), but it is a **lazy remote handle, not a `Blob` itself**, so to hand it to `FormData`, `Response`, or `fetch`, materialize it first with `await file.blob()` (buffered) or `file.stream()` (streaming). See [Guides](#guides). This is a synchronous operation. It does not make any network requests or check whether the file exists.
 
 ```js
 const file = bucket.file("photos/avatar.jpg");
@@ -144,6 +156,18 @@ The returned object has three properties set immediately:
 - `id`: a unique identifier for the file (the path for S3/R2/B2, a hash for the filesystem)
 - `name`: the filename without the directory, e.g. `"avatar.jpg"`
 - `path`: the full path within the bucket, e.g. `"photos/avatar.jpg"`
+
+### bucket.folder()
+
+Returns a `Bucket` scoped to a path prefix. It behaves like any other bucket, but every operation is confined to that folder: `.file()` resolves names inside it, and `.list()`, `.count()`, `.remove()`, and iteration only see files within it. Folders nest, and the prefix is normalized (`"./public/"` and `"public"` are equivalent). This is synchronous and makes no network requests.
+
+```js
+const assets = bucket.folder("public");
+await assets.file("favicon.ico").write(icon); // stored at "public/favicon.ico"
+const styles = await assets.folder("css").list(); // only files under "public/css/"
+```
+
+File paths stay absolute, relative to the bucket root, so `assets.file("favicon.ico").path` is `"public/favicon.ico"`. A `RegExp` passed to a folder's `.list()` is matched against the path below the folder, so `assets.list(/^favicon/)` matches `public/favicon.ico`.
 
 ### file.info()
 
@@ -481,7 +505,7 @@ The `endpoint` option (4th argument, `{ endpoint }`) points at the Azurite emula
 
 Open an issue or PR if you'd like to see another service supported.
 
-## Combining with other APIs
+## Guides
 
 A `File` is a **lazy remote handle, not a `Blob`**. It exposes the same read methods as a `Blob`, but to hand it to a Web API materialize it first:
 
@@ -667,10 +691,11 @@ Yes. The library is written in TypeScript and ships types for all methods. No `@
 
 ```ts
 import S3 from "bucket/s3";
-import type { FileInfo, BucketInfo } from "bucket/s3";
+import type { Bucket, BucketFile, FileInfo } from "bucket/s3";
 
-const bucket = S3("my-bucket");
-const info: FileInfo = await bucket.file("photo.jpg").info();
+const bucket: Bucket = S3("my-bucket");
+const file: BucketFile = bucket.file("photo.jpg");
+const info: FileInfo = await file.info();
 ```
 
 ### Which runtimes are supported?
@@ -723,7 +748,8 @@ await pipeline(
 ## Testing
 
 ```bash
-bun test           # everything below except the cloud emulators
+bun test                 # mocked suites, signer oracles, FileSystem (no network)
+EXPENSIVE=true bun test  # also the cloud providers, when credentials are present
 ```
 
 The test suite has three layers, the first two of which need **no credentials**:
@@ -732,7 +758,7 @@ The test suite has three layers, the first two of which need **no credentials**:
 2. **Signer oracle tests** (`lib/*.test.ts`): prove the request signing is correct without hitting any service:
    - S3/R2 AWS Signature V4 is cross-checked against [`aws4`](https://www.npmjs.com/package/aws4) (the reference signer): identical signature, byte for byte.
    - GCS V4 signatures are verified cryptographically against the public key.
-3. **Integration tests** (`test/index.test.ts`): the full API against a real backend. FileSystem always runs; cloud providers run only when their credentials (or an emulator endpoint) are present.
+3. **Integration tests** (`test/index.test.ts`): the full API against a real backend. FileSystem always runs; the cloud providers (S3, R2, GCS, Azure, B2) are opt-in and run only with `EXPENSIVE=true` set, plus their credentials (or an emulator endpoint). A plain `bun test` stays local and makes no network calls.
 
 ### Without cloud credentials (emulators)
 
@@ -754,4 +780,8 @@ BUCKET=Azure bun --env-file=.env.emulators test test/index.test.ts
 
 ### With real cloud credentials
 
-Copy `.env.sample` to `.env` and fill in the providers you want to exercise; the matching buckets are picked up automatically.
+Copy `.env.sample` to `.env` and fill in the providers you want to exercise, then opt in with `EXPENSIVE=true`; the buckets whose credentials are present are picked up automatically.
+
+```bash
+EXPENSIVE=true bun test
+```

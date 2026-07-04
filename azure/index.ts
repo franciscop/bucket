@@ -1,5 +1,6 @@
 import { signAzure, accountPathPrefix } from "../lib/signAzure.ts";
-import type { IBucket, BucketInfo } from "../lib/types.ts";
+import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
+import type { Bucket, BucketInfo } from "../lib/types.ts";
 import { AzureFile, type AzureFileAuth } from "./File.ts";
 
 const {
@@ -41,13 +42,14 @@ function parseConnectionString(cs: string): {
   };
 }
 
-class AzureBucket implements IBucket {
+class AzureBucket implements Bucket {
   readonly type = "AZURE";
   #account: string;
   #container: string;
   #endpoint: string;
   #auth: AzureFileAuth;
   #tokenCache: { token: string; expiry: number } | null = null;
+  PREFIX = "";
 
   constructor(
     account: string = ENV_ACCOUNT || "",
@@ -101,13 +103,14 @@ class AzureBucket implements IBucket {
   async list(filter?: string | RegExp): Promise<AzureFile[]> {
     const files: AzureFile[] = [];
     let marker: string | undefined;
+    const s = scope(this.PREFIX, filter);
 
     do {
       const containerPath = `${accountPathPrefix(this.#endpoint)}/${this.#container}`;
       const params: Record<string, string> = {
         restype: "container",
         comp: "list",
-        ...(typeof filter === "string" && filter ? { prefix: filter } : {}),
+        ...(s.query ? { prefix: s.query } : {}),
         ...(marker ? { marker } : {}),
       };
       const query = new URLSearchParams(params).toString();
@@ -137,7 +140,7 @@ class AzureBucket implements IBucket {
       const xml = await res.text();
       for (const item of extractXmlTags(xml, "Blob")) {
         const name = getXmlTag(item, "Name");
-        if (filter instanceof RegExp && !filter.test(name)) continue;
+        if (!s.test(name)) continue;
         files.push(
           new AzureFile(
             name,
@@ -158,12 +161,24 @@ class AzureBucket implements IBucket {
   file(name: string): AzureFile {
     if (!name) throw new Error("No name");
     return new AzureFile(
-      name,
+      withPrefix(this.PREFIX, name),
       this.#account,
       this.#container,
       this.#auth,
       this.#endpoint,
     );
+  }
+
+  folder(path: string): AzureBucket {
+    const key = this.#auth.type === "shared-key" ? this.#auth.key : "";
+    const sub = new AzureBucket(
+      this.#account,
+      this.#container,
+      key,
+      this.#endpoint,
+    );
+    sub.PREFIX = joinPrefix(this.PREFIX, path);
+    return sub;
   }
 
   async remove(filter?: string | RegExp): Promise<AzureFile[]> {
@@ -230,12 +245,11 @@ export default function Azure(
   );
 }
 
-export { AzureBucket, AzureFile };
-
 export type {
+  Bucket,
+  BucketFile,
   FileInfo,
   BucketInfo,
-  FileEntry,
   WriteContent,
   WriteOptions,
 } from "../lib/types.ts";

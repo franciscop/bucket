@@ -9,7 +9,7 @@ import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
 import { getContentType } from "../lib/fileTypes.ts";
 import type {
-  IBucketFile,
+  BucketFile,
   FileInfo,
   WriteContent,
   WriteOptions,
@@ -19,7 +19,7 @@ export type AzureFileAuth =
   | { type: "shared-key"; key: string }
   | { type: "managed-identity"; getToken: () => Promise<string> };
 
-export class AzureFile implements IBucketFile {
+export class AzureFile implements BucketFile {
   id: string;
   name: string;
   path: string;

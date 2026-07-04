@@ -1,4 +1,5 @@
-import type { IBucket, BucketInfo } from "../lib/types.ts";
+import type { Bucket, BucketInfo } from "../lib/types.ts";
+import { withPrefix, scope, subBucket } from "../lib/prefix.ts";
 import { B2File, type B2BucketContext } from "./File.ts";
 
 const API_VERSION_URL = "/b2api/v2/";
@@ -17,13 +18,14 @@ interface B2FileEntry {
   uploadTimestamp: number;
 }
 
-class BackBlazeInstance implements IBucket, B2BucketContext {
+class BackBlazeInstance implements Bucket, B2BucketContext {
   readonly type = "BACKBLAZE";
   id!: string;
   name!: string;
   token!: string;
   apiBase!: string;
   base!: string;
+  PREFIX = "";
   private initPromise: Promise<void>;
 
   constructor(
@@ -89,7 +91,11 @@ class BackBlazeInstance implements IBucket, B2BucketContext {
 
   file(name: string): B2File {
     if (!name) throw new Error("No name");
-    return new B2File(name, this);
+    return new B2File(withPrefix(this.PREFIX, name), this);
+  }
+
+  folder(path: string): BackBlazeInstance {
+    return subBucket(this, path);
   }
 
   async count(filter?: string | RegExp): Promise<number> {
@@ -106,14 +112,14 @@ class BackBlazeInstance implements IBucket, B2BucketContext {
     await this.initPromise;
     const files: B2File[] = [];
     let nextFileName: string | undefined;
+    const s = scope(this.PREFIX, prefix);
 
     do {
       let url =
         this.apiBase +
         "b2_list_file_names?bucketId=" +
         encodeURIComponent(this.id);
-      if (prefix && typeof prefix === "string")
-        url += "&prefix=" + encodeURIComponent(prefix);
+      if (s.query) url += "&prefix=" + encodeURIComponent(s.query);
       if (nextFileName)
         url += "&startFileName=" + encodeURIComponent(nextFileName);
 
@@ -124,8 +130,7 @@ class BackBlazeInstance implements IBucket, B2BucketContext {
       };
 
       for (const fileData of data.files) {
-        if (prefix instanceof RegExp && !prefix.test(fileData.fileName))
-          continue;
+        if (!s.test(fileData.fileName)) continue;
         const f = new B2File(fileData.fileName, this);
         f.id = fileData.fileId;
         f.type = fileData.contentType;
@@ -166,12 +171,11 @@ export default function BackBlaze(
   return new BackBlazeInstance(name, opts);
 }
 
-export { BackBlazeInstance, B2File };
-
 export type {
+  Bucket,
+  BucketFile,
   FileInfo,
   BucketInfo,
-  FileEntry,
   WriteContent,
   WriteOptions,
 } from "../lib/types.ts";

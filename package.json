@@ -60,7 +60,6 @@
     "title": "🪣 Bucket - A unified API for any file storage solution",
     "homepage": "https://bucketjs.com/",
     "menu": {
-      "Documentation": "/documentation",
       "Issues": "https://github.com/franciscop/bucket/issues",
       "Get help": "https://superpeer.com/francisco/-/javascript-and-react-help",
       "Github": "https://github.com/franciscop/bucket"

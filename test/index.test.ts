@@ -451,6 +451,40 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
       });
     });
 
+    // ── folder() ────────────────────────────────────────────────────────────
+
+    describe("folder()", () => {
+      it("reads and writes within the folder", async () => {
+        const folder = bucket.folder("nested");
+        const fname = testFile("txt");
+        await folder.file(fname).write("in-folder");
+        expect(await folder.file(fname).text()).toBe("in-folder");
+        expect(await folder.file(fname).exists()).toBe(true);
+      });
+
+      it("scopes list() and count() to the folder", async () => {
+        const folder = bucket.folder("nested");
+        const rootName = testFile("txt");
+        const folderName = testFile("txt");
+        await bucket.file(rootName).write("at-root");
+        await folder.file(folderName).write("in-folder");
+
+        const names = (await folder.list()).map((f) => f.name);
+        expect(names).toContain(folderName);
+        expect(names).not.toContain(rootName);
+        expect(await folder.count()).toBeGreaterThanOrEqual(1);
+      });
+
+      it("nests folders and normalizes the path", async () => {
+        const deep = bucket.folder("./a/").folder("b");
+        const fname = testFile("txt");
+        await deep.file(fname).write("deep");
+        expect(await deep.file(fname).text()).toBe("deep");
+        // The same object is reachable from the parent under the combined prefix.
+        expect(await bucket.file("a/b/" + fname).text()).toBe("deep");
+      });
+    });
+
     // ── async iteration ───────────────────────────────────────────────────────
 
     describe("async iteration (for await)", () => {

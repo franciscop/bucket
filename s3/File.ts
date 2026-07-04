@@ -5,7 +5,7 @@ import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
 import { getContentType } from "../lib/fileTypes.ts";
 import type {
-  IBucketFile,
+  BucketFile,
   FileInfo,
   WriteContent,
   WriteOptions,
@@ -24,7 +24,7 @@ export interface S3BucketContext {
   endpoint: string;
 }
 
-export class S3File implements IBucketFile {
+export class S3File implements BucketFile {
   id: string;
   name: string;
   path: string;

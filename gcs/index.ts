@@ -1,5 +1,6 @@
 import { getAccessToken, getMetadataToken } from "../lib/signGCS.ts";
-import type { IBucket, BucketInfo } from "../lib/types.ts";
+import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
+import type { Bucket, BucketInfo } from "../lib/types.ts";
 import { GCSFile, type GCSAuth, type GCSObjectMeta } from "./File.ts";
 
 const { GCS_BUCKET: ENV_BUCKET, GCS_ENDPOINT: ENV_ENDPOINT } = process.env;
@@ -38,7 +39,7 @@ async function loadAuth(): Promise<GCSAuth> {
   return null;
 }
 
-class GCSBucket implements IBucket {
+class GCSBucket implements Bucket {
   readonly type = "GCS";
   #bucket: string;
   #endpoint: string;
@@ -46,6 +47,7 @@ class GCSBucket implements IBucket {
   #authPromise: Promise<GCSAuth>;
   #cachedToken: string | null = null;
   #tokenExpiry = 0;
+  PREFIX = "";
 
   constructor(bucket: string, config: GCSConfig = {}) {
     this.#bucket = bucket;
@@ -83,10 +85,11 @@ class GCSBucket implements IBucket {
   async list(filter?: string | RegExp): Promise<GCSFile[]> {
     const files: GCSFile[] = [];
     let pageToken: string | undefined;
+    const s = scope(this.PREFIX, filter);
 
     do {
       const params = new URLSearchParams({ maxResults: "1000" });
-      if (typeof filter === "string" && filter) params.set("prefix", filter);
+      if (s.query) params.set("prefix", s.query);
       if (pageToken) params.set("pageToken", pageToken);
 
       const token = await this.accessToken();
@@ -102,7 +105,7 @@ class GCSBucket implements IBucket {
       };
 
       for (const item of data.items ?? []) {
-        if (filter instanceof RegExp && !filter.test(item.name)) continue;
+        if (!s.test(item.name)) continue;
         files.push(
           new GCSFile(
             item.name,
@@ -123,12 +126,21 @@ class GCSBucket implements IBucket {
   file(name: string): GCSFile {
     if (!name) throw new Error("No name");
     return new GCSFile(
-      name,
+      withPrefix(this.PREFIX, name),
       this.#bucket,
       this.#authPromise,
       this.#endpoint,
       this.#anonymous,
     );
+  }
+
+  folder(path: string): GCSBucket {
+    const sub = new GCSBucket(this.#bucket, {
+      endpoint: this.#endpoint,
+      anonymous: this.#anonymous,
+    });
+    sub.PREFIX = joinPrefix(this.PREFIX, path);
+    return sub;
   }
 
   async remove(filter?: string | RegExp): Promise<GCSFile[]> {
@@ -172,12 +184,11 @@ export default function GCS(
   return new GCSBucket(bucket, config);
 }
 
-export { GCSBucket, GCSFile };
-
 export type {
+  Bucket,
+  BucketFile,
   FileInfo,
   BucketInfo,
-  FileEntry,
   WriteContent,
   WriteOptions,
 } from "../lib/types.ts";
