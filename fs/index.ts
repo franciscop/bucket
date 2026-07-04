@@ -2,10 +2,11 @@ import { userInfo } from "node:os";
 import fsp from "node:fs/promises";
 import { basename, join, resolve, isAbsolute } from "node:path";
 
-import type { IBucket, BucketInfo } from "../lib/types.ts";
+import type { Bucket, BucketInfo } from "../lib/types.ts";
+import { cleanPrefix } from "../lib/prefix.ts";
 import { FSFile } from "./File.ts";
 
-class FileSystemBucket implements IBucket {
+class FileSystemBucket implements Bucket {
   readonly type = "FILESYSTEM";
   path: string;
 
@@ -23,10 +24,16 @@ class FileSystemBucket implements IBucket {
   }
 
   async list(filter?: RegExp | string): Promise<FSFile[]> {
-    const raw = await fsp.readdir(this.path, {
-      recursive: true,
-      withFileTypes: true,
-    });
+    let raw: import("node:fs").Dirent[];
+    try {
+      raw = await fsp.readdir(this.path, {
+        recursive: true,
+        withFileTypes: true,
+      });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
+    }
     const files = raw
       .filter((dirent: import("node:fs").Dirent) => dirent.isFile())
       .map((f: import("node:fs").Dirent) =>
@@ -49,6 +56,10 @@ class FileSystemBucket implements IBucket {
     if (!name) throw new Error("No name");
     const path = resolve(isAbsolute(name) ? name : join(this.path, name));
     return new FSFile(path, this.path);
+  }
+
+  folder(path: string): FileSystemBucket {
+    return new FileSystemBucket(join(this.path, cleanPrefix(path)));
   }
 
   async remove(filter?: RegExp | string): Promise<FSFile[]> {
@@ -84,12 +95,11 @@ export default function FileSystem(path: string): FileSystemBucket {
   return new FileSystemBucket(path);
 }
 
-export { FileSystemBucket, FSFile };
-
 export type {
+  Bucket,
+  BucketFile,
   FileInfo,
   BucketInfo,
-  FileEntry,
   WriteContent,
   WriteOptions,
 } from "../lib/types.ts";

@@ -1,7 +1,7 @@
 // This test only covers the things specific for this bucket;
 // any shared API test is under test/index.test.ts at the root
 
-import BackBlaze, { BackBlazeInstance } from "./index.ts";
+import BackBlaze from "./index.ts";
 
 // All tests use mocked fetch, no real credentials needed.
 // The B2 constructor fires an auth request immediately, so we mock fetch
@@ -41,7 +41,9 @@ function withAuthMock(
 }
 
 // Create a bucket with mocked auth, await init, then hand control to caller.
-async function makeBucket(handler?: FetchHandler): Promise<BackBlazeInstance> {
+async function makeBucket(
+  handler?: FetchHandler,
+): Promise<ReturnType<typeof BackBlaze>> {
   mockFetch(withAuthMock(handler));
   const bucket = BackBlaze("test-bucket", {
     id: "test-id",

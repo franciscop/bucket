@@ -9,7 +9,7 @@ import {
 } from "../lib/signGCS.ts";
 import { getContentType } from "../lib/fileTypes.ts";
 import type {
-  IBucketFile,
+  BucketFile,
   FileInfo,
   WriteContent,
   WriteOptions,
@@ -25,7 +25,7 @@ export interface GCSObjectMeta {
 
 export type GCSAuth = { clientEmail: string; privateKey: string } | null;
 
-export class GCSFile implements IBucketFile {
+export class GCSFile implements BucketFile {
   id: string;
   name: string;
   path: string;

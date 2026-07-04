@@ -5,7 +5,7 @@ import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
 import { getContentType } from "../lib/fileTypes.ts";
 import type {
-  IBucketFile,
+  BucketFile,
   FileInfo,
   WriteContent,
   WriteOptions,
@@ -24,7 +24,7 @@ export interface R2BucketContext {
   endpoint: string;
 }
 
-export class R2File implements IBucketFile {
+export class R2File implements BucketFile {
   id: string;
   name: string;
   path: string;

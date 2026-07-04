@@ -1,6 +1,7 @@
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
 import { sha256base64 } from "../lib/webcrypto.ts";
-import type { IBucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
+import { withPrefix, scope, subBucket } from "../lib/prefix.ts";
+import type { Bucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
 import { R2File, type R2BucketContext } from "./File.ts";
 
 const {
@@ -38,11 +39,12 @@ function getTag(xmlStr: string, tag: string): string {
   return extractTags(xmlStr, tag)[0] ?? "";
 }
 
-class CloudflareR2Bucket implements IBucket {
+class CloudflareR2Bucket implements Bucket {
   readonly type = "R2";
   private endpoint: string;
   private auth: S3Auth;
   private bucketName: string;
+  PREFIX = "";
 
   constructor(
     endpoint: string = ENV_ENDPOINT || "",
@@ -95,12 +97,12 @@ class CloudflareR2Bucket implements IBucket {
   async list(filter?: string | RegExp): Promise<R2File[]> {
     const files: R2File[] = [];
     let token: string | undefined;
+    const s = scope(this.PREFIX, filter);
 
     do {
       const url = new URL(this.makeUrl(""));
       url.searchParams.set("list-type", "2");
-      if (filter && typeof filter === "string")
-        url.searchParams.set("prefix", filter);
+      if (s.query) url.searchParams.set("prefix", s.query);
       if (token) url.searchParams.set("continuation-token", token);
 
       const req: S3Request = {
@@ -119,8 +121,8 @@ class CloudflareR2Bucket implements IBucket {
       const xmlStr = await res.text();
       for (const item of extractTags(xmlStr, "Contents")) {
         const key = getTag(item, "Key");
-        if (filter instanceof RegExp && !filter.test(key)) continue;
-        files.push(this.file(key));
+        if (!s.test(key)) continue;
+        files.push(this.handle(key));
       }
 
       token =
@@ -171,8 +173,7 @@ class CloudflareR2Bucket implements IBucket {
     return deleted;
   }
 
-  file(name: string): R2File {
-    if (!name) throw new Error("No name");
+  private handle(path: string): R2File {
     const ctx: R2BucketContext = {
       makeUrl: (p) => this.makeUrl(p),
       doRequest: (m, p, opts) => this.doRequest(m, p, opts),
@@ -180,7 +181,16 @@ class CloudflareR2Bucket implements IBucket {
       bucketName: this.bucketName,
       endpoint: this.endpoint,
     };
-    return new R2File(name, ctx);
+    return new R2File(path, ctx);
+  }
+
+  file(name: string): R2File {
+    if (!name) throw new Error("No name");
+    return this.handle(withPrefix(this.PREFIX, name));
+  }
+
+  folder(path: string): CloudflareR2Bucket {
+    return subBucket(this, path);
   }
 
   async count(filter?: string | RegExp): Promise<number> {
@@ -216,12 +226,11 @@ export default function CloudflareR2(
   return new CloudflareR2Bucket(endpoint, config);
 }
 
-export { CloudflareR2Bucket, R2File };
-
 export type {
+  Bucket,
+  BucketFile,
   FileInfo,
   BucketInfo,
-  FileEntry,
   WriteContent,
   WriteOptions,
 } from "../lib/types.ts";

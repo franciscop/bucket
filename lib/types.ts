@@ -30,23 +30,13 @@ export interface BucketInfo {
   id: string;
 }
 
-export interface FileEntry {
-  id: string;
-  name: string;
-  path: string;
-  type: string | null;
-  size: number;
-  date: Date | null;
-  url?: string | null;
-}
-
 /** Accepted input types for `file.write()` */
 export type WriteContent =
   | string
   | Buffer
   | Uint8Array
   | Blob
-  | IBucketFile
+  | BucketFile
   | ReadableStream
   | NodeJS.ReadableStream;
 
@@ -63,7 +53,7 @@ export interface WriteOptions {
 }
 
 /** A handle to a single file within a bucket */
-export interface IBucketFile {
+export interface BucketFile {
   /** File identifier: the path for remote stores, a hash for the filesystem */
   id: string;
   /** Filename only (no directory) */
@@ -132,7 +122,7 @@ export interface IBucketFile {
 }
 
 /** A bucket (or container) that holds files */
-export interface IBucket {
+export interface Bucket {
   /** Provider type (e.g. "S3", "GCS", "AZURE") */
   type?: string;
 
@@ -142,18 +132,20 @@ export interface IBucket {
    * Lists all files in the bucket.
    * Pass a string for prefix filtering, or a `RegExp` for pattern filtering.
    */
-  list(filter?: RegExp | string): Promise<IBucketFile[]>;
+  list(filter?: RegExp | string): Promise<BucketFile[]>;
   /**
    * Deletes all files matching the optional filter.
    * Returns the deleted file objects.
    */
-  remove(filter?: RegExp | string): Promise<IBucketFile[]>;
+  remove(filter?: RegExp | string): Promise<BucketFile[]>;
   /** Returns the number of files matching the optional filter */
   count(filter?: RegExp | string): Promise<number>;
   /** Returns a file handle for the given path (does not check existence) */
-  file(name: string): IBucketFile;
+  file(name: string): BucketFile;
+  /** Returns a folder: a copy of this bucket scoped to the given path prefix */
+  folder(path: string): Bucket;
   /** Iterates over all files in the bucket */
-  [Symbol.asyncIterator](): AsyncIterator<IBucketFile>;
+  [Symbol.asyncIterator](): AsyncIterator<BucketFile>;
 }
 
 export interface S3Auth {
