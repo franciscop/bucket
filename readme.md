@@ -29,7 +29,7 @@ await source.pipeTo(target);
 
 ## API
 
-There are two main APIs, the `Bucket` one and the `File` one:
+There are two main APIs, the `Bucket` one and the `BucketFile` one:
 
 - `Bucket()` initialize the instance attached to a single bucket.
   - `.info()`: display the information about the current bucket.
@@ -37,9 +37,9 @@ There are two main APIs, the `Bucket` one and the `File` one:
   - `.scan(filter?)`: async generator that lazily yields files (streams pages).
   - `.count(filter?)`: return the Number of items in the bucket.
   - `.remove(filter?)`: delete all files matching the filter, returning them.
-  - `.file(path)`: creates a File instance for the given path
+  - `.file(path)`: creates a BucketFile instance for the given path
   - `.folder(path)`: a Bucket scoped to a path prefix (see below).
-- `File` instance (created with `.file()`, or each item in the `list()`). It has `id`, `name` and `path` already:
+- `BucketFile` instance (created with `.file()`, or each item in the `list()`). It has `id`, `name` and `path` already:
   - `.info()`: returns some more details of the file, like `date` (creation time), `type` (mime type) and `size`.
   - `.exists()`: checks whether a file exists, returning true if it does.
   - `.text()`: read the contents of the file as a string
@@ -93,13 +93,13 @@ const info = await bucket.info();
 //   id: "access-key-id",
 //   name: "my-bucket-name",
 //   type: "S3",
-//   endpoint: "https://my-bucket-name.s3.us-east-1.amazonaws.com"
+//   url: "https://my-bucket-name.s3.us-east-1.amazonaws.com"
 // }
 ```
 
 ### bucket.list()
 
-Returns `Promise<File[]>` with all files in the bucket. Accepts an optional `RegExp` to filter by pattern; to scope to a path prefix, use [`.folder()`](#bucketfolder).
+Returns `Promise<BucketFile[]>` with all files in the bucket. Accepts an optional `RegExp` to filter by pattern; to scope to a path prefix, use [`.folder()`](#bucketfolder).
 
 ```js
 const all = await bucket.list();
@@ -140,7 +140,7 @@ const images = await bucket.count(/\.jpe?g$/);
 
 ### bucket.remove()
 
-Deletes every file matching the optional `RegExp` and returns the deleted `File` objects; with no filter it empties the bucket (or the folder, when called on one). On S3 and R2 the deletion is batched into as few requests as possible.
+Deletes every file matching the optional `RegExp` and returns the deleted `BucketFile` objects; with no filter it empties the bucket (or the folder, when called on one). On S3 and R2 the deletion is batched into as few requests as possible.
 
 ```js
 await bucket.remove(/\.tmp$/); // delete every .tmp file
@@ -150,7 +150,7 @@ console.log(`removed ${deleted.length} files`);
 
 ### bucket.file()
 
-Returns a `File` handle for the given path. It mirrors the `Blob` read API (`.text()`, `.json()`, `.arrayBuffer()`, `.bytes()`, `.blob()`, `.stream()`), but it is a **lazy remote handle, not a `Blob` itself**, so to hand it to `FormData`, `Response`, or `fetch`, materialize it first with `await file.blob()` (buffered) or `file.stream()` (streaming). See [Guides](#guides). This is a synchronous operation. It does not make any network requests or check whether the file exists.
+Returns a `BucketFile` handle for the given path. It mirrors the `Blob` read API (`.text()`, `.json()`, `.arrayBuffer()`, `.bytes()`, `.blob()`, `.stream()`), but it is a **lazy remote handle, not a `Blob` itself**, so to hand it to `FormData`, `Response`, or `fetch`, materialize it first with `await file.blob()` (buffered) or `file.stream()` (streaming). See [Guides](#guides). This is a synchronous operation. It does not make any network requests or check whether the file exists.
 
 ```js
 const file = bucket.file("photos/avatar.jpg");
@@ -262,7 +262,7 @@ Writes content to the file. If the file already exists it is overwritten. Interm
 - `Blob`
 - `ReadableStream` (web)
 - `Readable` (Node.js)
-- Another `File` instance (copies the content)
+- Another `BucketFile` instance (copies the content)
 
 ```js
 await bucket.file("hello.txt").write("hello world");
@@ -414,7 +414,7 @@ const bucket = S3("my-bucket-name", {
   id: "...", // Access Key ID
   secret: "...", // Secret Access Key
   region: "us-east-1", // defaults to us-east-1
-  endpoint: "...", // optional: override endpoint URL
+  url: "...", // optional: override the endpoint URL
 });
 ```
 
@@ -426,30 +426,32 @@ Environment variable fallbacks:
 | `id`        | `AWS_ACCESS_KEY_ID`     |
 | `secret`    | `AWS_SECRET_ACCESS_KEY` |
 | `region`    | `AWS_REGION`            |
-| `endpoint`  | `AWS_ENDPOINT`          |
+| `url`       | `AWS_URL`               |
 
-The `endpoint` option lets you point at any S3-compatible service (MinIO, DigitalOcean Spaces, etc.).
+The `url` option lets you point at any S3-compatible service (MinIO, DigitalOcean Spaces, etc.).
 
 ### Cloudflare R2
 
 ```js
 import R2 from "bucket/r2";
 
-const bucket = R2("https://<account>.r2.cloudflarestorage.com/my-bucket", {
+const bucket = R2("my-bucket", {
   id: "...", // Access Key ID
   secret: "...", // Secret Access Key
+  url: "https://<account>.r2.cloudflarestorage.com/my-bucket",
 });
 ```
 
-The first argument is the full R2 endpoint URL, including the bucket name at the end.
+The `url` is the full R2 endpoint URL, including the bucket name at the end; it must match the bucket `name` passed as the first argument.
 
 Environment variable fallbacks:
 
-| Option     | Env var                |
-| ---------- | ---------------------- |
-| bucket URL | `R2_ENDPOINT`          |
-| `id`       | `R2_ACCESS_KEY_ID`     |
-| `secret`   | `R2_SECRET_ACCESS_KEY` |
+| Option      | Env var                |
+| ----------- | ---------------------- |
+| bucket name | `R2_BUCKET`            |
+| `url`       | `R2_URL`               |
+| `id`        | `R2_ACCESS_KEY_ID`     |
+| `secret`    | `R2_SECRET_ACCESS_KEY` |
 
 ### Google Cloud Storage
 
@@ -472,11 +474,11 @@ Credentials are resolved automatically, in order:
 | private key   | `GCS_PRIVATE_KEY`                |
 | credentials   | `GOOGLE_APPLICATION_CREDENTIALS` |
 
-Pass `{ endpoint, anonymous }` (or set `GCS_ENDPOINT` / `GCS_ANONYMOUS`) to point at an emulator such as fake-gcs-server:
+Pass `{ url, anonymous }` (or set `GCS_URL` / `GCS_ANONYMOUS`) to point at an emulator such as fake-gcs-server:
 
 ```js
 const bucket = GCS("my-bucket", {
-  endpoint: "http://localhost:4443",
+  url: "http://localhost:4443",
   anonymous: true,
 });
 ```
@@ -486,29 +488,34 @@ const bucket = GCS("my-bucket", {
 ```js
 import Azure from "bucket/azure";
 
-const bucket = Azure("my-account", "my-container", "base64-account-key");
+const bucket = Azure("my-container", {
+  account: "my-account",
+  key: "base64-account-key",
+});
 ```
 
 You can also pass a full connection string, or omit the key to use Managed Identity on Azure-hosted infrastructure:
 
 ```js
 // Connection string (its BlobEndpoint is honoured automatically)
-const bucket = Azure(
-  "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;",
-);
+const bucket = Azure("my-container", {
+  connectionString:
+    "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;",
+});
 
 // Managed Identity, no key needed
-const bucket = Azure("my-account", "my-container");
+const bucket = Azure("my-container", { account: "my-account" });
 ```
 
-| Option     | Env var           |
-| ---------- | ----------------- |
-| account    | `AZURE_ACCOUNT`   |
-| container  | `AZURE_CONTAINER` |
-| `key`      | `AZURE_KEY`       |
-| `endpoint` | `AZURE_ENDPOINT`  |
+| Option             | Env var                   |
+| ------------------ | ------------------------- |
+| container name     | `AZURE_CONTAINER`         |
+| `account`          | `AZURE_ACCOUNT`           |
+| `key`              | `AZURE_KEY`               |
+| `url`              | `AZURE_URL`               |
+| `connectionString` | `AZURE_CONNECTION_STRING` |
 
-The `endpoint` option (4th argument, `{ endpoint }`) points at the Azurite emulator or a custom/sovereign cloud, e.g. `http://127.0.0.1:10000/devstoreaccount1`.
+The `url` option points at the Azurite emulator or a custom/sovereign cloud, e.g. `http://127.0.0.1:10000/devstoreaccount1`.
 
 ### More?
 
@@ -516,12 +523,12 @@ Open an [issue or PR](https://github.com/franciscop/bucket) if you'd like to see
 
 ## Guides
 
-A `File` is a **lazy remote handle, not a `Blob`**. It exposes the same read methods as a `Blob`, but to hand it to a Web API materialize it first:
+A `BucketFile` is a **lazy remote handle, not a `Blob`**. It exposes the same read methods as a `Blob`, but to hand it to a Web API materialize it first:
 
 - **`file.stream()`**: a web `ReadableStream`, for streaming bodies (no buffering).
 - **`await file.blob()`**: a real `Blob`, for APIs that need one (`FormData`).
 
-> Passing the `File` object _itself_ to `new Response(file)` or `FormData.append(name, file)` will **not** work: it is not a `Blob`, and would serialize as empty. Always use `.stream()` or `.blob()`.
+> Passing the `BucketFile` object _itself_ to `new Response(file)` or `FormData.append(name, file)` will **not** work: it is not a `Blob`, and would serialize as empty. Always use `.stream()` or `.blob()`.
 
 ### Serve over HTTP
 
@@ -575,7 +582,7 @@ async fetch(req) {
 
 ### Combine buckets
 
-`write()` accepts a `File` from **any** provider, so moving data between services is one call:
+`write()` accepts a `BucketFile` from **any** provider, so moving data between services is one call:
 
 ```js
 import S3 from "bucket/s3";
@@ -781,15 +788,21 @@ The test suite has three layers, the first two of which need **no credentials**:
 
 ### Emulators
 
-S3, R2, GCS and Azure can be tested end-to-end against local emulators. MinIO and Azurite **validate request signatures**, so a green run proves the signer against a real server.
+S3, R2, GCS and Azure can be tested end-to-end against local emulators, no Docker required. MinIO and Azurite **validate request signatures**, so a green run proves the signer against a real server.
+
+The emulators run as native binaries. Azurite ships as a devDependency (installed by `bun install`); MinIO (S3 + R2) and fake-gcs-server (GCS) are standalone binaries that need to be on your `PATH`:
 
 ```bash
-npm run emulators:up      # MinIO (S3+R2), Azurite (Azure), fake-gcs-server (GCS), needs Docker
-npm run test:emulators    # creates the buckets/container, then runs the suite
-npm run emulators:down
+brew install minio fake-gcs-server   # macOS; see each project's docs for other OSes
 ```
 
-Configuration lives in [`.env.emulators`](.env.emulators) (well-known emulator defaults, no secrets). Azurite is also available as a pure-npm devDependency, so the Azure suite can run without Docker:
+Then a single command starts all three, seeds the buckets, runs the suite, and tears everything down:
+
+```bash
+npm run test:emulators
+```
+
+Configuration lives in [`.env.emulators`](.env.emulators) (well-known emulator defaults, no secrets). To run against one provider only, start the emulators yourself and filter with `BUCKET`:
 
 ```bash
 npx azurite-blob --silent --location /tmp/azurite &

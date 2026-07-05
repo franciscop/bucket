@@ -88,7 +88,7 @@ describe("B2 bucket.info()", () => {
     expect(info.id).toBe("test-bucket-id");
     expect(info.name).toBe("test-bucket");
     expect(info.type).toBe("BACKBLAZE");
-    expect(info.endpoint).toBe("https://f001.backblazeb2.com/");
+    expect(info.url).toBe("https://f001.backblazeb2.com/");
   });
 });
 

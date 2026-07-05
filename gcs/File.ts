@@ -9,6 +9,13 @@ import {
 } from "../lib/signGCS.ts";
 import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
+import {
+  composeRange,
+  isEmptyRange,
+  rangeHeader,
+  rangeSize,
+  type ByteRange,
+} from "../lib/range.ts";
 import type {
   BucketFile,
   FileInfo,
@@ -33,14 +40,15 @@ export class GCSFile implements BucketFile {
   path: string;
   #bucket: string;
   #authPromise: Promise<GCSAuth>;
-  #endpoint: string;
+  #url: string;
   #anonymous: boolean;
+  #range: ByteRange | null = null;
 
   constructor(
     path: string,
     bucket: string,
     authPromise: Promise<GCSAuth>,
-    endpoint: string = "https://storage.googleapis.com",
+    url: string = "https://storage.googleapis.com",
     anonymous: boolean = false,
   ) {
     this.path = path.startsWith("/") ? path.slice(1) : path;
@@ -48,12 +56,41 @@ export class GCSFile implements BucketFile {
     this.id = this.path;
     this.#bucket = bucket;
     this.#authPromise = authPromise;
-    this.#endpoint = endpoint;
+    this.#url = url;
     this.#anonymous = anonymous;
   }
 
+  slice(start: number, end?: number): GCSFile {
+    const f = new GCSFile(
+      this.path,
+      this.#bucket,
+      this.#authPromise,
+      this.#url,
+      this.#anonymous,
+    );
+    f.#range = composeRange(this.#range, start, end);
+    return f;
+  }
+
+  // A range-aware, status-checked media GET used by every reader. An empty
+  // range resolves to an empty body without hitting the network.
+  async #get(): Promise<Response> {
+    if (this.#range && isEmptyRange(this.#range))
+      return new Response(new Uint8Array(0));
+    const rh = this.#range && rangeHeader(this.#range);
+    const res = await fetch(this.#mediaUrl(), {
+      headers: await this.#headers(rh ? { Range: rh } : {}),
+    });
+    if (!res.ok)
+      throw new BucketError(`GCS GET error: ${res.status}`, {
+        provider: "GCS",
+        status: res.status,
+      });
+    return res;
+  }
+
   #apiUrl(): string {
-    return `${this.#endpoint}/storage/v1/b/${this.#bucket}/o/${encodeURIComponent(this.path)}`;
+    return `${this.#url}/storage/v1/b/${this.#bucket}/o/${encodeURIComponent(this.path)}`;
   }
 
   #mediaUrl(): string {
@@ -97,7 +134,7 @@ export class GCSFile implements BucketFile {
       path: this.path,
       exists: true,
       type: meta.contentType,
-      size: parseInt(meta.size, 10),
+      size: rangeSize(this.#range, parseInt(meta.size, 10)),
       date: new Date(meta.updated),
       url: this.publicUrl(),
       metadata: meta.metadata ?? {},
@@ -109,51 +146,19 @@ export class GCSFile implements BucketFile {
   }
 
   async text(): Promise<string> {
-    const res = await fetch(this.#mediaUrl(), {
-      headers: await this.#headers(),
-    });
-    if (!res.ok)
-      throw new BucketError(`GCS GET error: ${res.status}`, {
-        provider: "GCS",
-        status: res.status,
-      });
-    return res.text();
+    return (await this.#get()).text();
   }
 
   async json(): Promise<unknown> {
-    const res = await fetch(this.#mediaUrl(), {
-      headers: await this.#headers(),
-    });
-    if (!res.ok)
-      throw new BucketError(`GCS GET error: ${res.status}`, {
-        provider: "GCS",
-        status: res.status,
-      });
-    return res.json();
+    return (await this.#get()).json();
   }
 
   async arrayBuffer(): Promise<ArrayBuffer> {
-    const res = await fetch(this.#mediaUrl(), {
-      headers: await this.#headers(),
-    });
-    if (!res.ok)
-      throw new BucketError(`GCS GET error: ${res.status}`, {
-        provider: "GCS",
-        status: res.status,
-      });
-    return res.arrayBuffer();
+    return (await this.#get()).arrayBuffer();
   }
 
   async blob(): Promise<Blob> {
-    const res = await fetch(this.#mediaUrl(), {
-      headers: await this.#headers(),
-    });
-    if (!res.ok)
-      throw new BucketError(`GCS GET error: ${res.status}`, {
-        provider: "GCS",
-        status: res.status,
-      });
-    return res.blob();
+    return (await this.#get()).blob();
   }
 
   async bytes(): Promise<Uint8Array> {
@@ -190,7 +195,7 @@ export class GCSFile implements BucketFile {
       const suffix = Buffer.from(`\r\n--${boundary}--`);
       const body = Buffer.concat([prefix, dataBuffer, suffix]);
 
-      const url = `${this.#endpoint}/upload/storage/v1/b/${this.#bucket}/o?uploadType=multipart`;
+      const url = `${this.#url}/upload/storage/v1/b/${this.#bucket}/o?uploadType=multipart`;
       const res = await fetch(url, {
         method: "POST",
         headers: await this.#headers({
@@ -204,7 +209,7 @@ export class GCSFile implements BucketFile {
           status: res.status,
         });
     } else {
-      const url = `${this.#endpoint}/upload/storage/v1/b/${this.#bucket}/o?uploadType=media&name=${encodeURIComponent(this.path)}`;
+      const url = `${this.#url}/upload/storage/v1/b/${this.#bucket}/o?uploadType=media&name=${encodeURIComponent(this.path)}`;
       const extra: Record<string, string> = {};
       if (type) extra["Content-Type"] = type;
       const res = await fetch(url, {
@@ -244,7 +249,7 @@ export class GCSFile implements BucketFile {
       return;
     }
     const dst = dest.startsWith("/") ? dest.slice(1) : dest;
-    const url = `${this.#endpoint}/storage/v1/b/${this.#bucket}/o/${encodeURIComponent(this.path)}/copyTo/b/${this.#bucket}/o/${encodeURIComponent(dst)}`;
+    const url = `${this.#url}/storage/v1/b/${this.#bucket}/o/${encodeURIComponent(this.path)}/copyTo/b/${this.#bucket}/o/${encodeURIComponent(dst)}`;
     const res = await fetch(url, {
       method: "POST",
       headers: await this.#headers(),
@@ -298,17 +303,7 @@ export class GCSFile implements BucketFile {
   }
 
   stream(): ReadableStream {
-    return promiseToReadable(async () => {
-      const res = await fetch(this.#mediaUrl(), {
-        headers: await this.#headers(),
-      });
-      if (!res.ok)
-        throw new BucketError(`GCS GET error: ${res.status}`, {
-          provider: "GCS",
-          status: res.status,
-        });
-      return res.body!;
-    });
+    return promiseToReadable(async () => (await this.#get()).body!);
   }
 
   nodeReadable(): NodeJS.ReadableStream {
@@ -328,7 +323,7 @@ export class GCSFile implements BucketFile {
   }
 
   publicUrl(): string {
-    return `${this.#endpoint}/${this.#bucket}/${this.path}`;
+    return `${this.#url}/${this.#bucket}/${this.path}`;
   }
 
   async signedUrl(opts: { expires: number | string }): Promise<string | null> {

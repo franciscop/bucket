@@ -1,5 +1,5 @@
 // Creates the buckets/container the integration suite needs inside the local
-// emulators (see docker-compose.emulators.yml). Idempotent: existing resources
+// emulators (started by test/emulators.ts). Idempotent: existing resources
 // are left alone. Each block is gated on its endpoint env var, so it also works
 // with only a subset of emulators running.
 //
@@ -49,11 +49,11 @@ async function createBucket(
   );
 }
 
-if (process.env.AWS_ENDPOINT) {
-  const { protocol, host } = new URL(process.env.AWS_ENDPOINT);
+if (process.env.AWS_URL) {
+  const { protocol, host } = new URL(process.env.AWS_URL);
   await waitFor(`${protocol}//${host}/minio/health/live`, "MinIO");
   await createBucket(
-    process.env.AWS_ENDPOINT,
+    process.env.AWS_URL,
     process.env.AWS_ACCESS_KEY_ID || "",
     process.env.AWS_SECRET_ACCESS_KEY || "",
     process.env.AWS_REGION || "us-east-1",
@@ -61,9 +61,9 @@ if (process.env.AWS_ENDPOINT) {
   );
 }
 
-if (process.env.R2_ENDPOINT) {
+if (process.env.R2_URL) {
   await createBucket(
-    process.env.R2_ENDPOINT,
+    process.env.R2_URL,
     process.env.R2_ACCESS_KEY_ID || "",
     process.env.R2_SECRET_ACCESS_KEY || "",
     process.env.R2_REGION || "us-east-1",
@@ -72,8 +72,8 @@ if (process.env.R2_ENDPOINT) {
 }
 
 // ── Azurite: create the blob container (SharedKey PUT) ───────────────────────
-if (process.env.AZURE_ENDPOINT) {
-  const endpoint = process.env.AZURE_ENDPOINT;
+if (process.env.AZURE_URL) {
+  const endpoint = process.env.AZURE_URL;
   const account = process.env.AZURE_ACCOUNT || "";
   const key = process.env.AZURE_KEY || "";
   const container = process.env.AZURE_CONTAINER || "";
@@ -96,8 +96,8 @@ if (process.env.AZURE_ENDPOINT) {
 }
 
 // ── fake-gcs-server: create the bucket (anonymous JSON API) ──────────────────
-if (process.env.GCS_ENDPOINT) {
-  const endpoint = process.env.GCS_ENDPOINT.replace(/\/$/, "");
+if (process.env.GCS_URL) {
+  const endpoint = process.env.GCS_URL.replace(/\/$/, "");
   await waitFor(`${endpoint}/storage/v1/b?project=test`, "fake-gcs-server");
   const res = await fetch(`${endpoint}/storage/v1/b?project=test`, {
     method: "POST",

@@ -10,6 +10,13 @@ import promiseToWritable from "../lib/promiseToWritable.ts";
 import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
 import metaFromHeaders from "../lib/meta.ts";
+import {
+  composeRange,
+  isEmptyRange,
+  rangeHeader,
+  rangeSize,
+  type ByteRange,
+} from "../lib/range.ts";
 import type {
   BucketFile,
   FileInfo,
@@ -27,27 +34,57 @@ export class AzureFile implements BucketFile {
   path: string;
   #account: string;
   #container: string;
-  #endpoint: string;
+  #url: string;
   #auth: AzureFileAuth;
+  #range: ByteRange | null = null;
 
   constructor(
     path: string,
     account: string,
     container: string,
     auth: AzureFileAuth,
-    endpoint: string = `https://${account}.blob.core.windows.net`,
+    url: string = `https://${account}.blob.core.windows.net`,
   ) {
     this.path = path.startsWith("/") ? path.slice(1) : path;
     this.name = this.path.split("/").pop() || this.path;
     this.id = this.path;
     this.#account = account;
     this.#container = container;
-    this.#endpoint = endpoint;
+    this.#url = url;
     this.#auth = auth;
   }
 
+  slice(start: number, end?: number): AzureFile {
+    const f = new AzureFile(
+      this.path,
+      this.#account,
+      this.#container,
+      this.#auth,
+      this.#url,
+    );
+    f.#range = composeRange(this.#range, start, end);
+    return f;
+  }
+
+  // A range-aware, status-checked GET used by every reader. Azure's SharedKey
+  // StringToSign has no slot for a standard `Range` header, but it does sign
+  // every `x-ms-*` header, so we use `x-ms-range`. An empty range resolves to
+  // an empty body without hitting the network.
+  async #get(): Promise<Response> {
+    if (this.#range && isEmptyRange(this.#range))
+      return new Response(new Uint8Array(0));
+    const rh = this.#range && rangeHeader(this.#range);
+    const res = await this.#request("GET", rh ? { "x-ms-range": rh } : {});
+    if (!res.ok)
+      throw new BucketError(`Azure GET error: ${res.status}`, {
+        provider: "Azure",
+        status: res.status,
+      });
+    return res;
+  }
+
   #baseUrl(): string {
-    return `${this.#endpoint}/${this.#container}/${this.path}`;
+    return `${this.#url}/${this.#container}/${this.path}`;
   }
 
   async #request(
@@ -55,7 +92,7 @@ export class AzureFile implements BucketFile {
     extraHeaders: Record<string, string> = {},
     body?: string | Buffer,
   ): Promise<Response> {
-    const blobPath = `${accountPathPrefix(this.#endpoint)}/${this.#container}/${this.path}`;
+    const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${this.path}`;
     const allExtra = {
       ...extraHeaders,
       ...(body !== undefined
@@ -114,7 +151,10 @@ export class AzureFile implements BucketFile {
       path: this.path,
       exists: true,
       type: res.headers.get("content-type"),
-      size: parseInt(res.headers.get("content-length") ?? "0", 10),
+      size: rangeSize(
+        this.#range,
+        parseInt(res.headers.get("content-length") ?? "0", 10),
+      ),
       date: new Date(res.headers.get("last-modified") ?? Date.now()),
       url: this.publicUrl(),
       metadata: metaFromHeaders(res.headers, "x-ms-meta-"),
@@ -126,43 +166,19 @@ export class AzureFile implements BucketFile {
   }
 
   async text(): Promise<string> {
-    const res = await this.#request("GET");
-    if (!res.ok)
-      throw new BucketError(`Azure GET error: ${res.status}`, {
-        provider: "Azure",
-        status: res.status,
-      });
-    return res.text();
+    return (await this.#get()).text();
   }
 
   async json(): Promise<unknown> {
-    const res = await this.#request("GET");
-    if (!res.ok)
-      throw new BucketError(`Azure GET error: ${res.status}`, {
-        provider: "Azure",
-        status: res.status,
-      });
-    return res.json();
+    return (await this.#get()).json();
   }
 
   async arrayBuffer(): Promise<ArrayBuffer> {
-    const res = await this.#request("GET");
-    if (!res.ok)
-      throw new BucketError(`Azure GET error: ${res.status}`, {
-        provider: "Azure",
-        status: res.status,
-      });
-    return res.arrayBuffer();
+    return (await this.#get()).arrayBuffer();
   }
 
   async blob(): Promise<Blob> {
-    const res = await this.#request("GET");
-    if (!res.ok)
-      throw new BucketError(`Azure GET error: ${res.status}`, {
-        provider: "Azure",
-        status: res.status,
-      });
-    return res.blob();
+    return (await this.#get()).blob();
   }
 
   async bytes(): Promise<Uint8Array> {
@@ -221,9 +237,9 @@ export class AzureFile implements BucketFile {
       this.#account,
       this.#container,
       this.#auth,
-      this.#endpoint,
+      this.#url,
     );
-    const blobPath = `${accountPathPrefix(this.#endpoint)}/${this.#container}/${dst.path}`;
+    const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${dst.path}`;
 
     if (this.#auth.type === "shared-key") {
       const headers = await signAzure(
@@ -296,15 +312,7 @@ export class AzureFile implements BucketFile {
   }
 
   stream(): ReadableStream {
-    return promiseToReadable(async () => {
-      const res = await this.#request("GET");
-      if (!res.ok)
-        throw new BucketError(`Azure GET error: ${res.status}`, {
-          provider: "Azure",
-          status: res.status,
-        });
-      return res.body!;
-    });
+    return promiseToReadable(async () => (await this.#get()).body!);
   }
 
   nodeReadable(): NodeJS.ReadableStream {

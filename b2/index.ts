@@ -1,5 +1,5 @@
 import type { Bucket, BucketInfo } from "../lib/types.ts";
-import { withPrefix, scope, subBucket } from "../lib/prefix.ts";
+import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
 import BucketError from "../lib/BucketError.ts";
 import { B2File, type B2BucketContext } from "./File.ts";
 
@@ -19,60 +19,93 @@ interface B2FileEntry {
   uploadTimestamp: number;
 }
 
+interface B2Auth {
+  bucketId: string;
+  token: string;
+  apiBase: string;
+  base: string;
+}
+
+interface B2Config {
+  id?: string;
+  secret?: string;
+  /** Authenticate immediately in the constructor (the default). folder()
+   * clones pass `false` and adopt the parent's resolved auth instead, so a
+   * folder never triggers its own network round-trip. */
+  eager?: boolean;
+}
+
+async function authorize(id: string, secret: string): Promise<B2Auth> {
+  const derived = Buffer.from(id + ":" + secret).toString("base64");
+  // Use fetch directly to avoid circular dependency during init
+  const res = await fetch(
+    "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
+    { headers: { Authorization: "Basic " + derived } },
+  );
+  const data = (await res.json()) as {
+    allowed: { bucketId: string };
+    authorizationToken: string;
+    apiUrl: string;
+    downloadUrl: string;
+  };
+  return {
+    bucketId: data.allowed.bucketId,
+    token: data.authorizationToken,
+    apiBase: data.apiUrl + API_VERSION_URL,
+    base: data.downloadUrl.replace(/\/$/, "") + "/",
+  };
+}
+
 class BackBlazeInstance implements Bucket, B2BucketContext {
   readonly type = "BACKBLAZE";
-  id!: string;
-  name!: string;
-  token!: string;
-  apiBase!: string;
-  base!: string;
+  name: string;
+  // Non-secret connection details, mirrored from the resolved auth so
+  // publicUrl() and B2File can read them synchronously. The bearer token
+  // lives only inside #auth (never mirrored), so console.log(bucket) is safe.
+  id = "";
+  apiBase = "";
+  base = "";
   PREFIX = "";
-  private initPromise: Promise<void>;
+  #auth!: Promise<B2Auth>;
 
-  constructor(
-    name: string = ENV_NAME || "",
-    {
-      id = ENV_ID || "",
-      secret = ENV_KEY || "",
-    }: { id?: string; secret?: string } = {},
-  ) {
+  constructor(name: string = ENV_NAME || "", config: B2Config = {}) {
+    const { id = ENV_ID || "", secret = ENV_KEY || "", eager = true } = config;
     this.name = name;
-    this.initPromise = (async () => {
-      const derived = Buffer.from(id + ":" + secret).toString("base64");
-      // Use fetch directly to avoid circular dependency during init
-      const res = await fetch(
-        "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
-        { headers: { Authorization: "Basic " + derived } },
-      );
-      const data = (await res.json()) as {
-        allowed: { bucketId: string };
-        authorizationToken: string;
-        apiUrl: string;
-        downloadUrl: string;
-      };
-      this.id = data.allowed.bucketId;
-      this.token = data.authorizationToken;
-      this.apiBase = data.apiUrl + API_VERSION_URL;
-      this.base = data.downloadUrl.replace(/\/$/, "") + "/";
-    })();
+    if (eager) this.#adopt(authorize(id, secret));
+  }
+
+  // Store the auth promise and mirror its non-secret fields onto this instance.
+  #adopt(auth: Promise<B2Auth>): void {
+    this.#auth = auth;
+    auth
+      .then((a) => {
+        this.id = a.bucketId;
+        this.apiBase = a.apiBase;
+        this.base = a.base;
+      })
+      .catch(() => {
+        // Swallow here; the rejection resurfaces wherever #auth is awaited.
+      });
   }
 
   async info(): Promise<BucketInfo> {
-    await this.initPromise;
+    await this.#auth;
     return {
       type: this.type,
       name: this.name,
-      endpoint: this.base,
+      url: this.base,
       id: this.id,
     };
   }
 
   async fetch(url: string, options: RequestInit = {}): Promise<Response> {
-    await this.initPromise;
-    const headers = { Authorization: this.token };
+    const { token } = await this.#auth;
     const res = await fetch(url, {
       ...options,
-      headers: { ...headers, ...(options.headers as Record<string, string>) },
+      headers: {
+        Authorization: token,
+        ...(options.headers as Record<string, string>),
+      },
     });
     if (!res.ok) {
       const path = url.split(".com").pop();
@@ -102,7 +135,10 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
   }
 
   folder(path: string): BackBlazeInstance {
-    return subBucket(this, path);
+    const b = new BackBlazeInstance(this.name, { eager: false });
+    b.#adopt(this.#auth);
+    b.PREFIX = joinPrefix(this.PREFIX, path);
+    return b;
   }
 
   async count(filter?: RegExp): Promise<number> {
@@ -114,7 +150,7 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
   }
 
   private async *pages(filter?: RegExp): AsyncGenerator<B2File[]> {
-    await this.initPromise;
+    await this.#auth;
     let nextFileName: string | undefined;
     const s = scope(this.PREFIX, filter);
 

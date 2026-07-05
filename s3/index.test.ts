@@ -54,24 +54,46 @@ describe("S3 bucket info", () => {
     expect(info.id).toBe("test-id");
     expect(info.name).toBe(TEST_BUCKET);
     expect(info.type).toBe("S3");
-    expect(info.endpoint).toBeDefined();
+    expect(info.url).toBeDefined();
   });
 
   it("uses the correct default endpoint format", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
     const info = await bucket.info();
-    expect(info.endpoint).toBe(
-      `https://${TEST_BUCKET}.s3.us-east-1.amazonaws.com`,
-    );
+    expect(info.url).toBe(`https://${TEST_BUCKET}.s3.us-east-1.amazonaws.com`);
   });
 
   it("respects a custom endpoint", async () => {
     const bucket = S3(TEST_BUCKET, {
       ...TEST_CONFIG,
-      endpoint: "https://custom.endpoint.com",
+      url: "https://custom.endpoint.com",
     });
     const info = await bucket.info();
-    expect(info.endpoint).toBe("https://custom.endpoint.com");
+    expect(info.url).toBe("https://custom.endpoint.com");
+  });
+});
+
+describe("S3 name/url validation", () => {
+  it("accepts a path-style url whose bucket matches the name", () => {
+    const bucket = S3(TEST_BUCKET, {
+      ...TEST_CONFIG,
+      url: `http://127.0.0.1:9000/${TEST_BUCKET}`,
+    });
+    expect(bucket.type).toBe("S3");
+  });
+
+  it("throws when the path-style url bucket differs from the name", () => {
+    expect(() =>
+      S3(TEST_BUCKET, { ...TEST_CONFIG, url: "http://127.0.0.1:9000/other" }),
+    ).toThrow('does not match the bucket in url "http://127.0.0.1:9000/other"');
+  });
+
+  it("ignores a virtual-hosted url (bucket in the subdomain is ambiguous)", () => {
+    const bucket = S3(TEST_BUCKET, {
+      ...TEST_CONFIG,
+      url: "https://custom.endpoint.com",
+    });
+    expect(bucket.type).toBe("S3");
   });
 });
 

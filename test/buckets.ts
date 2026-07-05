@@ -43,7 +43,7 @@ if (process.env.EXPENSIVE === "true") {
     process.env.GCS_BUCKET &&
     (process.env.GCS_CLIENT_EMAIL ||
       process.env.GCS_CREDENTIALS ||
-      process.env.GCS_ENDPOINT) // emulator (fake-gcs-server, anonymous)
+      process.env.GCS_URL) // emulator (fake-gcs-server, anonymous)
   ) {
     buckets["GCS"] = { bucket: GCS() };
   }
@@ -57,7 +57,7 @@ if (process.env.EXPENSIVE === "true") {
   }
 
   if (
-    process.env.R2_ENDPOINT &&
+    process.env.R2_URL &&
     process.env.R2_ACCESS_KEY_ID &&
     process.env.R2_SECRET_ACCESS_KEY
   ) {

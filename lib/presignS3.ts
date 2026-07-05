@@ -1,5 +1,6 @@
 import type { S3Auth } from "./types.ts";
 import { sha256hex, hmacSha256, toHex } from "./webcrypto.ts";
+import encodeS3Path from "./encodeS3Path.ts";
 
 const plainDate = (): string =>
   new Date()
@@ -30,12 +31,7 @@ export async function presignS3(
   }
   u.searchParams.sort();
 
-  // S3 re-encodes the path it receives, so the signature must cover the
-  // percent-encoded form of any RFC-3986 sub-delimiters (! ' ( ) *).
-  const canonicalPath = u.pathname.replace(
-    /[!'()*]/g,
-    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
-  );
+  const canonicalPath = encodeS3Path(u.pathname);
   const canonicalRequest = [
     method,
     canonicalPath,

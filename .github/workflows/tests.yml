@@ -32,7 +32,9 @@ jobs:
           B2_APPLICATION_KEY: ${{ secrets.BACKBLAZE_KEY }}
 
   # Full integration suite for S3, R2, GCS and Azure against local emulators.
-  # No cloud credentials needed; MinIO and Azurite verify request signatures.
+  # No cloud credentials and no Docker; MinIO and Azurite verify request
+  # signatures. Emulators run as native binaries, orchestrated by
+  # test/emulators.ts (Azurite ships as a devDependency via `bun install`).
   emulators:
     runs-on: ubuntu-latest
     steps:
@@ -40,9 +42,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         run: bun install
-      - name: Start emulators (MinIO, Azurite, fake-gcs-server)
-        run: docker compose -f docker-compose.emulators.yml up -d
-      - name: Create buckets and container
-        run: bun run emulators:setup
+      - name: Install MinIO and fake-gcs-server
+        run: |
+          sudo curl -sSL https://dl.min.io/server/minio/release/linux-amd64/minio -o /usr/local/bin/minio
+          sudo chmod +x /usr/local/bin/minio
+          curl -sSL https://github.com/fsouza/fake-gcs-server/releases/download/v1.52.2/fake-gcs-server_1.52.2_Linux_amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin fake-gcs-server
       - name: Run integration suite against emulators
-        run: bun --env-file=.env.emulators test test/index.test.ts --timeout 30000
+        run: bun run test:emulators

@@ -6,6 +6,13 @@ import promiseToWritable from "../lib/promiseToWritable.ts";
 import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
 import metaFromHeaders from "../lib/meta.ts";
+import {
+  composeRange,
+  isEmptyRange,
+  rangeHeader,
+  rangeSize,
+  type ByteRange,
+} from "../lib/range.ts";
 import type {
   BucketFile,
   FileInfo,
@@ -23,7 +30,7 @@ export interface S3BucketContext {
   ) => Promise<Response>;
   getAuth: () => Promise<S3Auth>;
   bucketName: string;
-  endpoint: string;
+  url: string;
 }
 
 export class S3File implements BucketFile {
@@ -31,12 +38,36 @@ export class S3File implements BucketFile {
   name: string;
   path: string;
   #ctx: S3BucketContext;
+  #range: ByteRange | null = null;
 
   constructor(path: string, ctx: S3BucketContext) {
     this.path = path.startsWith("/") ? path.slice(1) : path;
     this.name = this.path.split("/").pop() || this.path;
     this.id = this.path;
     this.#ctx = ctx;
+  }
+
+  slice(start: number, end?: number): S3File {
+    const f = new S3File(this.path, this.#ctx);
+    f.#range = composeRange(this.#range, start, end);
+    return f;
+  }
+
+  // A range-aware, status-checked GET used by every reader. An empty range
+  // resolves to an empty body without hitting the network.
+  async #get(): Promise<Response> {
+    if (this.#range && isEmptyRange(this.#range))
+      return new Response(new Uint8Array(0));
+    const headers: Record<string, string> = {};
+    const rh = this.#range && rangeHeader(this.#range);
+    if (rh) headers.Range = rh;
+    const res = await this.#ctx.doRequest("GET", this.path, { headers });
+    if (!res.ok)
+      throw new BucketError(`S3 GET error: ${res.status}`, {
+        provider: "S3",
+        status: res.status,
+      });
+    return res;
   }
 
   async info(): Promise<FileInfo> {
@@ -65,7 +96,10 @@ export class S3File implements BucketFile {
       path: this.path,
       exists: true,
       type: res.headers.get("content-type"),
-      size: parseInt(res.headers.get("content-length") ?? "0", 10),
+      size: rangeSize(
+        this.#range,
+        parseInt(res.headers.get("content-length") ?? "0", 10),
+      ),
       date: new Date(res.headers.get("last-modified") ?? Date.now()),
       url: this.#ctx.makeUrl(this.path),
       metadata: metaFromHeaders(res.headers, "x-amz-meta-"),
@@ -77,43 +111,19 @@ export class S3File implements BucketFile {
   }
 
   async text(): Promise<string> {
-    const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok)
-      throw new BucketError(`S3 GET error: ${res.status}`, {
-        provider: "S3",
-        status: res.status,
-      });
-    return res.text();
+    return (await this.#get()).text();
   }
 
   async json(): Promise<unknown> {
-    const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok)
-      throw new BucketError(`S3 GET error: ${res.status}`, {
-        provider: "S3",
-        status: res.status,
-      });
-    return res.json();
+    return (await this.#get()).json();
   }
 
   async arrayBuffer(): Promise<ArrayBuffer> {
-    const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok)
-      throw new BucketError(`S3 GET error: ${res.status}`, {
-        provider: "S3",
-        status: res.status,
-      });
-    return res.arrayBuffer();
+    return (await this.#get()).arrayBuffer();
   }
 
   async blob(): Promise<Blob> {
-    const res = await this.#ctx.doRequest("GET", this.path);
-    if (!res.ok)
-      throw new BucketError(`S3 GET error: ${res.status}`, {
-        provider: "S3",
-        status: res.status,
-      });
-    return res.blob();
+    return (await this.#get()).blob();
   }
 
   async bytes(): Promise<Uint8Array> {
@@ -216,15 +226,7 @@ export class S3File implements BucketFile {
   }
 
   stream(): ReadableStream {
-    return promiseToReadable(async () => {
-      const res = await this.#ctx.doRequest("GET", this.path);
-      if (!res.ok)
-        throw new BucketError(`S3 GET error: ${res.status}`, {
-          provider: "S3",
-          status: res.status,
-        });
-      return res.body!;
-    });
+    return promiseToReadable(async () => (await this.#get()).body!);
   }
 
   nodeReadable(): NodeJS.ReadableStream {

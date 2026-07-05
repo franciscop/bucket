@@ -14,10 +14,8 @@
     "test": "npm run lint && bun test --timeout 30000",
     "build": "tsup index.ts s3/index.ts b2/index.ts r2/index.ts fs/index.ts gcs/index.ts azure/index.ts --format esm --dts --out-dir dist --target node20",
     "prepare": "npm run build",
-    "emulators:up": "docker compose -f docker-compose.emulators.yml up -d",
-    "emulators:down": "docker compose -f docker-compose.emulators.yml down -v",
     "emulators:setup": "bun --env-file=.env.emulators test/setup-emulators.ts",
-    "test:emulators": "npm run emulators:setup && bun --env-file=.env.emulators test test/index.test.ts --timeout 30000"
+    "test:emulators": "bun --env-file=.env.emulators test/emulators.ts"
   },
   "type": "module",
   "main": "./dist/index.js",

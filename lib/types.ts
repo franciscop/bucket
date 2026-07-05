@@ -27,7 +27,7 @@ export interface BucketInfo {
   /** Bucket, container, or folder name */
   name: string;
   /** Base URL of the bucket (the root folder path for the filesystem) */
-  endpoint: string;
+  url: string;
   /** Account or credential identifier (provider-specific) */
   id: string;
 }
@@ -95,6 +95,14 @@ export interface BucketFile {
   remove(): Promise<void>;
   /** Alias of `remove()` (Bun `S3File.unlink()`) */
   unlink(): Promise<void>;
+
+  /**
+   * A read-only view of a byte range of this file, like `Blob.slice()`:
+   * `end` is exclusive and defaults to the end of the file. Every read method
+   * (`text`, `bytes`, `arrayBuffer`, `blob`, `stream`, ...) honours the range,
+   * and `info().size` reports the clamped slice length. Ranges compose.
+   */
+  slice(start: number, end?: number): BucketFile;
 
   /** Returns a web `ReadableStream` of the file content */
   stream(): ReadableStream;

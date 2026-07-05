@@ -1,12 +1,14 @@
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
+import encodeS3Path from "../lib/encodeS3Path.ts";
 import { sha256base64 } from "../lib/webcrypto.ts";
 import BucketError from "../lib/BucketError.ts";
-import { withPrefix, scope, subBucket } from "../lib/prefix.ts";
+import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
 import type { Bucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
 import { R2File, type R2BucketContext } from "./File.ts";
 
 const {
-  R2_ENDPOINT: ENV_ENDPOINT,
+  R2_BUCKET: ENV_BUCKET,
+  R2_URL: ENV_URL,
   R2_ACCESS_KEY_ID: ENV_ID,
   R2_SECRET_ACCESS_KEY: ENV_KEY,
   R2_SESSION_TOKEN: ENV_SESSION_TOKEN,
@@ -18,11 +20,15 @@ export interface R2Config {
   secret?: string;
   region?: string;
   sessionToken?: string;
+  /** Full R2 endpoint URL, including the bucket name at the end:
+   * `https://<account>.r2.cloudflarestorage.com/<bucket>` (falls back to
+   * `R2_URL`). */
+  url?: string;
 }
 
-function extractBucketName(endpoint: string): string {
+function extractBucketName(url: string): string {
   try {
-    return new URL(endpoint).pathname.replace(/^\//, "").split("/")[0] ?? "";
+    return new URL(url).pathname.replace(/^\//, "").split("/")[0] ?? "";
   } catch {
     return "";
   }
@@ -42,28 +48,36 @@ function getTag(xmlStr: string, tag: string): string {
 
 class CloudflareR2Bucket implements Bucket {
   readonly type = "R2";
-  private endpoint: string;
-  private auth: S3Auth;
+  private url: string;
+  #auth: S3Auth;
   private bucketName: string;
   PREFIX = "";
 
   constructor(
-    endpoint: string = ENV_ENDPOINT || "",
+    name: string = ENV_BUCKET || "",
     {
       id = ENV_ID || "",
       secret = ENV_KEY || "",
       region = ENV_REGION || "auto",
       sessionToken = ENV_SESSION_TOKEN,
+      url = ENV_URL || "",
     }: R2Config = {},
   ) {
-    this.endpoint = endpoint.replace(/\/$/, "");
-    this.bucketName = extractBucketName(this.endpoint);
-    this.auth = { id, secret, region, sessionToken };
+    this.url = url.replace(/\/$/, "");
+    // R2's request URL already ends with the bucket path, so the two must agree.
+    const derived = extractBucketName(this.url);
+    if (name && derived && name !== derived)
+      throw new Error(
+        `R2 bucket name "${name}" does not match the bucket in url "${this.url}"`,
+      );
+    this.bucketName = name || derived;
+    this.#auth = { id, secret, region, sessionToken };
   }
 
   private makeUrl(path: string = ""): string {
     const cleanPath = path ? (path.startsWith("/") ? path : "/" + path) : "";
-    return this.endpoint + cleanPath;
+    // Encode the key so the sent path matches what the signer canonicalizes.
+    return this.url + encodeS3Path(cleanPath);
   }
 
   private async doRequest(
@@ -78,20 +92,23 @@ class CloudflareR2Bucket implements Bucket {
       headers: { ...(options.headers || {}) },
       body: options.body,
     };
-    await cleanAndSignS3(req, this.auth);
-    return fetch(url, {
+    await cleanAndSignS3(req, this.#auth);
+    const res = await fetch(url, {
       method: method.toUpperCase(),
       headers: req.headers,
       body: options.body as BodyInit | undefined,
     });
+    if (process.env.DIAG)
+      console.error(`[R2] ${method.toUpperCase()} ${url} -> ${res.status}`);
+    return res;
   }
 
   async info(): Promise<BucketInfo> {
     return {
       type: this.type,
       name: this.bucketName,
-      endpoint: this.endpoint,
-      id: this.auth.id,
+      url: this.url,
+      id: this.#auth.id,
     };
   }
 
@@ -110,7 +127,7 @@ class CloudflareR2Bucket implements Bucket {
         method: "get",
         headers: {},
       };
-      await cleanAndSignS3(req, this.auth);
+      await cleanAndSignS3(req, this.#auth);
 
       const res = await fetch(url.toString(), {
         method: "GET",
@@ -169,7 +186,7 @@ class CloudflareR2Bucket implements Bucket {
         headers: { "x-amz-checksum-sha256": await sha256base64(body) },
         body,
       };
-      await cleanAndSignS3(req, this.auth);
+      await cleanAndSignS3(req, this.#auth);
 
       const res = await fetch(url.toString(), {
         method: "POST",
@@ -194,9 +211,9 @@ class CloudflareR2Bucket implements Bucket {
     const ctx: R2BucketContext = {
       makeUrl: (p) => this.makeUrl(p),
       doRequest: (m, p, opts) => this.doRequest(m, p, opts),
-      getAuth: () => this.auth,
+      getAuth: () => this.#auth,
       bucketName: this.bucketName,
-      endpoint: this.endpoint,
+      url: this.url,
     };
     return new R2File(path, ctx);
   }
@@ -207,7 +224,10 @@ class CloudflareR2Bucket implements Bucket {
   }
 
   folder(path: string): CloudflareR2Bucket {
-    return subBucket(this, path);
+    const b = new CloudflareR2Bucket(this.bucketName, { url: this.url });
+    b.#auth = this.#auth;
+    b.PREFIX = joinPrefix(this.PREFIX, path);
+    return b;
   }
 
   async count(filter?: RegExp): Promise<number> {
@@ -222,25 +242,27 @@ class CloudflareR2Bucket implements Bucket {
 /**
  * Create a Cloudflare R2 bucket handle.
  *
- * @param endpoint - Full R2 endpoint URL: `https://<account>.r2.cloudflarestorage.com/<bucket>`
- *   (falls back to `R2_ENDPOINT` env var)
+ * @param name - Bucket name (falls back to `R2_BUCKET` env var)
  * @param config.id - Access Key ID (falls back to `R2_ACCESS_KEY_ID`)
  * @param config.secret - Secret Access Key (falls back to `R2_SECRET_ACCESS_KEY`)
  * @param config.sessionToken - Session token for temporary credentials (falls back to `R2_SESSION_TOKEN`)
  * @param config.region - Region, default `"auto"` (falls back to `R2_REGION`)
+ * @param config.url - Full R2 endpoint URL, including the bucket name at the end:
+ *   `https://<account>.r2.cloudflarestorage.com/<bucket>` (falls back to `R2_URL`)
  *
  * @example
- * const bucket = CloudflareR2("https://abc.r2.cloudflarestorage.com/my-bucket", {
+ * const bucket = CloudflareR2("my-bucket", {
  *   id: "keyId",
  *   secret: "secretKey",
+ *   url: "https://abc.r2.cloudflarestorage.com/my-bucket",
  * });
  * await bucket.file("hello.txt").write("hello");
  */
 export default function CloudflareR2(
-  endpoint?: string,
+  name?: string,
   config?: R2Config,
 ): CloudflareR2Bucket {
-  return new CloudflareR2Bucket(endpoint, config);
+  return new CloudflareR2Bucket(name, config);
 }
 
 export type {

@@ -5,9 +5,14 @@ import CloudflareR2 from "./index.ts";
 
 // All tests use mocked fetch, no real credentials needed.
 
-const TEST_ENDPOINT =
-  "https://test-account.r2.cloudflarestorage.com/test-bucket";
-const TEST_CONFIG = { id: "test-id", secret: "test-secret", region: "auto" };
+const TEST_URL = "https://test-account.r2.cloudflarestorage.com/test-bucket";
+const TEST_NAME = "test-bucket";
+const TEST_CONFIG = {
+  id: "test-id",
+  secret: "test-secret",
+  region: "auto",
+  url: TEST_URL,
+};
 
 type FetchHandler = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -41,12 +46,31 @@ const R2_LIST_XML = `<?xml version="1.0" encoding="UTF-8"?>
 
 describe("R2 bucket.info()", () => {
   it("returns correct bucket info", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     const info = await bucket.info();
     expect(info.id).toBe("test-id");
     expect(info.name).toBe("test-bucket");
     expect(info.type).toBe("R2");
-    expect(info.endpoint).toBe(TEST_ENDPOINT);
+    expect(info.url).toBe(TEST_URL);
+  });
+});
+
+describe("R2 name/url validation", () => {
+  it("accepts a url whose bucket matches the name", () => {
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
+    expect(bucket.type).toBe("R2");
+  });
+
+  it("throws when the url bucket differs from the name", () => {
+    expect(() => CloudflareR2("other-bucket", TEST_CONFIG)).toThrow(
+      "does not match the bucket in url",
+    );
+  });
+
+  it("derives the name from the url when only a url is given", async () => {
+    const bucket = CloudflareR2(undefined, { ...TEST_CONFIG, url: TEST_URL });
+    const info = await bucket.info();
+    expect(info.name).toBe("test-bucket");
   });
 });
 
@@ -61,14 +85,14 @@ describe("R2 bucket.list()", () => {
   });
 
   it("parses R2 XML list response correctly", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(R2_LIST_XML)));
     const files = await bucket.list();
     expect(files.length).toBe(2);
   });
 
   it("returns correct file names and paths", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(R2_LIST_XML)));
     const files = await bucket.list();
     expect(files[0].name).toBe("hello.txt");
@@ -78,7 +102,7 @@ describe("R2 bucket.list()", () => {
   });
 
   it("handles empty bucket", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     const emptyXml = `<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`;
     mockFetch(() => Promise.resolve(makeResponse(emptyXml)));
     const files = await bucket.list();
@@ -86,13 +110,13 @@ describe("R2 bucket.list()", () => {
   });
 
   it("throws on non-OK response", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse("AccessDenied", 403)));
     await expect(bucket.list()).rejects.toThrow("R2 list error: 403");
   });
 
   it("follows pagination across multiple pages", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     const page1 = `<?xml version="1.0"?>
 <ListBucketResult>
   <IsTruncated>true</IsTruncated>
@@ -137,7 +161,7 @@ describe("R2 file().info()", () => {
   });
 
   it("returns exists: true for an existing file", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() =>
       Promise.resolve(
         makeResponse(null, 200, {
@@ -155,7 +179,7 @@ describe("R2 file().info()", () => {
   });
 
   it("returns exists: false for a missing file (404)", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(null, 404)));
     const info = await bucket.file("nonexistent.txt").info();
     expect(info.exists).toBe(false);
@@ -177,7 +201,7 @@ describe("R2 file().exists()", () => {
   });
 
   it("returns true for an existing file", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() =>
       Promise.resolve(makeResponse(null, 200, { "content-length": "5" })),
     );
@@ -185,7 +209,7 @@ describe("R2 file().exists()", () => {
   });
 
   it("returns false for a non-existing file", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(null, 404)));
     expect(await bucket.file("nonexistent.txt").exists()).toBe(false);
   });
@@ -202,7 +226,7 @@ describe("R2 file().text()", () => {
   });
 
   it("throws on non-OK response", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse("Not Found", 404)));
     await expect(bucket.file("missing.txt").text()).rejects.toThrow(
       "R2 GET error: 404",
@@ -221,7 +245,7 @@ describe("R2 file().write()", () => {
   });
 
   it("sends a PUT request with string content", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     let capturedMethod: string | undefined;
     let capturedBody: BodyInit | null | undefined;
 
@@ -237,7 +261,7 @@ describe("R2 file().write()", () => {
   });
 
   it("throws on non-OK response", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(null, 403)));
     await expect(bucket.file("hello.txt").write("data")).rejects.toThrow(
       "R2 PUT error: 403",
@@ -256,7 +280,7 @@ describe("R2 file().remove()", () => {
   });
 
   it("sends a DELETE request", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     let capturedMethod: string | undefined;
     mockFetch((_, init) => {
       capturedMethod = init?.method;
@@ -267,13 +291,13 @@ describe("R2 file().remove()", () => {
   });
 
   it("accepts 204 No Content as success", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(null, 204)));
     await expect(bucket.file("hello.txt").remove()).resolves.toBeUndefined();
   });
 
   it("throws on error responses", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(null, 403)));
     await expect(bucket.file("hello.txt").remove()).rejects.toThrow(
       "R2 DELETE error: 403",
@@ -283,22 +307,22 @@ describe("R2 file().remove()", () => {
 
 describe("R2 file().publicUrl()", () => {
   it("returns the correct URL", () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     const url = bucket.file("path/to/file.txt").publicUrl();
-    expect(url).toBe(`${TEST_ENDPOINT}/path/to/file.txt`);
+    expect(url).toBe(`${TEST_URL}/path/to/file.txt`);
   });
 });
 
 describe("R2 file().signedUrl()", () => {
   it("returns a presigned GET URL", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     const url = await bucket.file("file.txt").signedUrl({ expires: 3600 });
     expect(url).toContain("X-Amz-Signature");
     expect(url).toContain("X-Amz-Expires=3600");
   });
 
   it("accepts string duration", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     const url = await bucket.file("file.txt").signedUrl({ expires: "30min" });
     expect(url).toContain("X-Amz-Expires=1800");
   });
@@ -306,7 +330,7 @@ describe("R2 file().signedUrl()", () => {
 
 describe("R2 file().uploadUrl()", () => {
   it("returns a presigned PUT URL", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     const url = await bucket.file("file.txt").uploadUrl({ expires: 3600 });
     expect(url).toContain("X-Amz-Signature");
     expect(url).toContain("X-Amz-Expires=3600");
@@ -324,7 +348,7 @@ describe("R2 bucket.remove()", () => {
   });
 
   it("sends a POST DeleteObjects request", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     const requests: { url: string; method: string }[] = [];
 
     mockFetch((url, init) => {
@@ -343,7 +367,7 @@ describe("R2 bucket.remove()", () => {
   });
 
   it("returns the deleted file objects", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch((_, init) => {
       if ((init?.method ?? "").toUpperCase() !== "POST") {
         return Promise.resolve(makeResponse(R2_LIST_XML));
@@ -360,7 +384,7 @@ describe("R2 bucket.remove()", () => {
   });
 
   it("returns empty array when no files match filter", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     const emptyXml = `<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>`;
     mockFetch(() => Promise.resolve(makeResponse(emptyXml)));
     const deleted = await bucket.remove(/\.nonexistent$/);
@@ -378,7 +402,7 @@ describe("R2 file().copyTo()", () => {
   });
 
   it("sends a PUT with x-amz-copy-source header", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     let capturedMethod: string | undefined;
     let capturedCopySource: string | undefined;
     mockFetch((_, init) => {
@@ -403,7 +427,7 @@ describe("R2 file().moveTo()", () => {
   });
 
   it("copies then deletes the original", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     const methods: string[] = [];
     mockFetch((_, init) => {
       methods.push(init?.method ?? "GET");
@@ -427,7 +451,7 @@ describe("R2 file().rename()", () => {
   });
 
   it("renames within the same directory", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     const capturedUrls: string[] = [];
     mockFetch((url, init) => {
       capturedUrls.push(url as string);
@@ -440,7 +464,7 @@ describe("R2 file().rename()", () => {
   });
 
   it("throws when given a name with a slash", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     await expect(
       bucket.file("dir/old.txt").rename("sub/new.txt"),
     ).rejects.toThrow("rename() cannot change directory");
@@ -458,7 +482,7 @@ describe("R2 file() pipe operations", () => {
   });
 
   it("can pipe a web stream to writable and send PUT", async () => {
-    const bucket = CloudflareR2(TEST_ENDPOINT, TEST_CONFIG);
+    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     let capturedMethod: string | undefined;
     let capturedBody: Uint8Array | undefined;
 

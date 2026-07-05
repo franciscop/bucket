@@ -8,8 +8,23 @@ const {
   AZURE_ACCOUNT: ENV_ACCOUNT,
   AZURE_CONTAINER: ENV_CONTAINER,
   AZURE_KEY: ENV_KEY,
-  AZURE_ENDPOINT: ENV_ENDPOINT,
+  AZURE_URL: ENV_URL,
+  AZURE_CONNECTION_STRING: ENV_CONNECTION_STRING,
 } = process.env;
+
+export interface AzureConfig {
+  /** Storage account name (falls back to `AZURE_ACCOUNT`) */
+  account?: string;
+  /** Base64-encoded storage account key (falls back to `AZURE_KEY`).
+   * Omit to use Managed Identity (Azure VMs, App Service, Container Apps, etc.) */
+  key?: string;
+  /** Override the blob host (falls back to `AZURE_URL`). Use for the Azurite
+   * emulator or sovereign clouds, e.g. `http://127.0.0.1:10000/devstoreaccount1`. */
+  url?: string;
+  /** Full Azure connection string (falls back to `AZURE_CONNECTION_STRING`).
+   * When present, its account, key, and BlobEndpoint are used. */
+  connectionString?: string;
+}
 
 function extractXmlTags(xml: string, tag: string): string[] {
   const results: string[] = [];
@@ -23,10 +38,24 @@ function getXmlTag(xml: string, tag: string): string {
   return extractXmlTags(xml, tag)[0] ?? "";
 }
 
+// The account in a blob URL is the subdomain (`<account>.blob.core.windows.net`)
+// or, for path-style emulators, the first path segment
+// (`http://127.0.0.1:10000/devstoreaccount1`). Account names are dot-free, so
+// both are unambiguous.
+function accountFromUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    const seg = u.pathname.replace(/^\/+|\/+$/g, "").split("/")[0];
+    return seg || u.hostname.split(".")[0] || "";
+  } catch {
+    return "";
+  }
+}
+
 function parseConnectionString(cs: string): {
   account: string;
   key: string;
-  endpoint?: string;
+  url?: string;
 } {
   const map: Record<string, string> = {};
   for (const part of cs.split(";")) {
@@ -39,7 +68,7 @@ function parseConnectionString(cs: string): {
     key: map["AccountKey"] ?? "",
     // Honoured by emulators (Azurite) and custom/sovereign clouds. When present
     // it already includes the account path, e.g. http://127.0.0.1:10000/devstoreaccount1
-    endpoint: map["BlobEndpoint"],
+    url: map["BlobEndpoint"],
   };
 }
 
@@ -47,7 +76,7 @@ class AzureBucket implements Bucket {
   readonly type = "AZURE";
   #account: string;
   #container: string;
-  #endpoint: string;
+  #url: string;
   #auth: AzureFileAuth;
   #tokenCache: { token: string; expiry: number } | null = null;
   PREFIX = "";
@@ -56,14 +85,22 @@ class AzureBucket implements Bucket {
     account: string = ENV_ACCOUNT || "",
     container: string = ENV_CONTAINER || "",
     key: string = ENV_KEY || "",
-    endpoint: string = ENV_ENDPOINT || "",
+    url: string = ENV_URL || "",
   ) {
     this.#account = account;
     this.#container = container;
-    // Default to the public cloud host; an explicit endpoint (emulator, custom
+    // Default to the public cloud host; an explicit url (emulator, custom
     // or sovereign cloud) overrides it and already includes the account path.
-    this.#endpoint =
-      endpoint.replace(/\/$/, "") || `https://${account}.blob.core.windows.net`;
+    this.#url =
+      url.replace(/\/$/, "") || `https://${account}.blob.core.windows.net`;
+    // A custom url embeds the account, so make sure it agrees with the account.
+    if (url && account) {
+      const derived = accountFromUrl(url);
+      if (derived && derived !== account)
+        throw new Error(
+          `Azure account "${account}" does not match the account in url "${url}"`,
+        );
+    }
     this.#auth = key
       ? { type: "shared-key", key }
       : {
@@ -96,7 +133,7 @@ class AzureBucket implements Bucket {
     return {
       type: this.type,
       name: this.#container,
-      endpoint: `${this.#endpoint}/${this.#container}`,
+      url: `${this.#url}/${this.#container}`,
       id: this.#account,
     };
   }
@@ -106,7 +143,7 @@ class AzureBucket implements Bucket {
     const s = scope(this.PREFIX, filter);
 
     do {
-      const containerPath = `${accountPathPrefix(this.#endpoint)}/${this.#container}`;
+      const containerPath = `${accountPathPrefix(this.#url)}/${this.#container}`;
       const params: Record<string, string> = {
         restype: "container",
         comp: "list",
@@ -114,7 +151,7 @@ class AzureBucket implements Bucket {
         ...(marker ? { marker } : {}),
       };
       const query = new URLSearchParams(params).toString();
-      const url = `${this.#endpoint}/${this.#container}?${query}`;
+      const url = `${this.#url}/${this.#container}?${query}`;
 
       let headers: Record<string, string>;
       if (this.#auth.type === "shared-key") {
@@ -152,7 +189,7 @@ class AzureBucket implements Bucket {
             this.#account,
             this.#container,
             this.#auth,
-            this.#endpoint,
+            this.#url,
           ),
         );
       }
@@ -179,20 +216,15 @@ class AzureBucket implements Bucket {
       this.#account,
       this.#container,
       this.#auth,
-      this.#endpoint,
+      this.#url,
     );
   }
 
   folder(path: string): AzureBucket {
-    const key = this.#auth.type === "shared-key" ? this.#auth.key : "";
-    const sub = new AzureBucket(
-      this.#account,
-      this.#container,
-      key,
-      this.#endpoint,
-    );
-    sub.PREFIX = joinPrefix(this.PREFIX, path);
-    return sub;
+    const b = new AzureBucket(this.#account, this.#container, "", this.#url);
+    b.#auth = this.#auth;
+    b.PREFIX = joinPrefix(this.PREFIX, path);
+    return b;
   }
 
   async remove(filter?: RegExp): Promise<AzureFile[]> {
@@ -213,50 +245,50 @@ class AzureBucket implements Bucket {
 /**
  * Create an Azure Blob Storage container handle.
  *
- * @param accountOrConnectionString - Storage account name or a full Azure connection string
- *   (falls back to `AZURE_ACCOUNT` env var)
- * @param container - Container name (falls back to `AZURE_CONTAINER`)
- * @param key - Base64-encoded storage account key (falls back to `AZURE_KEY`).
+ * @param container - Container name (falls back to `AZURE_CONTAINER` env var)
+ * @param config.account - Storage account name (falls back to `AZURE_ACCOUNT`)
+ * @param config.key - Base64-encoded storage account key (falls back to `AZURE_KEY`).
  *   Omit to use Managed Identity (Azure VMs, App Service, Container Apps, etc.)
+ * @param config.url - Override the blob host (falls back to `AZURE_URL`). Use for
+ *   the Azurite emulator or sovereign clouds, e.g.
+ *   `http://127.0.0.1:10000/devstoreaccount1`.
+ * @param config.connectionString - Full Azure connection string (falls back to
+ *   `AZURE_CONNECTION_STRING`). Its account, key, and BlobEndpoint are used.
  *
  * @example
  * // Static credentials
- * const bucket = Azure("myaccount", "mycontainer", "base64key==");
+ * const bucket = Azure("mycontainer", { account: "myaccount", key: "base64key==" });
  *
  * @example
  * // Connection string
- * const bucket = Azure("DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;");
+ * const bucket = Azure("mycontainer", {
+ *   connectionString: "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;",
+ * });
  *
  * @example
  * // Managed Identity (no key needed on Azure-hosted infra)
- * const bucket = Azure("myaccount", "mycontainer");
- *
- * @param options.endpoint - Override the blob host (falls back to `AZURE_ENDPOINT`).
- *   Use for the Azurite emulator or sovereign clouds, e.g.
- *   `http://127.0.0.1:10000/devstoreaccount1`. A connection string's
- *   `BlobEndpoint` is honoured automatically.
+ * const bucket = Azure("mycontainer", { account: "myaccount" });
  */
 export default function Azure(
-  accountOrConnectionString?: string,
-  container?: string,
-  key?: string,
-  options?: { endpoint?: string },
+  container: string = ENV_CONTAINER || "",
+  config: AzureConfig = {},
 ): AzureBucket {
-  if (accountOrConnectionString?.includes("AccountName=")) {
-    const parsed = parseConnectionString(accountOrConnectionString);
+  const cs = config.connectionString ?? ENV_CONNECTION_STRING;
+  if (cs) {
+    const parsed = parseConnectionString(cs);
+    // A connection string carries its own account; an explicit one must match.
+    if (config.account && config.account !== parsed.account)
+      throw new Error(
+        `Azure account "${config.account}" does not match the AccountName "${parsed.account}" in the connection string`,
+      );
     return new AzureBucket(
       parsed.account,
-      container || ENV_CONTAINER || "",
+      container,
       parsed.key,
-      options?.endpoint || parsed.endpoint,
+      config.url || parsed.url,
     );
   }
-  return new AzureBucket(
-    accountOrConnectionString,
-    container,
-    key,
-    options?.endpoint,
-  );
+  return new AzureBucket(config.account, container, config.key, config.url);
 }
 
 export type {

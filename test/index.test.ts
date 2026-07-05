@@ -23,6 +23,10 @@ const FIXTURES = [
   "readme.md",
 ];
 
+// Every test file gets a unique random name, so tests never collide and don't
+// need to clean up after each other. Cleanup runs only where a test asserts on
+// the whole-bucket state (see the count() describe) plus once at the end. This
+// avoids a per-test network round-trip that made B2/R2 runs painfully slow.
 const testFile = (ext = "txt"): string =>
   `test${Math.floor(Math.random() * 100000)}.${ext}`;
 
@@ -30,8 +34,8 @@ const removeTestFiles = async (
   bucket: (typeof buckets)[string]["bucket"],
 ): Promise<void> => {
   try {
-    const files = await bucket.list(/test[^.]*\..*/);
-    await Promise.all(files.map((f) => f.remove()));
+    // bucket.remove() batches deletes into one request on S3/R2.
+    await bucket.remove(/test[^.]*\..*/);
   } catch (_) {}
 };
 
@@ -56,11 +60,13 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
   describe(name, () => {
     beforeAll(async () => {
       await bucket.info(); // Warm up (auth, etc.)
+      await removeTestFiles(bucket); // clear leftovers from an interrupted run
       await seedBucket(bucket);
     });
-    afterAll(() => unseedBucket(bucket));
-    beforeEach(() => removeTestFiles(bucket));
-    afterEach(() => removeTestFiles(bucket));
+    afterAll(async () => {
+      await removeTestFiles(bucket); // don't litter real buckets with test files
+      await unseedBucket(bucket);
+    });
 
     // ── Bucket info ───────────────────────────────────────────────────────────
 
@@ -218,6 +224,65 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         const ab = await file.arrayBuffer();
         const bytes = await file.bytes();
         expect(bytes).toEqual(new Uint8Array(ab));
+      });
+    });
+
+    // ── slice() (byte ranges) ─────────────────────────────────────────────────
+
+    describe("slice()", () => {
+      const CONTENT = "0123456789"; // 10 bytes, index === value
+      let name: string;
+      beforeAll(async () => {
+        name = testFile("txt");
+        await bucket.file(name).write(CONTENT);
+      });
+
+      it("reads an explicit byte range (end exclusive)", async () => {
+        expect(await bucket.file(name).slice(0, 4).text()).toBe("0123");
+        expect(await bucket.file(name).slice(2, 5).text()).toBe("234");
+      });
+
+      it("reads from an offset to EOF when end is omitted", async () => {
+        expect(await bucket.file(name).slice(4).text()).toBe("456789");
+      });
+
+      it("clamps an end past the file size", async () => {
+        expect(await bucket.file(name).slice(6, 100).text()).toBe("6789");
+      });
+
+      it("yields empty for a zero-length or inverted range", async () => {
+        expect(await bucket.file(name).slice(3, 3).text()).toBe("");
+      });
+
+      it("reports the clamped slice length as info().size", async () => {
+        expect((await bucket.file(name).slice(0, 4).info()).size).toBe(4);
+        expect((await bucket.file(name).slice(6, 100).info()).size).toBe(4);
+        expect((await bucket.file(name).slice(4).info()).size).toBe(6);
+      });
+
+      it("keeps the underlying metadata (exists, type) on a slice", async () => {
+        const info = await bucket.file(name).slice(0, 4).info();
+        expect(info.exists).toBe(true);
+        expect(info.type).toContain("text");
+      });
+
+      it("composes: slice of a slice", async () => {
+        expect(await bucket.file(name).slice(2, 8).slice(1, 3).text()).toBe(
+          "34",
+        );
+      });
+
+      it("streams the range", async () => {
+        const s = bucket
+          .file(name)
+          .slice(0, 4)
+          .stream() as ReadableStream<Uint8Array>;
+        expect(await new Response(s).text()).toBe("0123");
+      });
+
+      it("bytes() honors the range", async () => {
+        const bytes = await bucket.file(name).slice(1, 4).bytes();
+        expect(Array.from(bytes)).toEqual([0x31, 0x32, 0x33]);
       });
     });
 
@@ -405,6 +470,10 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
     // ── count() ───────────────────────────────────────────────────────────────
 
     describe("count()", () => {
+      // These assert exact counts, so they need a clean slate; other describes
+      // tolerate leftover test files (they use unique names and >= assertions).
+      beforeEach(() => removeTestFiles(bucket));
+
       it("returns 0 when no test files exist", async () => {
         expect(await bucket.count(/^test[^/]*\./)).toBe(0);
       });
@@ -838,6 +907,32 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
     describe("Examples", () => {
       it("can gzip a file using node pipeline()", async () => {
         const source = bucket.file("a-1*(a!.txt");
+        // Diagnostics for the R2 special-character key 404; opt in with DIAG=1.
+        if (process.env.DIAG && bucket.type !== "FILESYSTEM") {
+          const listed = await bucket.list();
+          console.error("[diag] provider:", bucket.type);
+          console.error(
+            "[diag] listed keys:",
+            JSON.stringify(listed.map((f) => f.path)),
+          );
+          console.error("[diag] source.path:", JSON.stringify(source.path));
+          console.error("[diag] source.publicUrl():", source.publicUrl());
+          console.error(
+            "[diag] source.exists():",
+            await source.exists().catch((e) => `ERR ${e}`),
+          );
+          console.error(
+            "[diag] source.text():",
+            await source
+              .text()
+              .then((t) => `len=${t.length}`)
+              .catch((e) => `ERR ${e}`),
+          );
+          console.error(
+            "[diag] source.info():",
+            JSON.stringify(await source.info().catch((e) => `ERR ${e}`)),
+          );
+        }
         const target = bucket.file(testFile("gz"));
         await pipeline(
           source.nodeReadable() as NodeJS.ReadableStream,
