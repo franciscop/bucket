@@ -47,6 +47,7 @@ There are two main APIs, the `Bucket` one and the `BucketFile` one:
   - `.arrayBuffer()`: read the contents of the file as an ArrayBuffer
   - `.blob()`: read the contents of the file as a Blob
   - `.bytes()`: read the contents of the file as a Uint8Array
+  - `.slice(start, end?)`: a read-only view of a byte range (like `Blob.slice()`); every read method above honours it. See [file.slice()](#fileslice).
   - `.write(body, options?)`: writes content to the file. Accepts strings, Buffers, Blobs, streams, or another file object. Content-type is auto-detected from the file extension; pass `options` to override it or set `cacheControl`, `disposition`, and `metadata`.
   - `.copyTo(path)`: creates a duplicate of a file with a different name (keeping the original).
   - `.moveTo(path)`: change the location of the file (removing the original).
@@ -251,6 +252,36 @@ Returns `Promise<Uint8Array>` with the raw binary contents as a typed array. Wor
 
 ```js
 const bytes = await bucket.file("photo.jpg").bytes();
+```
+
+### file.slice()
+
+Returns a **read-only view of a byte range**, synchronously, like [`Blob.slice()`](https://developer.mozilla.org/docs/Web/API/Blob/slice): `end` is exclusive and defaults to the end of the file. It returns a `BucketFile`, so every read method (`.text()`, `.bytes()`, `.arrayBuffer()`, `.blob()`, `.stream()`, `.nodeReadable()`) reads only that range. Remote providers translate it to an HTTP `Range` request; the filesystem reads only those bytes. Ranges are clamped to the file size and compose (`file.slice(0, 100).slice(10, 20)`).
+
+```js
+const head = await bucket.file("big.csv").slice(0, 1024).bytes(); // first 1 KiB
+const rest = bucket.file("big.csv").slice(1024).stream(); // from 1 KiB to EOF
+```
+
+`info().size` on a slice reports the **clamped slice length** (the bytes this view yields), while every other field (`type`, `date`, `exists`, `url`) still describes the underlying file:
+
+```js
+(await bucket.file("data.txt").slice(0, 4).info()).size; // 4
+```
+
+This makes range serving a one-liner, e.g. answering an HTTP `Range` request:
+
+```js
+const [start, end] = parseRange(req.headers.get("range")); // inclusive
+const { size, type } = await file.info();
+return new Response(file.slice(start, end + 1).stream(), {
+  status: 206,
+  headers: {
+    "Content-Type": type,
+    "Content-Range": `bytes ${start}-${end}/${size}`,
+    "Content-Length": String(end - start + 1),
+  },
+});
 ```
 
 ### file.write(body, options?)
