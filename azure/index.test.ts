@@ -37,7 +37,10 @@ describe("Azure module structure", () => {
   });
 
   it("returns a bucket with the right methods", () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     expect(typeof bucket.info).toBe("function");
     expect(typeof bucket.list).toBe("function");
     expect(typeof bucket.file).toBe("function");
@@ -46,12 +49,18 @@ describe("Azure module structure", () => {
   });
 
   it("bucket has a type property", () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     expect(bucket.type).toBe("AZURE");
   });
 
   it("file() returns a file object with the right methods", () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const file = bucket.file("test.txt");
     expect(typeof file.info).toBe("function");
     expect(typeof file.exists).toBe("function");
@@ -75,28 +84,75 @@ describe("Azure module structure", () => {
   });
 
   it("file() sets correct name and path", () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const file = bucket.file("path/to/file.txt");
     expect(file.name).toBe("file.txt");
     expect(file.path).toBe("path/to/file.txt");
   });
 
   it("file() throws when given no name", () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     expect(() => bucket.file("")).toThrow("No name");
   });
 });
 
 describe("Azure bucket.info()", () => {
   it("returns correct bucket info", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const info = await bucket.info();
     expect(info.id).toBe(TEST_ACCOUNT);
     expect(info.name).toBe(TEST_CONTAINER);
     expect(info.type).toBe("AZURE");
-    expect(info.endpoint).toBe(
+    expect(info.url).toBe(
       `https://${TEST_ACCOUNT}.blob.core.windows.net/${TEST_CONTAINER}`,
     );
+  });
+});
+
+describe("Azure account/url validation", () => {
+  it("accepts a path-style url whose account matches", () => {
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+      url: `http://127.0.0.1:10000/${TEST_ACCOUNT}`,
+    });
+    expect(bucket.type).toBe("AZURE");
+  });
+
+  it("throws when the url account differs from the account", () => {
+    expect(() =>
+      Azure(TEST_CONTAINER, {
+        account: TEST_ACCOUNT,
+        key: TEST_KEY,
+        url: "http://127.0.0.1:10000/otheraccount",
+      }),
+    ).toThrow("does not match the account in url");
+  });
+
+  it("uses a connection string's account, key, and BlobEndpoint", async () => {
+    const cs = `DefaultEndpointsProtocol=http;AccountName=${TEST_ACCOUNT};AccountKey=${TEST_KEY};BlobEndpoint=http://127.0.0.1:10000/${TEST_ACCOUNT}`;
+    const bucket = Azure(TEST_CONTAINER, { connectionString: cs });
+    const info = await bucket.info();
+    expect(info.id).toBe(TEST_ACCOUNT);
+    expect(info.url).toBe(
+      `http://127.0.0.1:10000/${TEST_ACCOUNT}/${TEST_CONTAINER}`,
+    );
+  });
+
+  it("throws when an explicit account contradicts the connection string", () => {
+    const cs = `DefaultEndpointsProtocol=https;AccountName=${TEST_ACCOUNT};AccountKey=${TEST_KEY}`;
+    expect(() =>
+      Azure(TEST_CONTAINER, { account: "otheraccount", connectionString: cs }),
+    ).toThrow("does not match the AccountName");
   });
 });
 
@@ -111,14 +167,20 @@ describe("Azure bucket.list()", () => {
   });
 
   it("parses Azure XML list response", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse(AZURE_LIST_XML)));
     const files = await bucket.list();
     expect(files.length).toBe(2);
   });
 
   it("returns correct file names and paths", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse(AZURE_LIST_XML)));
     const files = await bucket.list();
     expect(files[0].name).toBe("hello.txt");
@@ -128,7 +190,10 @@ describe("Azure bucket.list()", () => {
   });
 
   it("handles empty container", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const emptyXml = `<?xml version="1.0"?><EnumerationResults><Blobs></Blobs><NextMarker></NextMarker></EnumerationResults>`;
     mockFetch(() => Promise.resolve(makeResponse(emptyXml)));
     const files = await bucket.list();
@@ -136,7 +201,10 @@ describe("Azure bucket.list()", () => {
   });
 
   it("follows pagination via NextMarker", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const page1 = `<?xml version="1.0"?><EnumerationResults><Blobs><Blob><Name>a.txt</Name></Blob></Blobs><NextMarker>marker-2</NextMarker></EnumerationResults>`;
     const page2 = `<?xml version="1.0"?><EnumerationResults><Blobs><Blob><Name>b.txt</Name></Blob></Blobs><NextMarker></NextMarker></EnumerationResults>`;
 
@@ -156,7 +224,10 @@ describe("Azure bucket.list()", () => {
   });
 
   it("throws on non-OK response", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse("AuthenticationFailed", 403)));
     await expect(bucket.list()).rejects.toThrow("Azure list error: 403");
   });
@@ -173,7 +244,10 @@ describe("Azure file().info()", () => {
   });
 
   it("returns exists: true for an existing file", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() =>
       Promise.resolve(
         makeResponse(null, 200, {
@@ -190,7 +264,10 @@ describe("Azure file().info()", () => {
   });
 
   it("returns exists: false for a missing file", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse(null, 404)));
     const info = await bucket.file("missing.txt").info();
     expect(info.exists).toBe(false);
@@ -210,7 +287,10 @@ describe("Azure file().write()", () => {
   });
 
   it("sends a PUT request with x-ms-blob-type header", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     let capturedMethod: string | undefined;
     let capturedHeaders: Record<string, string> = {};
 
@@ -228,7 +308,10 @@ describe("Azure file().write()", () => {
   });
 
   it("throws on non-OK response", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse(null, 403)));
     await expect(bucket.file("hello.txt").write("data")).rejects.toThrow(
       "Azure PUT error: 403",
@@ -247,7 +330,10 @@ describe("Azure file().remove()", () => {
   });
 
   it("sends a DELETE request", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     let capturedMethod: string | undefined;
     mockFetch((_, init) => {
       capturedMethod = init?.method;
@@ -260,7 +346,10 @@ describe("Azure file().remove()", () => {
 
 describe("Azure file().publicUrl()", () => {
   it("returns the correct blob URL", () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const url = bucket.file("path/to/file.txt").publicUrl();
     expect(url).toBe(
       `https://${TEST_ACCOUNT}.blob.core.windows.net/${TEST_CONTAINER}/path/to/file.txt`,
@@ -270,7 +359,10 @@ describe("Azure file().publicUrl()", () => {
 
 describe("Azure file().signedUrl()", () => {
   it("returns a URL with SAS parameters", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const url = await bucket.file("file.txt").signedUrl({ expires: 3600 });
     expect(url).toContain(TEST_ACCOUNT);
     expect(url).toContain("sig=");
@@ -280,7 +372,10 @@ describe("Azure file().signedUrl()", () => {
 
 describe("Azure file().uploadUrl()", () => {
   it("returns a URL with write SAS parameters", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const url = await bucket.file("file.txt").uploadUrl({ expires: 3600 });
     expect(url).toContain("sig=");
     expect(url).toContain("sp=w");
@@ -297,7 +392,10 @@ describe("Azure file().exists()", () => {
   });
 
   it("returns true for an existing file", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() =>
       Promise.resolve(makeResponse(null, 200, { "content-length": "5" })),
     );
@@ -305,7 +403,10 @@ describe("Azure file().exists()", () => {
   });
 
   it("returns false for a missing file", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse(null, 404)));
     expect(await bucket.file("missing.txt").exists()).toBe(false);
   });
@@ -321,13 +422,19 @@ describe("Azure file().text()", () => {
   });
 
   it("returns file content as a string", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse("hello world")));
     expect(await bucket.file("hello.txt").text()).toBe("hello world");
   });
 
   it("throws on non-OK response", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse("Not Found", 404)));
     await expect(bucket.file("missing.txt").text()).rejects.toThrow(
       "Azure GET error: 404",
@@ -345,7 +452,10 @@ describe("Azure file().json()", () => {
   });
 
   it("parses and returns JSON content", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() =>
       Promise.resolve(
         makeResponse('["John","Mary","Sarah"]', 200, {
@@ -368,7 +478,10 @@ describe("Azure file().arrayBuffer()", () => {
   });
 
   it("returns file content as an ArrayBuffer", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse("hello")));
     const buf = await bucket.file("hello.txt").arrayBuffer();
     expect(buf instanceof ArrayBuffer).toBe(true);
@@ -386,7 +499,10 @@ describe("Azure file().bytes()", () => {
   });
 
   it("returns file content as Uint8Array", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse("hello")));
     const bytes = await bucket.file("hello.txt").bytes();
     expect(bytes).toBeInstanceOf(Uint8Array);
@@ -404,7 +520,10 @@ describe("Azure file().blob()", () => {
   });
 
   it("returns file content as a Blob", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse("hello")));
     const blob = await bucket.file("hello.txt").blob();
     expect(blob).toBeInstanceOf(Blob);
@@ -422,7 +541,10 @@ describe("Azure file().copyTo()", () => {
   });
 
   it("sends a PUT with x-ms-copy-source header", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     let capturedMethod: string | undefined;
     let capturedCopySource: string | undefined;
     mockFetch((_, init) => {
@@ -447,7 +569,10 @@ describe("Azure file().moveTo()", () => {
   });
 
   it("copies then deletes the original", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const methods: string[] = [];
     mockFetch((_, init) => {
       methods.push(init?.method ?? "GET");
@@ -471,7 +596,10 @@ describe("Azure file().rename()", () => {
   });
 
   it("renames within the same directory", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const capturedUrls: string[] = [];
     mockFetch((url, init) => {
       capturedUrls.push(url as string);
@@ -484,7 +612,10 @@ describe("Azure file().rename()", () => {
   });
 
   it("throws when given a name with a slash", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     await expect(
       bucket.file("dir/old.txt").rename("sub/new.txt"),
     ).rejects.toThrow("rename() cannot change directory");
@@ -493,14 +624,20 @@ describe("Azure file().rename()", () => {
 
 describe("Azure file().stream()", () => {
   it("returns a web ReadableStream", () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     expect(bucket.file("hello.txt").stream()).toBeInstanceOf(ReadableStream);
   });
 });
 
 describe("Azure file().nodeReadable()", () => {
   it("returns a Node.js readable stream", () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const stream = bucket.file("hello.txt").nodeReadable();
     expect(typeof (stream as NodeJS.ReadableStream).pipe).toBe("function");
   });
@@ -508,14 +645,20 @@ describe("Azure file().nodeReadable()", () => {
 
 describe("Azure file().writable()", () => {
   it("returns a web WritableStream", () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     expect(bucket.file("hello.txt").writable()).toBeInstanceOf(WritableStream);
   });
 });
 
 describe("Azure file().nodeWritable()", () => {
   it("returns a Node.js writable stream", () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const stream = bucket.file("hello.txt").nodeWritable();
     expect(typeof (stream as NodeJS.WritableStream).write).toBe("function");
   });
@@ -531,7 +674,10 @@ describe("Azure bucket.count()", () => {
   });
 
   it("returns the number of files", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse(AZURE_LIST_XML)));
     expect(await bucket.count()).toBe(2);
   });
@@ -548,7 +694,10 @@ describe("Azure bucket.remove()", () => {
   });
 
   it("deletes all listed files and returns them", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const methods: string[] = [];
     mockFetch((_, init) => {
       methods.push(init?.method ?? "GET");
@@ -563,7 +712,10 @@ describe("Azure bucket.remove()", () => {
   });
 
   it("returns empty array when nothing matches", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     const emptyXml = `<?xml version="1.0"?><EnumerationResults><Blobs></Blobs><NextMarker></NextMarker></EnumerationResults>`;
     mockFetch(() => Promise.resolve(makeResponse(emptyXml)));
     expect(await bucket.remove(/\.nonexistent$/)).toEqual([]);
@@ -580,7 +732,10 @@ describe("Azure file().write() content types", () => {
   });
 
   it("sends a PUT request with Buffer content", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     let capturedBody: BodyInit | null | undefined;
     mockFetch((_, init) => {
       capturedBody = init?.body;
@@ -591,7 +746,10 @@ describe("Azure file().write() content types", () => {
   });
 
   it("sends a PUT request with Blob content", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     let capturedBody: BodyInit | null | undefined;
     mockFetch((_, init) => {
       capturedBody = init?.body;
@@ -612,7 +770,10 @@ describe("Azure async iteration", () => {
   });
 
   it("yields all files via for-await-of", async () => {
-    const bucket = Azure(TEST_ACCOUNT, TEST_CONTAINER, TEST_KEY);
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
     mockFetch(() => Promise.resolve(makeResponse(AZURE_LIST_XML)));
     const names: string[] = [];
     for await (const file of bucket) {

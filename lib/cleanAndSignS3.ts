@@ -1,15 +1,6 @@
 import type { S3Auth, S3Request } from "./types.ts";
 import { sha256hex, hmacSha256, toHex } from "./webcrypto.ts";
-
-// AWS canonicalizes the URI by percent-encoding RFC-3986 sub-delimiters that the
-// URL parser leaves raw (! ' ( ) *). The request is still SENT with the raw path;
-// S3 re-encodes what it receives, so the signature must cover the encoded form.
-// (Without this, keys containing those characters get a 403 from S3/R2.)
-const encodePath = (pathname: string): string =>
-  pathname.replace(
-    /[!'()*]/g,
-    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
-  );
+import encodeS3Path from "./encodeS3Path.ts";
 
 const canonical = async ({
   headers = {},
@@ -17,18 +8,16 @@ const canonical = async ({
 }: S3Request): Promise<string> => {
   const url = new URL(config.url);
   const method = (config.method || "GET").toUpperCase();
-  const path = encodePath(url.pathname);
+  const path = encodeS3Path(url.pathname);
   url.searchParams.sort();
   const query = url.searchParams.toString();
-  const headersPlain =
-    Object.entries(headers)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([k, v]) => k.toLowerCase() + ":" + v.trim())
-      .join("\n") + "\n"; // [SIC]
-  const headerKeys = Object.keys(headers)
-    .sort()
-    .map((h) => h.toLowerCase())
-    .join(";");
+  // SigV4 sorts by the LOWERCASED header name (ordinal), and both the
+  // canonical headers and the SignedHeaders list must use that same order.
+  const sorted = Object.entries(headers)
+    .map(([k, v]) => [k.toLowerCase(), v.trim()] as [string, string])
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const headersPlain = sorted.map(([k, v]) => `${k}:${v}`).join("\n") + "\n";
+  const headerKeys = sorted.map(([k]) => k).join(";");
   const payload = await sha256hex((config.body as string | Uint8Array) || "");
   return [method, path, query, headersPlain, headerKeys, payload].join("\n");
 };
@@ -69,8 +58,8 @@ const createAuth = async (
   const date = request.headers["x-amz-date"].slice(0, 8);
   const credential = `${auth.id}/${date}/${auth.region}/s3/aws4_request`;
   const headers = Object.keys(request.headers)
-    .sort()
     .map((h) => h.toLowerCase())
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
     .join(";");
   // Note: intentionally matches original format (no space after AWS4-HMAC-SHA256)
   return `AWS4-HMAC-SHA256 Credential=${credential},SignedHeaders=${headers},Signature=${signature}`;

@@ -143,7 +143,7 @@ describe("GCS bucket.info()", () => {
     expect(info.id).toBe(TEST_BUCKET);
     expect(info.name).toBe(TEST_BUCKET);
     expect(info.type).toBe("GCS");
-    expect(info.endpoint).toBe(`https://storage.googleapis.com/${TEST_BUCKET}`);
+    expect(info.url).toBe(`https://storage.googleapis.com/${TEST_BUCKET}`);
   });
 });
 

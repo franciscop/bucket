@@ -18,7 +18,7 @@ class FileSystemBucket implements Bucket {
     return Promise.resolve({
       type: this.type,
       name: basename(this.path) || this.path,
-      endpoint: this.path,
+      url: this.path,
       id: userInfo().username,
     });
   }

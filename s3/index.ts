@@ -1,4 +1,5 @@
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
+import encodeS3Path from "../lib/encodeS3Path.ts";
 import { sha256base64 } from "../lib/webcrypto.ts";
 import BucketError from "../lib/BucketError.ts";
 import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
@@ -11,14 +12,14 @@ const {
   AWS_SECRET_ACCESS_KEY: ENV_KEY,
   AWS_SESSION_TOKEN: ENV_SESSION_TOKEN,
   AWS_REGION: ENV_REGION,
-  AWS_ENDPOINT: ENV_ENDPOINT,
+  AWS_URL: ENV_URL,
 } = process.env;
 
 export interface S3Config {
   id?: string;
   secret?: string;
   region?: string;
-  endpoint?: string;
+  url?: string;
   sessionToken?: string;
 }
 
@@ -111,14 +112,25 @@ function getTag(xmlStr: string, tag: string): string {
   return extractTags(xmlStr, tag)[0] ?? "";
 }
 
+// The bucket in a path-style endpoint (MinIO, LocalStack, `s3.amazonaws.com/<bucket>`)
+// is the first path segment. Virtual-hosted URLs put it in the subdomain, but S3
+// bucket names may contain dots so that is ambiguous; only path-style is checked.
+function pathStyleBucket(url: string): string {
+  try {
+    return new URL(url).pathname.replace(/^\/+|\/+$/g, "").split("/")[0] ?? "";
+  } catch {
+    return "";
+  }
+}
+
 // ── S3Bucket ──────────────────────────────────────────────────────────────────
 
 class S3Bucket implements Bucket {
   readonly type = "S3";
   private bucketName: string;
   private region: string;
-  private endpoint: string;
-  #staticAuth: S3Auth | null;
+  private url: string;
+  #auth: S3Auth | null;
   #cachedAuth: CachedAuth | null = null;
   PREFIX = "";
 
@@ -128,22 +140,28 @@ class S3Bucket implements Bucket {
       id = ENV_ID || "",
       secret = ENV_KEY || "",
       region = ENV_REGION || "us-east-1",
-      endpoint,
+      url,
       sessionToken = ENV_SESSION_TOKEN,
     }: S3Config = {},
   ) {
     this.bucketName = bucketName;
     this.region = region;
-    this.endpoint =
-      endpoint ||
-      ENV_ENDPOINT ||
-      `https://${bucketName}.s3.${region}.amazonaws.com`;
-    this.#staticAuth =
-      id && secret ? { id, secret, region, sessionToken } : null;
+    const custom = url || ENV_URL;
+    this.url = custom || `https://${bucketName}.s3.${region}.amazonaws.com`;
+    // A path-style custom endpoint embeds the bucket, so make sure it agrees
+    // with the name (the default endpoint is built from the name, so it can't).
+    if (custom && bucketName) {
+      const derived = pathStyleBucket(custom);
+      if (derived && derived !== bucketName)
+        throw new Error(
+          `S3 bucket name "${bucketName}" does not match the bucket in url "${custom}"`,
+        );
+    }
+    this.#auth = id && secret ? { id, secret, region, sessionToken } : null;
   }
 
   async #getAuth(): Promise<S3Auth> {
-    if (this.#staticAuth) return this.#staticAuth;
+    if (this.#auth) return this.#auth;
     if (this.#cachedAuth && Date.now() < this.#cachedAuth.expiry - 60_000) {
       return this.#cachedAuth;
     }
@@ -153,7 +171,8 @@ class S3Bucket implements Bucket {
 
   private makeUrl(path: string = ""): string {
     const cleanPath = path ? (path.startsWith("/") ? path : "/" + path) : "";
-    return this.endpoint + cleanPath;
+    // Encode the key so the sent path matches what the signer canonicalizes.
+    return this.url + encodeS3Path(cleanPath);
   }
 
   private async doRequest(
@@ -182,7 +201,7 @@ class S3Bucket implements Bucket {
     return {
       type: this.type,
       name: this.bucketName,
-      endpoint: this.endpoint,
+      url: this.url,
       id: auth.id,
     };
   }
@@ -290,7 +309,7 @@ class S3Bucket implements Bucket {
       doRequest: (m, p, opts) => this.doRequest(m, p, opts),
       getAuth: () => this.#getAuth(),
       bucketName: this.bucketName,
-      endpoint: this.endpoint,
+      url: this.url,
     };
     return new S3File(path, ctx);
   }
@@ -301,16 +320,13 @@ class S3Bucket implements Bucket {
   }
 
   folder(path: string): S3Bucket {
-    const a = this.#staticAuth;
-    const sub = new S3Bucket(this.bucketName, {
-      id: a?.id,
-      secret: a?.secret,
+    const b = new S3Bucket(this.bucketName, {
       region: this.region,
-      sessionToken: a?.sessionToken,
-      endpoint: this.endpoint,
+      url: this.url,
     });
-    sub.PREFIX = joinPrefix(this.PREFIX, path);
-    return sub;
+    b.#auth = this.#auth;
+    b.PREFIX = joinPrefix(this.PREFIX, path);
+    return b;
   }
 
   async count(filter?: RegExp): Promise<number> {
@@ -330,7 +346,7 @@ class S3Bucket implements Bucket {
  * @param config.secret - Secret Access Key (falls back to `AWS_SECRET_ACCESS_KEY`)
  * @param config.sessionToken - Session token for temporary credentials (falls back to `AWS_SESSION_TOKEN`)
  * @param config.region - AWS region, default `"us-east-1"` (falls back to `AWS_REGION`)
- * @param config.endpoint - Custom endpoint URL (falls back to `AWS_ENDPOINT`)
+ * @param config.url - Custom url URL (falls back to `AWS_URL`)
  *
  * When `id` and `secret` are not provided, credentials are resolved automatically
  * from the environment: ECS/Lambda container credentials or EC2 instance metadata.

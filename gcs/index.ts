@@ -4,12 +4,12 @@ import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
 import type { Bucket, BucketInfo } from "../lib/types.ts";
 import { GCSFile, type GCSAuth, type GCSObjectMeta } from "./File.ts";
 
-const { GCS_BUCKET: ENV_BUCKET, GCS_ENDPOINT: ENV_ENDPOINT } = process.env;
+const { GCS_BUCKET: ENV_BUCKET, GCS_URL: ENV_URL } = process.env;
 
 export interface GCSConfig {
-  /** Override the API host (falls back to `GCS_ENDPOINT`). Use for the
+  /** Override the API host (falls back to `GCS_URL`). Use for the
    * fake-gcs-server emulator, e.g. `http://localhost:4443`. */
-  endpoint?: string;
+  url?: string;
   /** Skip authentication entirely, required by emulators that don't verify
    * tokens (falls back to `GCS_ANONYMOUS=true`). */
   anonymous?: boolean;
@@ -43,22 +43,22 @@ async function loadAuth(): Promise<GCSAuth> {
 class GCSBucket implements Bucket {
   readonly type = "GCS";
   #bucket: string;
-  #endpoint: string;
+  #url: string;
   #anonymous: boolean;
-  #authPromise: Promise<GCSAuth>;
+  #auth: Promise<GCSAuth>;
   #cachedToken: string | null = null;
   #tokenExpiry = 0;
   PREFIX = "";
 
   constructor(bucket: string, config: GCSConfig = {}) {
     this.#bucket = bucket;
-    this.#endpoint = (
-      config.endpoint ||
-      ENV_ENDPOINT ||
+    this.#url = (
+      config.url ||
+      ENV_URL ||
       "https://storage.googleapis.com"
     ).replace(/\/$/, "");
     this.#anonymous = config.anonymous ?? process.env.GCS_ANONYMOUS === "true";
-    this.#authPromise = loadAuth();
+    this.#auth = loadAuth();
   }
 
   async accessToken(): Promise<string> {
@@ -66,7 +66,7 @@ class GCSBucket implements Bucket {
     if (this.#cachedToken && Date.now() < this.#tokenExpiry) {
       return this.#cachedToken;
     }
-    const auth = await this.#authPromise;
+    const auth = await this.#auth;
     this.#cachedToken = auth
       ? await getAccessToken(auth)
       : await getMetadataToken();
@@ -78,7 +78,7 @@ class GCSBucket implements Bucket {
     return {
       type: this.type,
       name: this.#bucket,
-      endpoint: `${this.#endpoint}/${this.#bucket}`,
+      url: `${this.#url}/${this.#bucket}`,
       id: this.#bucket,
     };
   }
@@ -94,7 +94,7 @@ class GCSBucket implements Bucket {
 
       const token = await this.accessToken();
       const res = await fetch(
-        `${this.#endpoint}/storage/v1/b/${this.#bucket}/o?${params}`,
+        `${this.#url}/storage/v1/b/${this.#bucket}/o?${params}`,
         { headers: token ? { Authorization: `Bearer ${token}` } : {} },
       );
       if (!res.ok)
@@ -115,8 +115,8 @@ class GCSBucket implements Bucket {
           new GCSFile(
             item.name,
             this.#bucket,
-            this.#authPromise,
-            this.#endpoint,
+            this.#auth,
+            this.#url,
             this.#anonymous,
           ),
         );
@@ -142,19 +142,20 @@ class GCSBucket implements Bucket {
     return new GCSFile(
       withPrefix(this.PREFIX, name),
       this.#bucket,
-      this.#authPromise,
-      this.#endpoint,
+      this.#auth,
+      this.#url,
       this.#anonymous,
     );
   }
 
   folder(path: string): GCSBucket {
-    const sub = new GCSBucket(this.#bucket, {
-      endpoint: this.#endpoint,
+    const b = new GCSBucket(this.#bucket, {
+      url: this.#url,
       anonymous: this.#anonymous,
     });
-    sub.PREFIX = joinPrefix(this.PREFIX, path);
-    return sub;
+    b.#auth = this.#auth;
+    b.PREFIX = joinPrefix(this.PREFIX, path);
+    return b;
   }
 
   async remove(filter?: RegExp): Promise<GCSFile[]> {
@@ -182,7 +183,7 @@ class GCSBucket implements Bucket {
  * 2. `GCS_CLIENT_EMAIL` + `GCS_PRIVATE_KEY` env vars
  * 3. GCP metadata server (automatic on Cloud Run, GKE, Compute Engine, etc.)
  *
- * @param config.endpoint - Override the API host (falls back to `GCS_ENDPOINT`),
+ * @param config.url - Override the API host (falls back to `GCS_URL`),
  *   e.g. `http://localhost:4443` for the fake-gcs-server emulator.
  * @param config.anonymous - Skip authentication (falls back to `GCS_ANONYMOUS`),
  *   required by emulators that don't verify tokens.

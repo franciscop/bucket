@@ -9,6 +9,12 @@ import { WritableStream } from "node:stream/web";
 
 import { getContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
+import {
+  composeRange,
+  isEmptyRange,
+  rangeSize,
+  type ByteRange,
+} from "../lib/range.ts";
 import type {
   BucketFile,
   FileInfo,
@@ -37,12 +43,19 @@ export class FSFile implements BucketFile {
   name: string;
   path: string;
   #root: string;
+  #range: ByteRange | null = null;
 
   constructor(path: string, root: string) {
     this.id = String(hash(path));
     this.name = path.split("/").pop()!;
     this.path = path;
     this.#root = root;
+  }
+
+  slice(start: number, end?: number): FSFile {
+    const f = new FSFile(this.path, this.#root);
+    f.#range = composeRange(this.#range, start, end);
+    return f;
   }
 
   async info(): Promise<FileInfo> {
@@ -59,7 +72,7 @@ export class FSFile implements BucketFile {
       path: this.path,
       exists,
       type: exists ? type : null,
-      size: (info as { size: number }).size,
+      size: rangeSize(this.#range, (info as { size: number }).size),
       date: exists ? new Date((info as { mtime: Date }).mtime) : null,
       url: null,
       metadata: {},
@@ -73,8 +86,22 @@ export class FSFile implements BucketFile {
       .catch(() => false);
   }
 
-  #read() {
-    return fsp.readFile(this.path).catch(fsError);
+  async #read() {
+    if (!this.#range) return fsp.readFile(this.path).catch(fsError);
+    if (isEmptyRange(this.#range)) return Buffer.alloc(0);
+    const { start, end } = this.#range;
+    const fh = await fsp.open(this.path).catch(fsError);
+    try {
+      const size = (await fh.stat()).size;
+      const from = Math.min(start, size);
+      const to = end === undefined ? size : Math.min(end, size);
+      const len = Math.max(0, to - from);
+      const buf = Buffer.alloc(len);
+      if (len > 0) await fh.read(buf, 0, len, from);
+      return buf;
+    } finally {
+      await fh.close();
+    }
   }
 
   async text(): Promise<string> {
@@ -197,13 +224,18 @@ export class FSFile implements BucketFile {
   }
 
   stream(): ReadableStream {
-    return Readable.toWeb(
-      createReadStream(this.path),
-    ) as unknown as ReadableStream;
+    return Readable.toWeb(this.nodeReadable()) as unknown as ReadableStream;
   }
 
   nodeReadable(): NodeJS.ReadableStream {
-    return createReadStream(this.path);
+    if (!this.#range) return createReadStream(this.path);
+    if (isEmptyRange(this.#range)) return Readable.from([]);
+    const { start, end } = this.#range;
+    // Node's `end` is inclusive; our range end is exclusive.
+    return createReadStream(this.path, {
+      start,
+      ...(end !== undefined ? { end: end - 1 } : {}),
+    });
   }
 
   nodeWritable(_options?: WriteOptions): NodeJS.WritableStream {

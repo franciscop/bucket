@@ -5,6 +5,13 @@ import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
 import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
 import metaFromHeaders from "../lib/meta.ts";
+import {
+  composeRange,
+  isEmptyRange,
+  rangeHeader,
+  rangeSize,
+  type ByteRange,
+} from "../lib/range.ts";
 import type {
   BucketFile,
   FileInfo,
@@ -35,6 +42,7 @@ export class B2File implements BucketFile {
   date?: Date;
   url?: string;
   #bucket: B2BucketContext;
+  #range: ByteRange | null = null;
 
   constructor(path: string, bucket: B2BucketContext) {
     this.id = "";
@@ -43,13 +51,31 @@ export class B2File implements BucketFile {
     this.#bucket = bucket;
   }
 
+  slice(start: number, end?: number): B2File {
+    const f = new B2File(this.path, this.#bucket);
+    f.#range = composeRange(this.#range, start, end);
+    return f;
+  }
+
+  // A range-aware download used by every reader. `bucket.fetch` throws on any
+  // non-2xx (a range GET returns 206). An empty range resolves to an empty
+  // body without hitting the network.
+  async #get(): Promise<Response> {
+    if (this.#range && isEmptyRange(this.#range))
+      return new Response(new Uint8Array(0));
+    const bucket = await this.#bucket.info();
+    const url = bucket.url + "file/" + bucket.name + "/" + this.path;
+    const rh = this.#range && rangeHeader(this.#range);
+    return this.#bucket.fetch(url, rh ? { headers: { Range: rh } } : {});
+  }
+
   async info(): Promise<FileInfo> {
     // B2 has no metadata-by-name endpoint, but a HEAD on the download-by-name
     // URL returns it in headers. `bucket.fetch` throws on any non-2xx, so a
     // missing file (404) surfaces as a throw; per the documented contract
     // info()/exists() never throw, so any failure means "does not exist".
     const bucket = await this.#bucket.info();
-    const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
+    const url = bucket.url + "file/" + bucket.name + "/" + this.path;
     let res: Response;
     try {
       res = await this.#bucket.fetch(url, { method: "HEAD" });
@@ -77,7 +103,7 @@ export class B2File implements BucketFile {
       path: this.path,
       exists: true,
       type: this.type ?? null,
-      size: this.size,
+      size: rangeSize(this.#range, this.size),
       date: this.date ?? null,
       url,
       metadata: metaFromHeaders(res.headers, "x-bz-info-", (k) =>
@@ -87,31 +113,19 @@ export class B2File implements BucketFile {
   }
 
   async text(): Promise<string> {
-    const bucket = await this.#bucket.info();
-    const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
-    const res = await this.#bucket.fetch(url);
-    return res.text();
+    return (await this.#get()).text();
   }
 
   async json(): Promise<unknown> {
-    const bucket = await this.#bucket.info();
-    const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
-    const res = await this.#bucket.fetch(url);
-    return res.json();
+    return (await this.#get()).json();
   }
 
   async arrayBuffer(): Promise<ArrayBuffer> {
-    const bucket = await this.#bucket.info();
-    const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
-    const res = await this.#bucket.fetch(url);
-    return res.arrayBuffer();
+    return (await this.#get()).arrayBuffer();
   }
 
   async blob(): Promise<Blob> {
-    const bucket = await this.#bucket.info();
-    const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
-    const res = await this.#bucket.fetch(url);
-    return res.blob();
+    return (await this.#get()).blob();
   }
 
   async bytes(): Promise<Uint8Array> {
@@ -255,12 +269,9 @@ export class B2File implements BucketFile {
   }
 
   stream(): ReadableStream {
-    return promiseToReadable(async () => {
-      const bucket = await this.#bucket.info();
-      const url = bucket.endpoint + "file/" + bucket.name + "/" + this.path;
-      const res = await this.#bucket.fetch(url);
-      return res.body as unknown as ReadableStream;
-    });
+    return promiseToReadable(
+      async () => (await this.#get()).body as unknown as ReadableStream,
+    );
   }
 
   nodeReadable(): NodeJS.ReadableStream {
@@ -304,7 +315,7 @@ export class B2File implements BucketFile {
       authorizationToken: string;
     };
     return (
-      bucket.endpoint +
+      bucket.url +
       "file/" +
       bucket.name +
       "/" +
