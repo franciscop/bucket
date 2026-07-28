@@ -29,18 +29,6 @@ await source.pipeTo(target);
 
 ## Bucket
 
-The instance attached to a single bucket, created with the `Bucket()` creator each service exports:
-
-- `.info()`: display the information about the current bucket.
-- `.list(filter?)`: return the list of all files in the bucket.
-- `.scan(filter?)`: async generator that lazily yields files (streams pages).
-- `.count(filter?)`: return the Number of items in the bucket.
-- `.remove(filter?)`: delete all files matching the filter, returning them.
-- `.file(path)`: creates a BucketFile instance for the given path
-- `.folder(path)`: a Bucket scoped to a path prefix (see below).
-
-### Bucket()
-
 Creates the instance attached to a single bucket; each service exports its own:
 
 ```js
@@ -48,7 +36,16 @@ S3("my-bucket-name", { id, secret, region });
 S3(); // bucket name and credentials from env vars
 ```
 
-The first argument is always the bucket name; the second is a config object with credentials. All fields fall back to environment variables, so in most setups you can omit them entirely. See [Services](#services) for the env var names and options of each provider.
+The instance attached to a single bucket, created with the `Bucket()` creator each service exports:
+
+- [`.info()`](#bucketinfo): display the information about the current bucket.
+- [`.list(filter?)`](#bucketlist): return the list of all files in the bucket.
+- [`.scan(filter?)`](#bucketscan): async generator that lazily yields files (streams pages).
+- [`.count(filter?)`](#bucketcount): return the Number of items in the bucket.
+- [`.remove(filter?)`](#bucketremove): delete all files matching the filter, returning them.
+- [`.folder(path)`](#bucketfolder): a Bucket scoped to a path prefix (see below).
+- [`.file(path)`](#bucketfile): creates a BucketFile instance for the given path
+  The first argument is always the bucket name; the second is a config object with credentials. All fields fall back to environment variables, so in most setups you can omit them entirely. See [Services](#services) for the env var names and options of each provider.
 
 ```js
 import S3 from "bucket/s3";
@@ -173,6 +170,30 @@ console.log(`removed ${deleted.length} files`);
 
 - [`file.remove()`](#fileremove): delete a single file.
 
+### bucket.folder()
+
+Returns a `Bucket` scoped to a path prefix, synchronously and without any network requests:
+
+```js
+bucket.folder("public");
+bucket.folder("../"); // navigate to the parent folder
+```
+
+It behaves like any other bucket, but every operation is confined to that folder: `.file()` resolves names inside it, and `.list()`, `.count()`, `.remove()`, and iteration only see files within it. Folders nest, and the prefix is normalized (`"./public/"` and `"public"` are equivalent). `folder("../")` navigates to the parent folder and `folder("/")` returns to the bucket root; navigation is bounded by the bucket root, so a path that would climb above it throws a `BucketError` with code `"INVALID_PATH"`.
+
+```js
+const assets = bucket.folder("public");
+await assets.file("favicon.ico").write(icon); // stored at "public/favicon.ico"
+const styles = await assets.folder("css").list(); // only files under "public/css/"
+```
+
+File paths are always the full path from the bucket root, on every provider including the filesystem, so `assets.file("favicon.ico").path` is `"public/favicon.ico"`. A `RegExp` passed to a folder's `.list()` is matched against the path below the folder, so `assets.list(/^favicon/)` matches `public/favicon.ico`.
+
+#### Related methods
+
+- [`.file(path)`](#bucketfile): a handle to a single file.
+- [`.list(filter?)`](#bucketlist): list the folder's contents.
+
 ### bucket.file()
 
 Creates a `BucketFile` handle for the given path, synchronously and without any network requests:
@@ -204,30 +225,6 @@ bucket.file("../outside.txt"); // throws BucketError INVALID_PATH
 #### Related methods
 
 - [`.folder(path)`](#bucketfolder): scope a whole bucket to a prefix instead.
-
-### bucket.folder()
-
-Returns a `Bucket` scoped to a path prefix, synchronously and without any network requests:
-
-```js
-bucket.folder("public");
-bucket.folder("../"); // navigate to the parent folder
-```
-
-It behaves like any other bucket, but every operation is confined to that folder: `.file()` resolves names inside it, and `.list()`, `.count()`, `.remove()`, and iteration only see files within it. Folders nest, and the prefix is normalized (`"./public/"` and `"public"` are equivalent). `folder("../")` navigates to the parent folder and `folder("/")` returns to the bucket root; navigation is bounded by the bucket root, so a path that would climb above it throws a `BucketError` with code `"INVALID_PATH"`.
-
-```js
-const assets = bucket.folder("public");
-await assets.file("favicon.ico").write(icon); // stored at "public/favicon.ico"
-const styles = await assets.folder("css").list(); // only files under "public/css/"
-```
-
-File paths are always the full path from the bucket root, on every provider including the filesystem, so `assets.file("favicon.ico").path` is `"public/favicon.ico"`. A `RegExp` passed to a folder's `.list()` is matched against the path below the folder, so `assets.list(/^favicon/)` matches `public/favicon.ico`.
-
-#### Related methods
-
-- [`.file(path)`](#bucketfile): a handle to a single file.
-- [`.list(filter?)`](#bucketlist): list the folder's contents.
 
 ## BucketFile
 
