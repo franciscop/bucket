@@ -4,6 +4,7 @@ import { basename, join, relative, resolve, sep } from "node:path";
 
 import type { Bucket, BucketInfo } from "../lib/types.ts";
 import { fileKey, folderKey } from "../lib/prefix.ts";
+import assertNotOsPath from "./osPathGuard.ts";
 import { FSFile } from "./File.ts";
 
 class FileSystemBucket implements Bucket {
@@ -68,10 +69,12 @@ class FileSystemBucket implements Bucket {
 
   file(name: string): FSFile {
     if (!name) throw new Error("No name");
+    assertNotOsPath(this.#root, name);
     return new FSFile(fileKey(this.PREFIX, name), this.#root, this.PREFIX);
   }
 
   folder(path: string): FileSystemBucket {
+    assertNotOsPath(this.#root, path);
     return new FileSystemBucket(this.#root, folderKey(this.PREFIX, path));
   }
 

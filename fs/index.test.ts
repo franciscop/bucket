@@ -60,4 +60,27 @@ describe("FileSystem bucket-relative paths", () => {
   it("resolves .. segments that stay inside the scope", () => {
     expect(bucket.file("a/../b.txt").path).toBe("b.txt");
   });
+
+  it("rejects OS-style paths that start with the bucket's own root", async () => {
+    expect(errorCode(() => bucket.file(ROOT + "/a/b.txt"))).toBe(
+      "INVALID_PATH",
+    );
+    expect(errorCode(() => bucket.file(ROOT))).toBe("INVALID_PATH");
+    expect(errorCode(() => bucket.folder(ROOT + "/a"))).toBe("INVALID_PATH");
+    try {
+      bucket.file(ROOT + "/a/b.txt");
+    } catch (err) {
+      expect((err as Error).message).toContain('Did you mean "a/b.txt"');
+    }
+    // The same guard covers copy/move destinations
+    const src = bucket.file("guard-src.txt");
+    await src.write("guarded");
+    try {
+      await src.copyTo(ROOT + "/guard-dst.txt");
+      throw new Error("should have thrown");
+    } catch (err) {
+      expect((err as { code?: string }).code).toBe("INVALID_PATH");
+    }
+    await src.remove();
+  });
 });

@@ -27,25 +27,16 @@ const target = b2.file("newfile.txt").writable();
 await source.pipeTo(target);
 ```
 
-## Bucket
+## Bucket Methods
 
-Creates the instance attached to a single bucket; each service exports its own:
+Bucket() creates the instance attached to a single bucket; each service exports its own:
 
 ```js
 S3("my-bucket-name", { id, secret, region });
 S3(); // bucket name and credentials from env vars
 ```
 
-The instance attached to a single bucket, created with the `Bucket()` creator each service exports:
-
-- [`.info()`](#bucketinfo): display the information about the current bucket.
-- [`.list(filter?)`](#bucketlist): return the list of all files in the bucket.
-- [`.scan(filter?)`](#bucketscan): async generator that lazily yields files (streams pages).
-- [`.count(filter?)`](#bucketcount): return the Number of items in the bucket.
-- [`.remove(filter?)`](#bucketremove): delete all files matching the filter, returning them.
-- [`.folder(path)`](#bucketfolder): a Bucket scoped to a path prefix (see below).
-- [`.file(path)`](#bucketfile): creates a BucketFile instance for the given path
-  The first argument is always the bucket name; the second is a config object with credentials. All fields fall back to environment variables, so in most setups you can omit them entirely. See [Services](#services) for the env var names and options of each provider.
+The first argument is always the bucket name; the second is a config object with credentials. All fields fall back to environment variables, so in most setups you can omit them entirely. See [Services](#services) for the env var names and options of each provider.
 
 ```js
 import S3 from "bucket/s3";
@@ -58,7 +49,17 @@ const bucket = S3("my-bucket-name", {
 await bucket.file("hello.txt").write("hello world");
 ```
 
-### bucket.info()
+Every bucket instance has the same methods:
+
+- [`.info()`](#info): display the information about the current bucket.
+- [`.list(filter?)`](#list): return the list of all files in the bucket.
+- [`.scan(filter?)`](#scan): async generator that lazily yields files (streams pages).
+- [`.count(filter?)`](#count): return the Number of items in the bucket.
+- [`.remove(filter?)`](#remove): delete all files matching the filter, returning them.
+- [`.folder(path)`](#folder): a Bucket scoped to a path prefix (see below).
+- [`.file(path)`](#file): creates a BucketFile instance for the given path.
+
+### .info()
 
 Retrieves basic information about the bucket:
 
@@ -78,7 +79,7 @@ const info = await bucket.info();
 // }
 ```
 
-### bucket.list()
+### .list()
 
 Returns all the files in the bucket as an array of `BucketFile`:
 
@@ -87,7 +88,7 @@ await bucket.list();
 await bucket.list(/\.jpe?g$/);
 ```
 
-Accepts an optional `RegExp` to filter by pattern; to scope to a path prefix, use [`.folder()`](#bucketfolder), whose filters match below the folder.
+Accepts an optional `RegExp` to filter by pattern; to scope to a path prefix, use [`.folder()`](#folder), whose filters match below the folder.
 
 ```js
 const logs = await bucket.folder("logs").list(/\.log$/);
@@ -106,10 +107,10 @@ for await (const file of bucket) {
 
 #### Related methods
 
-- [`.scan(filter?)`](#bucketscan): stream the listing page by page instead of buffering it.
-- [`.count(filter?)`](#bucketcount): just the number of matches.
+- [`.scan(filter?)`](#scan): stream the listing page by page instead of buffering it.
+- [`.count(filter?)`](#count): just the number of matches.
 
-### bucket.scan()
+### .scan()
 
 Lazily yields the files in the bucket, fetching provider pages as they are consumed:
 
@@ -128,9 +129,9 @@ for await (const file of bucket.scan(/\.log$/)) {
 
 #### Related methods
 
-- [`.list(filter?)`](#bucketlist): the whole listing as an array.
+- [`.list(filter?)`](#list): the whole listing as an array.
 
-### bucket.count()
+### .count()
 
 Counts the files in the bucket:
 
@@ -148,9 +149,9 @@ console.log(`There are ${images} images`);
 
 #### Related methods
 
-- [`.list(filter?)`](#bucketlist): the matching files themselves.
+- [`.list(filter?)`](#list): the matching files themselves.
 
-### bucket.remove()
+### .remove()
 
 Deletes every file matching the filter, returning the deleted files:
 
@@ -170,7 +171,7 @@ console.log(`removed ${deleted.length} files`);
 
 - [`file.remove()`](#fileremove): delete a single file.
 
-### bucket.folder()
+### .folder()
 
 Returns a `Bucket` scoped to a path prefix, synchronously and without any network requests:
 
@@ -191,12 +192,12 @@ File paths are always the full path from the bucket root, on every provider incl
 
 #### Related methods
 
-- [`.file(path)`](#bucketfile): a handle to a single file.
-- [`.list(filter?)`](#bucketlist): list the folder's contents.
+- [`.file(path)`](#file): a handle to a single file.
+- [`.list(filter?)`](#list): list the folder's contents.
 
-### bucket.file()
+### .file()
 
-Creates a `BucketFile` handle for the given path, synchronously and without any network requests:
+Creates a [`BucketFile`](#file-methods) handle for the given path, synchronously and without any network requests:
 
 ```js
 bucket.file("hello.txt");
@@ -214,7 +215,7 @@ console.log(file.name); // "avatar.jpg"
 console.log(await file.text()); // or .json(), or .stream(), etc
 ```
 
-Paths are resolved within the bucket: `.` and `..` segments are applied and a leading `/` means the bucket root. The resolved path must stay inside the bucket (or the folder it is called on); anything else throws a `BucketError` with code `"INVALID_PATH"`:
+Paths are resolved within the bucket: `.` and `..` segments are applied and a leading `/` means the bucket root. The resolved path must stay inside the bucket; anything else throws a `BucketError` with code `"INVALID_PATH"`:
 
 ```js
 bucket.file("photos/../a.txt"); // same file as bucket.file("a.txt")
@@ -224,11 +225,11 @@ bucket.file("../outside.txt"); // throws BucketError INVALID_PATH
 
 #### Related methods
 
-- [`.folder(path)`](#bucketfolder): scope a whole bucket to a prefix instead.
+- [`.folder(path)`](#folder): scope a whole bucket to a prefix instead.
 
-## BucketFile
+## File Methods
 
-The file handle, returned by `bucket.file()` and as every item of `list()` and `scan()`. It is named `BucketFile` to differentiate it from the browser's native `File` object. It has `name` and `path` set synchronously, and everything else is a method:
+The file handle, returned by [`bucket.file()`](#file) and as every item of [`list()`](#list) and [`scan()`](#scan). The type is named `BucketFile` to differentiate it from the browser's native `File` object. It has `name` and `path` set synchronously, and everything else is a method:
 
 - **Info**
   - `.name`: the filename without the directory.
@@ -521,7 +522,7 @@ Alias: `.unlink()`, matching Bun's `S3File`.
 
 #### Related methods
 
-- [`bucket.remove(filter?)`](#bucketremove): delete many files at once.
+- [`bucket.remove(filter?)`](#remove): delete many files at once.
 
 ### file.stream()
 
@@ -694,6 +695,8 @@ const bucket = FileSystem("./my-folder");
 The path is resolved relative to the current working directory. No credentials needed.
 
 Paths are bucket-relative, exactly like the remote providers: a leading `/` means the bucket root (the folder above), never the filesystem root, and `file.path` is the path within the bucket. The real location on disk is `join(root, file.path)`. Nothing ever resolves outside the root folder; escapes throw a `BucketError` with code `"INVALID_PATH"`. The check is lexical: a symlink inside the folder that points outside is not caught.
+
+As a safety net, passing the bucket's own OS path back in throws instead of silently nesting: `FileSystem("/data").file("/data/a.png")` is almost always a mistake for `file("a.png")`, so it throws `INVALID_PATH` with the suggested fix rather than creating `/data/data/a.png`.
 
 ### Backblaze B2
 

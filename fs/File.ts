@@ -8,6 +8,7 @@ import { WritableStream } from "node:stream/web";
 import { getContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
 import { destKey } from "../lib/prefix.ts";
+import assertNotOsPath from "./osPathGuard.ts";
 import {
   composeRange,
   isEmptyRange,
@@ -161,6 +162,7 @@ export class FSFile implements BucketFile {
       await dest.write(this);
       return;
     }
+    assertNotOsPath(this.#root, dest);
     const dst = join(this.#root, destKey(this.#prefix, dest, this.name));
     await fsp.mkdir(dirname(dst), { recursive: true });
     await fsp.copyFile(this.#abs, dst).catch(fsError);
@@ -172,6 +174,7 @@ export class FSFile implements BucketFile {
       await this.remove();
       return;
     }
+    assertNotOsPath(this.#root, dest);
     const dst = join(this.#root, destKey(this.#prefix, dest, this.name));
     await fsp.mkdir(dirname(dst), { recursive: true });
     await fsp.rename(this.#abs, dst).catch(fsError);
