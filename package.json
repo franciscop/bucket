@@ -55,8 +55,6 @@
     "dist"
   ],
   "documentation.page": {
-    "title": "🪣 Bucket - A unified API for any file storage solution",
-    "homepage": "https://bucketjs.com/",
     "menu": {
       "Issues": "https://github.com/franciscop/bucket/issues",
       "Get help": "https://superpeer.com/francisco/-/javascript-and-react-help",
