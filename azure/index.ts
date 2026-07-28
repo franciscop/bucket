@@ -1,6 +1,7 @@
 import { signAzure, accountPathPrefix } from "../lib/signAzure.ts";
+import { unescapeXml } from "../lib/xml.ts";
 import BucketError from "../lib/BucketError.ts";
-import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
+import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import type { Bucket, BucketInfo } from "../lib/types.ts";
 import { AzureFile, type AzureFileAuth } from "./File.ts";
 
@@ -181,7 +182,7 @@ class AzureBucket implements Bucket {
       const xml = await res.text();
       const page: AzureFile[] = [];
       for (const item of extractXmlTags(xml, "Blob")) {
-        const name = getXmlTag(item, "Name");
+        const name = unescapeXml(getXmlTag(item, "Name"));
         if (!s.test(name)) continue;
         page.push(
           new AzureFile(
@@ -190,6 +191,7 @@ class AzureBucket implements Bucket {
             this.#container,
             this.#auth,
             this.#url,
+            this.PREFIX,
           ),
         );
       }
@@ -212,18 +214,19 @@ class AzureBucket implements Bucket {
   file(name: string): AzureFile {
     if (!name) throw new Error("No name");
     return new AzureFile(
-      withPrefix(this.PREFIX, name),
+      fileKey(this.PREFIX, name),
       this.#account,
       this.#container,
       this.#auth,
       this.#url,
+      this.PREFIX,
     );
   }
 
   folder(path: string): AzureBucket {
     const b = new AzureBucket(this.#account, this.#container, "", this.#url);
     b.#auth = this.#auth;
-    b.PREFIX = joinPrefix(this.PREFIX, path);
+    b.PREFIX = folderKey(this.PREFIX, path);
     return b;
   }
 

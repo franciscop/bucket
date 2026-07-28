@@ -9,6 +9,7 @@ import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
 import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
+import { destKey } from "../lib/prefix.ts";
 import metaFromHeaders from "../lib/meta.ts";
 import {
   composeRange,
@@ -29,13 +30,15 @@ export type AzureFileAuth =
   | { type: "managed-identity"; getToken: () => Promise<string> };
 
 export class AzureFile implements BucketFile {
-  id: string;
   name: string;
   path: string;
   #account: string;
   #container: string;
   #url: string;
   #auth: AzureFileAuth;
+  // Folder prefix of the bucket that created this file; copyTo()/moveTo()
+  // destinations and rename() resolve against it.
+  #prefix: string;
   #range: ByteRange | null = null;
 
   constructor(
@@ -44,14 +47,15 @@ export class AzureFile implements BucketFile {
     container: string,
     auth: AzureFileAuth,
     url: string = `https://${account}.blob.core.windows.net`,
+    prefix: string = "",
   ) {
     this.path = path.startsWith("/") ? path.slice(1) : path;
     this.name = this.path.split("/").pop() || this.path;
-    this.id = this.path;
     this.#account = account;
     this.#container = container;
     this.#url = url;
     this.#auth = auth;
+    this.#prefix = prefix;
   }
 
   slice(start: number, end?: number): AzureFile {
@@ -61,6 +65,7 @@ export class AzureFile implements BucketFile {
       this.#container,
       this.#auth,
       this.#url,
+      this.#prefix,
     );
     f.#range = composeRange(this.#range, start, end);
     return f;
@@ -125,44 +130,28 @@ export class AzureFile implements BucketFile {
     });
   }
 
-  async info(): Promise<FileInfo> {
+  async info(): Promise<FileInfo | null> {
     const res = await this.#request("HEAD");
-    if (res.status === 404) {
-      return {
-        id: this.id,
-        name: this.name,
-        path: this.path,
-        exists: false,
-        type: null,
-        size: 0,
-        date: null,
-        url: null,
-        metadata: {},
-      };
-    }
+    if (res.status === 404) return null;
     if (!res.ok)
       throw new BucketError(`Azure HEAD error: ${res.status}`, {
         provider: "Azure",
         status: res.status,
       });
     return {
-      id: this.id,
-      name: this.name,
-      path: this.path,
-      exists: true,
-      type: res.headers.get("content-type"),
       size: rangeSize(
         this.#range,
         parseInt(res.headers.get("content-length") ?? "0", 10),
       ),
-      date: new Date(res.headers.get("last-modified") ?? Date.now()),
-      url: this.publicUrl(),
+      type: res.headers.get("content-type"),
+      modified: new Date(res.headers.get("last-modified") ?? Date.now()),
+      version: res.headers.get("x-ms-version-id"),
       metadata: metaFromHeaders(res.headers, "x-ms-meta-"),
     };
   }
 
   async exists(): Promise<boolean> {
-    return (await this.info()).exists;
+    return (await this.info()) !== null;
   }
 
   async text(): Promise<string> {
@@ -233,11 +222,12 @@ export class AzureFile implements BucketFile {
     }
     const src = this.#baseUrl();
     const dst = new AzureFile(
-      dest,
+      destKey(this.#prefix, dest, this.name),
       this.#account,
       this.#container,
       this.#auth,
       this.#url,
+      this.#prefix,
     );
     const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${dst.path}`;
 
@@ -279,9 +269,13 @@ export class AzureFile implements BucketFile {
   }
 
   async rename(name: string): Promise<void> {
+    if (!name || name === "." || name === "..")
+      throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
       throw new Error("rename() cannot change directory, use moveTo() instead");
-    const dir = this.path.split("/").slice(0, -1).join("/");
+    const prefix = this.#prefix;
+    const rel = prefix ? this.path.slice(prefix.length + 1) : this.path;
+    const dir = rel.split("/").slice(0, -1).join("/");
     await this.moveTo(dir ? dir + "/" + name : name);
   }
 
@@ -297,18 +291,6 @@ export class AzureFile implements BucketFile {
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
   unlink(): Promise<void> {
     return this.remove();
-  }
-
-  presign(opts?: {
-    method?: string;
-    expiresIn?: number;
-    expires?: number | string;
-  }): Promise<string | null> {
-    const expires = opts?.expires ?? opts?.expiresIn ?? 3600;
-    const method = (opts?.method ?? "GET").toUpperCase();
-    return method === "PUT" || method === "POST"
-      ? this.uploadUrl({ expires })
-      : this.signedUrl({ expires });
   }
 
   stream(): ReadableStream {
@@ -331,7 +313,7 @@ export class AzureFile implements BucketFile {
     );
   }
 
-  publicUrl(): string {
+  async publicUrl(): Promise<string> {
     return this.#baseUrl();
   }
 

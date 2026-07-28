@@ -1,14 +1,13 @@
-import hash from "../lib/hash.ts";
-
 import { Blob } from "node:buffer";
 import { createReadStream, createWriteStream } from "node:fs";
 import fsp from "node:fs/promises";
-import { dirname, join, resolve, isAbsolute } from "node:path";
+import { dirname, join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { WritableStream } from "node:stream/web";
 
 import { getContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
+import { destKey } from "../lib/prefix.ts";
 import {
   composeRange,
   isEmptyRange,
@@ -39,58 +38,57 @@ function fsError(err: unknown): never {
 }
 
 export class FSFile implements BucketFile {
-  id: string;
   name: string;
+  // Path within the bucket, like the remote providers. The OS location is
+  // private (#abs); derive it externally with join(root, file.path).
   path: string;
   #root: string;
+  #prefix: string;
+  #abs: string;
   #range: ByteRange | null = null;
 
-  constructor(path: string, root: string) {
-    this.id = String(hash(path));
-    this.name = path.split("/").pop()!;
-    this.path = path;
+  constructor(key: string, root: string, prefix: string) {
+    this.name = key.split("/").pop()!;
+    this.path = key;
     this.#root = root;
+    this.#prefix = prefix;
+    this.#abs = join(root, key);
   }
 
   slice(start: number, end?: number): FSFile {
-    const f = new FSFile(this.path, this.#root);
+    const f = new FSFile(this.path, this.#root, this.#prefix);
     f.#range = composeRange(this.#range, start, end);
     return f;
   }
 
-  async info(): Promise<FileInfo> {
-    const [exists, info] = await Promise.all([
-      this.exists(),
-      fsp
-        .stat(this.path)
-        .catch(() => ({ size: 0, mtime: null as Date | null })),
-    ]);
-    const type = getContentType(this.path) ?? null;
+  async info(): Promise<FileInfo | null> {
+    let stat: { size: number; mtime: Date };
+    try {
+      stat = await fsp.stat(this.#abs);
+    } catch {
+      return null;
+    }
     return {
-      id: this.id,
-      name: this.name,
-      path: this.path,
-      exists,
-      type: exists ? type : null,
-      size: rangeSize(this.#range, (info as { size: number }).size),
-      date: exists ? new Date((info as { mtime: Date }).mtime) : null,
-      url: null,
+      size: rangeSize(this.#range, stat.size),
+      type: getContentType(this.path) ?? null,
+      modified: new Date(stat.mtime),
+      version: null,
       metadata: {},
     };
   }
 
   async exists(): Promise<boolean> {
     return fsp
-      .access(this.path, fsp.constants.F_OK)
+      .access(this.#abs, fsp.constants.F_OK)
       .then(() => true)
       .catch(() => false);
   }
 
   async #read() {
-    if (!this.#range) return fsp.readFile(this.path).catch(fsError);
+    if (!this.#range) return fsp.readFile(this.#abs).catch(fsError);
     if (isEmptyRange(this.#range)) return Buffer.alloc(0);
     const { start, end } = this.#range;
-    const fh = await fsp.open(this.path).catch(fsError);
+    const fh = await fsp.open(this.#abs).catch(fsError);
     try {
       const size = (await fh.stat()).size;
       const from = Math.min(start, size);
@@ -133,16 +131,16 @@ export class FSFile implements BucketFile {
 
   async write(content: WriteContent, _options?: WriteOptions): Promise<void> {
     if (typeof content === "string") {
-      await fsp.mkdir(dirname(this.path), { recursive: true });
-      return fsp.writeFile(this.path, content);
+      await fsp.mkdir(dirname(this.#abs), { recursive: true });
+      return fsp.writeFile(this.#abs, content);
     }
     if (content instanceof Buffer || content instanceof Uint8Array) {
-      await fsp.mkdir(dirname(this.path), { recursive: true });
-      return fsp.writeFile(this.path, content);
+      await fsp.mkdir(dirname(this.#abs), { recursive: true });
+      return fsp.writeFile(this.#abs, content);
     }
     if (content instanceof Blob) {
-      await fsp.mkdir(dirname(this.path), { recursive: true });
-      return fsp.writeFile(this.path, Buffer.from(await content.arrayBuffer()));
+      await fsp.mkdir(dirname(this.#abs), { recursive: true });
+      return fsp.writeFile(this.#abs, Buffer.from(await content.arrayBuffer()));
     }
     if (content instanceof FSFile) {
       return content.stream().pipeTo(this.writable());
@@ -163,9 +161,9 @@ export class FSFile implements BucketFile {
       await dest.write(this);
       return;
     }
-    const dst = resolve(isAbsolute(dest) ? dest : join(this.#root, dest));
+    const dst = join(this.#root, destKey(this.#prefix, dest, this.name));
     await fsp.mkdir(dirname(dst), { recursive: true });
-    await fsp.copyFile(this.path, dst).catch(fsError);
+    await fsp.copyFile(this.#abs, dst).catch(fsError);
   }
 
   async moveTo(dest: string | BucketFile): Promise<void> {
@@ -174,24 +172,25 @@ export class FSFile implements BucketFile {
       await this.remove();
       return;
     }
-    const dst = resolve(isAbsolute(dest) ? dest : join(this.#root, dest));
+    const dst = join(this.#root, destKey(this.#prefix, dest, this.name));
     await fsp.mkdir(dirname(dst), { recursive: true });
-    await fsp.rename(this.path, dst).catch(fsError);
+    await fsp.rename(this.#abs, dst).catch(fsError);
   }
 
   async rename(name: string): Promise<void> {
+    if (!name || name === "." || name === "..")
+      throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
       throw new Error("rename() cannot change directory, use moveTo() instead");
-    const relDir = this.path
-      .slice(this.#root.length)
-      .split("/")
-      .slice(0, -1)
-      .join("/");
-    await this.moveTo(relDir ? relDir + "/" + name : name);
+    const rel = this.#prefix
+      ? this.path.slice(this.#prefix.length + 1)
+      : this.path;
+    const dir = rel.split("/").slice(0, -1).join("/");
+    await this.moveTo(dir ? dir + "/" + name : name);
   }
 
   async remove(): Promise<void> {
-    return fsp.unlink(this.path);
+    return fsp.unlink(this.#abs);
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
@@ -199,19 +198,7 @@ export class FSFile implements BucketFile {
     return this.remove();
   }
 
-  presign(opts?: {
-    method?: string;
-    expiresIn?: number;
-    expires?: number | string;
-  }): Promise<string | null> {
-    const expires = opts?.expires ?? opts?.expiresIn ?? 3600;
-    const method = (opts?.method ?? "GET").toUpperCase();
-    return method === "PUT" || method === "POST"
-      ? this.uploadUrl({ expires })
-      : this.signedUrl({ expires });
-  }
-
-  publicUrl(): null {
+  async publicUrl(): Promise<null> {
     return null;
   }
 
@@ -228,11 +215,11 @@ export class FSFile implements BucketFile {
   }
 
   nodeReadable(): NodeJS.ReadableStream {
-    if (!this.#range) return createReadStream(this.path);
+    if (!this.#range) return createReadStream(this.#abs);
     if (isEmptyRange(this.#range)) return Readable.from([]);
     const { start, end } = this.#range;
     // Node's `end` is inclusive; our range end is exclusive.
-    return createReadStream(this.path, {
+    return createReadStream(this.#abs, {
       start,
       ...(end !== undefined ? { end: end - 1 } : {}),
     });
@@ -243,7 +230,7 @@ export class FSFile implements BucketFile {
   }
 
   writable(_options?: WriteOptions): WritableStream {
-    const filePath = this.path;
+    const filePath = this.#abs;
     let writer: ReturnType<typeof createWriteStream> | null = null;
 
     return new WritableStream<Uint8Array>({

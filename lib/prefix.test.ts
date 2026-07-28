@@ -1,34 +1,111 @@
-// Unit tests for the folder() prefix helpers. These pure functions are the core
-// of folder() for every remote backend (S3/R2/GCS/Azure/B2), whose integration
-// tests only run against emulators; testing them here validates the logic with
-// no network. When the prefix is "" every helper must be a no-op (back-compat).
+// Unit tests for the path/prefix helpers. These pure functions are the core of
+// file(), folder() and copy/move destinations for every backend (including the
+// filesystem), whose integration tests only run against emulators; testing
+// them here validates the logic with no network.
 
 import {
-  cleanPrefix,
-  withPrefix,
-  joinPrefix,
+  resolvePath,
+  fileKey,
+  folderKey,
+  destKey,
   scope,
   subBucket,
 } from "./prefix.ts";
 
-describe("cleanPrefix", () => {
-  it("normalizes to a bare prefix", () => {
-    expect(cleanPrefix("./public/")).toBe("public");
-    expect(cleanPrefix("/a//b/")).toBe("a/b");
-    expect(cleanPrefix("a/b")).toBe("a/b");
-    expect(cleanPrefix("")).toBe("");
+const errorCode = (fn: () => unknown): string | undefined => {
+  try {
+    fn();
+  } catch (err) {
+    return (err as { code?: string }).code;
+  }
+};
+
+describe("resolvePath", () => {
+  it("normalizes to a bare key", () => {
+    expect(resolvePath("", "./public/")).toBe("public");
+    expect(resolvePath("", "a//b/")).toBe("a/b");
+    expect(resolvePath("", "a/b")).toBe("a/b");
+    expect(resolvePath("", "")).toBe("");
+  });
+  it("resolves . and .. segments against the base", () => {
+    expect(resolvePath("", "a/../b.txt")).toBe("b.txt");
+    expect(resolvePath("a", "b/../c")).toBe("a/c");
+    expect(resolvePath("a/b", "..")).toBe("a");
+  });
+  it("anchors a leading / at the bucket root", () => {
+    expect(resolvePath("a/b", "/x")).toBe("x");
+    expect(resolvePath("a", "/a/x")).toBe("a/x");
+    expect(resolvePath("", "/x")).toBe("x");
+  });
+  it("throws INVALID_PATH when climbing above the bucket root", () => {
+    expect(errorCode(() => resolvePath("", "../x"))).toBe("INVALID_PATH");
+    expect(errorCode(() => resolvePath("a", "../../x"))).toBe("INVALID_PATH");
+    expect(errorCode(() => resolvePath("", "/../x"))).toBe("INVALID_PATH");
+  });
+  it("throws INVALID_PATH on backslashes (URL parsers treat them as /)", () => {
+    expect(errorCode(() => resolvePath("", "..\\x"))).toBe("INVALID_PATH");
+    expect(errorCode(() => resolvePath("", "a\\b"))).toBe("INVALID_PATH");
   });
 });
 
-describe("withPrefix / joinPrefix", () => {
+describe("fileKey (file names are confined to their folder)", () => {
   it("combines a prefix with a child name", () => {
-    expect(withPrefix("public", "favicon.ico")).toBe("public/favicon.ico");
-    expect(withPrefix("", "favicon.ico")).toBe("favicon.ico");
+    expect(fileKey("public", "favicon.ico")).toBe("public/favicon.ico");
+    expect(fileKey("", "favicon.ico")).toBe("favicon.ico");
   });
+  it("allows any syntax whose result stays inside the folder", () => {
+    expect(fileKey("a", "b/../x")).toBe("a/x");
+    expect(fileKey("a", "/a/x")).toBe("a/x");
+    expect(fileKey("a", "../a/x")).toBe("a/x");
+  });
+  it("throws INVALID_PATH when the result lands outside the folder", () => {
+    expect(errorCode(() => fileKey("a", "../x"))).toBe("INVALID_PATH");
+    expect(errorCode(() => fileKey("a", "/x"))).toBe("INVALID_PATH");
+    expect(errorCode(() => fileKey("", "../x"))).toBe("INVALID_PATH");
+  });
+  it("throws INVALID_PATH when the result is not a file", () => {
+    expect(errorCode(() => fileKey("", "./"))).toBe("INVALID_PATH");
+    expect(errorCode(() => fileKey("", "/"))).toBe("INVALID_PATH");
+    expect(errorCode(() => fileKey("a", ".."))).toBe("INVALID_PATH");
+  });
+});
+
+describe("folderKey (folders navigate, bounded by the bucket root)", () => {
   it("nests and normalizes folder paths", () => {
-    expect(joinPrefix("a", "./b/")).toBe("a/b");
-    expect(joinPrefix("", "b")).toBe("b");
-    expect(joinPrefix("a/b", "c")).toBe("a/b/c");
+    expect(folderKey("a", "./b/")).toBe("a/b");
+    expect(folderKey("", "b")).toBe("b");
+    expect(folderKey("a/b", "c")).toBe("a/b/c");
+  });
+  it("navigates with .. and /", () => {
+    expect(folderKey("a/b", "../c")).toBe("a/c");
+    expect(folderKey("a", "..")).toBe("");
+    expect(folderKey("a/b", "/")).toBe("");
+    expect(folderKey("a/b", "/c")).toBe("c");
+  });
+  it("throws INVALID_PATH above the bucket root", () => {
+    expect(errorCode(() => folderKey("", ".."))).toBe("INVALID_PATH");
+    expect(errorCode(() => folderKey("a", "../.."))).toBe("INVALID_PATH");
+  });
+});
+
+describe("destKey (copy/move destinations navigate like folders)", () => {
+  it("resolves relative to the owning folder", () => {
+    expect(destKey("a", "b.txt", "x.png")).toBe("a/b.txt");
+    expect(destKey("", "b.txt", "x.png")).toBe("b.txt");
+  });
+  it("navigates with .. and anchors with /", () => {
+    expect(destKey("a", "../b.txt", "x.png")).toBe("b.txt");
+    expect(destKey("a", "/b.txt", "x.png")).toBe("b.txt");
+  });
+  it("a trailing / keeps the file name", () => {
+    expect(destKey("", "photos/", "x.png")).toBe("photos/x.png");
+    expect(destKey("a", "../", "x.png")).toBe("x.png");
+    expect(destKey("a", "/photos/", "x.png")).toBe("photos/x.png");
+  });
+  it("throws INVALID_PATH outside the bucket or on non-files", () => {
+    expect(errorCode(() => destKey("", "../x", "n"))).toBe("INVALID_PATH");
+    expect(errorCode(() => destKey("a", "../../x", "n"))).toBe("INVALID_PATH");
+    expect(errorCode(() => destKey("a", "..", "n"))).toBe("INVALID_PATH");
   });
 });
 

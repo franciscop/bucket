@@ -258,21 +258,18 @@ describe("Azure file().info()", () => {
       ),
     );
     const info = await bucket.file("hello.txt").info();
-    expect(info.exists).toBe(true);
-    expect(info.type).toBe("text/plain");
-    expect(info.size).toBe(5);
+    expect(info).not.toBeNull();
+    expect(info!.type).toBe("text/plain");
+    expect(info!.size).toBe(5);
   });
 
-  it("returns exists: false for a missing file", async () => {
+  it("returns null for a missing file", async () => {
     const bucket = Azure(TEST_CONTAINER, {
       account: TEST_ACCOUNT,
       key: TEST_KEY,
     });
     mockFetch(() => Promise.resolve(makeResponse(null, 404)));
-    const info = await bucket.file("missing.txt").info();
-    expect(info.exists).toBe(false);
-    expect(info.size).toBe(0);
-    expect(info.type).toBeNull();
+    expect(await bucket.file("missing.txt").info()).toBeNull();
   });
 });
 
@@ -345,12 +342,12 @@ describe("Azure file().remove()", () => {
 });
 
 describe("Azure file().publicUrl()", () => {
-  it("returns the correct blob URL", () => {
+  it("returns the correct blob URL", async () => {
     const bucket = Azure(TEST_CONTAINER, {
       account: TEST_ACCOUNT,
       key: TEST_KEY,
     });
-    const url = bucket.file("path/to/file.txt").publicUrl();
+    const url = await bucket.file("path/to/file.txt").publicUrl();
     expect(url).toBe(
       `https://${TEST_ACCOUNT}.blob.core.windows.net/${TEST_CONTAINER}/path/to/file.txt`,
     );

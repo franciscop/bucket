@@ -82,7 +82,6 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         expect(Array.isArray(files)).toBe(true);
         if (files.length > 0) {
           const keys = Object.keys(files[0]);
-          expect(keys).toContain("id");
           expect(keys).toContain("name");
           expect(keys).toContain("path");
         }
@@ -94,36 +93,48 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
       });
     });
 
+    // ── Special characters ────────────────────────────────────────────────────
+
+    describe("XML-special file names", () => {
+      // "&" travels through XML on S3/R2/Azure (list responses and the S3/R2
+      // batch delete body), so it must escape and decode correctly end to end.
+      it("round-trips names with & through list() and remove()", async () => {
+        const fname = `test${Math.floor(Math.random() * 100000)}-a&b.txt`;
+        await bucket.file(fname).write("xml-chars");
+        expect(await bucket.file(fname).text()).toBe("xml-chars");
+
+        const names = (await bucket.list()).map((f) => f.name);
+        expect(names).toContain(fname);
+
+        const deleted = await bucket.remove(/-a&b\.txt$/);
+        expect(deleted.map((f) => f.name)).toContain(fname);
+        expect(await bucket.file(fname).exists()).toBe(false);
+      });
+    });
+
     // ── File info ─────────────────────────────────────────────────────────────
 
     describe("File info", () => {
-      it("returns exists: false for a non-existing file", async () => {
-        const info = await bucket.file("nonexisting.txt").info();
-        expect(info.name).toEqual("nonexisting.txt");
-        expect(info.exists).toEqual(false);
-        expect(info.type).toEqual(null);
-        expect(info.size).toEqual(0);
-        expect(info.date).toEqual(null);
-        expect(info.url).toEqual(null);
+      it("returns null for a non-existing file", async () => {
+        expect(await bucket.file("nonexisting.txt").info()).toBeNull();
       });
 
       it("can get file info for nero.jpg", async () => {
         const info = await bucket.file("nero.jpg").info();
-        expect(info.name).toEqual("nero.jpg");
-        expect(info.exists).toEqual(true);
-        expect(info.type).toEqual("image/jpeg");
-        expect(info.size).toEqual(175888);
+        expect(info).not.toBeNull();
+        expect(info!.type).toEqual("image/jpeg");
+        expect(info!.size).toEqual(175888);
+        expect(info!.modified).toBeInstanceOf(Date);
+        expect(
+          info!.version === null || typeof info!.version === "string",
+        ).toBe(true);
       });
 
       it("can get info for a deeply nested file", async () => {
         const info = await bucket.file("deep/readme.txt").info();
-        expect(info.name).toEqual("readme.txt");
-        expect(info.path.split("/").slice(-2).join("/")).toEqual(
-          "deep/readme.txt",
-        );
-        expect(info.exists).toEqual(true);
-        expect(info.type).toEqual("text/plain");
-        expect(info.size).toEqual(9);
+        expect(info).not.toBeNull();
+        expect(info!.type).toEqual("text/plain");
+        expect(info!.size).toEqual(9);
       });
     });
 
@@ -255,15 +266,15 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
       });
 
       it("reports the clamped slice length as info().size", async () => {
-        expect((await bucket.file(name).slice(0, 4).info()).size).toBe(4);
-        expect((await bucket.file(name).slice(6, 100).info()).size).toBe(4);
-        expect((await bucket.file(name).slice(4).info()).size).toBe(6);
+        expect((await bucket.file(name).slice(0, 4).info())!.size).toBe(4);
+        expect((await bucket.file(name).slice(6, 100).info())!.size).toBe(4);
+        expect((await bucket.file(name).slice(4).info())!.size).toBe(6);
       });
 
-      it("keeps the underlying metadata (exists, type) on a slice", async () => {
+      it("keeps the underlying metadata (type) on a slice", async () => {
         const info = await bucket.file(name).slice(0, 4).info();
-        expect(info.exists).toBe(true);
-        expect(info.type).toContain("text");
+        expect(info).not.toBeNull();
+        expect(info!.type).toContain("text");
       });
 
       it("composes: slice of a slice", async () => {
@@ -348,8 +359,8 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         const file = bucket.file(testFile("jpg"));
         await file.write(data);
         const info = await file.info();
-        expect(info.size).toBe(175888);
-        expect(info.type).toBe("image/jpeg");
+        expect(info!.size).toBe(175888);
+        expect(info!.type).toBe("image/jpeg");
       });
 
       it("can write a large Blob (binary)", async () => {
@@ -357,8 +368,8 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         const file = bucket.file(testFile(".jpg"));
         await file.write(new Blob([src]));
         const info = await file.info();
-        expect(info.size).toBe(175888);
-        expect(info.type).toBe("image/jpeg");
+        expect(info!.size).toBe(175888);
+        expect(info!.type).toBe("image/jpeg");
       });
     });
 
@@ -439,6 +450,16 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         const srcPath = src.path;
         await src.rename(testFile());
         expect(await bucket.file(srcPath).exists()).toBe(false);
+      });
+
+      it("renames a file inside a nested directory", async () => {
+        const src = bucket.file("nested/" + testFile());
+        await src.write("nested-rename");
+        const newName = testFile();
+        await src.rename(newName);
+        expect(await bucket.file("nested/" + newName).text()).toBe(
+          "nested-rename",
+        );
       });
 
       it("throws if given a path with a slash", async () => {
@@ -554,6 +575,111 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
       });
     });
 
+    // ── path traversal ──────────────────────────────────────────────────────
+
+    describe("path traversal", () => {
+      const errorCode = (fn: () => unknown): string | undefined => {
+        try {
+          fn();
+        } catch (err) {
+          return (err as { code?: string }).code;
+        }
+      };
+
+      it("resolves . and .. segments that stay inside the bucket", async () => {
+        const fname = testFile("txt");
+        await bucket.file(fname).write("safe");
+        expect(await bucket.file("deep/../" + fname).text()).toBe("safe");
+      });
+
+      it("throws INVALID_PATH when a path escapes the bucket", () => {
+        expect(errorCode(() => bucket.file("../escape.txt"))).toBe(
+          "INVALID_PATH",
+        );
+        expect(errorCode(() => bucket.file("a/../../escape.txt"))).toBe(
+          "INVALID_PATH",
+        );
+        expect(errorCode(() => bucket.folder("../escape"))).toBe(
+          "INVALID_PATH",
+        );
+      });
+
+      it("throws INVALID_PATH when a file path escapes its folder", () => {
+        const folder = bucket.folder("nested");
+        expect(errorCode(() => folder.file("../outside.txt"))).toBe(
+          "INVALID_PATH",
+        );
+      });
+
+      it("folder('../') navigates to the parent, bounded by the bucket root", async () => {
+        const fname = testFile();
+        await bucket.file(fname).write("at-root");
+        const back = bucket.folder("nested").folder("..");
+        expect(await back.file(fname).text()).toBe("at-root");
+        expect(errorCode(() => bucket.folder("nested").folder("../.."))).toBe(
+          "INVALID_PATH",
+        );
+      });
+
+      it("anchors a leading '/' at the bucket root", async () => {
+        const fname = testFile();
+        await bucket.file("/" + fname).write("anchored");
+        expect(await bucket.file(fname).text()).toBe("anchored");
+        // Anchored file() paths still cannot leave the folder they're called on
+        expect(errorCode(() => bucket.folder("nested").file("/" + fname))).toBe(
+          "INVALID_PATH",
+        );
+      });
+
+      it("resolves copyTo()/moveTo() destinations against the folder", async () => {
+        const folder = bucket.folder("nested");
+        const a = testFile();
+        const b = testFile();
+        const c = testFile();
+        await folder.file(a).write("dest");
+        await folder.file(a).copyTo(b); // folder-relative
+        expect(await bucket.file("nested/" + b).text()).toBe("dest");
+        await folder.file(a).copyTo("../" + c); // navigates to the root
+        expect(await bucket.file(c).text()).toBe("dest");
+        const d = testFile();
+        await folder.file(b).moveTo("../" + d); // moveTo navigates too
+        expect(await bucket.file(d).text()).toBe("dest");
+        expect(await bucket.file("nested/" + b).exists()).toBe(false);
+      });
+
+      it("copyTo('dir/') keeps the file name", async () => {
+        const a = testFile();
+        const src = bucket.file(a);
+        await src.write("into-dir");
+        await src.copyTo("nested/");
+        expect(await bucket.file("nested/" + a).text()).toBe("into-dir");
+      });
+
+      it("rename() inside a folder stays in the folder", async () => {
+        const folder = bucket.folder("nested");
+        const a = testFile();
+        const b = testFile();
+        await folder.file(a).write("folder-rename");
+        await folder.file(a).rename(b);
+        expect(await bucket.file("nested/" + b).text()).toBe("folder-rename");
+      });
+
+      it("rejects an escaping copyTo()/moveTo() destination", async () => {
+        const src = bucket.file(testFile("txt"));
+        await src.write("stay");
+        const codeOf = async (p: Promise<unknown>) => {
+          try {
+            await p;
+          } catch (err) {
+            return (err as { code?: string }).code;
+          }
+        };
+        expect(await codeOf(src.copyTo("../out.txt"))).toBe("INVALID_PATH");
+        expect(await codeOf(src.moveTo("../out.txt"))).toBe("INVALID_PATH");
+        expect(await src.text()).toBe("stay");
+      });
+    });
+
     // ── nested-path filtering ────────────────────────────────────────────────
 
     describe("nested-path filtering", () => {
@@ -590,11 +716,11 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         const name = testFile("txt");
         await bucket.file(name).write("x", { metadata: { Foo: "bar" } });
         const info = await bucket.file(name).info();
-        expect(typeof info.metadata).toBe("object");
+        expect(typeof info!.metadata).toBe("object");
         // Remote providers store and return custom metadata with lowercase keys;
         // the filesystem has no metadata store and returns {}.
         if (bucket.type !== "FILESYSTEM") {
-          expect(info.metadata.foo).toBe("bar");
+          expect(info!.metadata.foo).toBe("bar");
         }
       });
     });
@@ -661,10 +787,9 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         expect(seen.length).toBeGreaterThanOrEqual(2);
       });
 
-      it("yields objects with id, name, path", async () => {
+      it("yields objects with name and path", async () => {
         await bucket.file(testFile()).write("iter-props");
         for await (const file of bucket) {
-          expect(file.id).toBeDefined();
           expect(file.name).toBeDefined();
           expect(file.path).toBeDefined();
           break;
@@ -832,8 +957,8 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
     // ── URL methods ───────────────────────────────────────────────────────────
 
     describe("URL methods", () => {
-      it("publicUrl() returns a string or null", () => {
-        const url = bucket.file("photo.jpg").publicUrl();
+      it("publicUrl() returns a string or null", async () => {
+        const url = await bucket.file("photo.jpg").publicUrl();
         expect(url === null || typeof url === "string").toBe(true);
       });
 
@@ -851,18 +976,6 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         const url = await bucket
           .file("photo.jpg")
           .signedUrl({ expires: "30min" });
-        expect(url === null || typeof url === "string").toBe(true);
-      });
-
-      it("presign() returns a string or null (alias of signedUrl)", async () => {
-        const url = await bucket.file("photo.jpg").presign();
-        expect(url === null || typeof url === "string").toBe(true);
-      });
-
-      it("presign({ method: 'PUT' }) returns a string or null (alias of uploadUrl)", async () => {
-        const url = await bucket
-          .file("photo.jpg")
-          .presign({ method: "PUT", expiresIn: 3600 });
         expect(url === null || typeof url === "string").toBe(true);
       });
     });
@@ -939,10 +1052,10 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
           createGzip(),
           target.nodeWritable() as NodeJS.WritableStream,
         );
-        expect((await source.info()).size).toBe(447);
+        expect((await source.info())!.size).toBe(447);
         const info = await target.info();
-        expect(info.type).toBe("application/gzip");
-        expect(info.size).toBe(281);
+        expect(info!.type).toBe("application/gzip");
+        expect(info!.size).toBe(281);
       });
     });
   });

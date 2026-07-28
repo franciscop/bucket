@@ -27,43 +27,28 @@ const target = b2.file("newfile.txt").writable();
 await source.pipeTo(target);
 ```
 
-## API
+## Bucket
 
-There are two main APIs, the `Bucket` one and the `BucketFile` one:
+The instance attached to a single bucket, created with the `Bucket()` creator each service exports:
 
-- `Bucket()` initialize the instance attached to a single bucket.
-  - `.info()`: display the information about the current bucket.
-  - `.list(filter?)`: return the list of all files in the bucket.
-  - `.scan(filter?)`: async generator that lazily yields files (streams pages).
-  - `.count(filter?)`: return the Number of items in the bucket.
-  - `.remove(filter?)`: delete all files matching the filter, returning them.
-  - `.file(path)`: creates a BucketFile instance for the given path
-  - `.folder(path)`: a Bucket scoped to a path prefix (see below).
-- `BucketFile` instance (created with `.file()`, or each item in the `list()`). It has `id`, `name` and `path` already:
-  - `.info()`: returns some more details of the file, like `date` (creation time), `type` (mime type) and `size`.
-  - `.exists()`: checks whether a file exists, returning true if it does.
-  - `.text()`: read the contents of the file as a string
-  - `.json()`: read the contents of the file as parsed JSON
-  - `.arrayBuffer()`: read the contents of the file as an ArrayBuffer
-  - `.blob()`: read the contents of the file as a Blob
-  - `.bytes()`: read the contents of the file as a Uint8Array
-  - `.slice(start, end?)`: a read-only view of a byte range (like `Blob.slice()`); every read method above honours it. See [file.slice()](#fileslice).
-  - `.write(body, options?)`: writes content to the file. Accepts strings, Buffers, Blobs, streams, or another file object. Content-type is auto-detected from the file extension; pass `options` to override it or set `cacheControl`, `disposition`, and `metadata`.
-  - `.copyTo(path)`: creates a duplicate of a file with a different name (keeping the original).
-  - `.moveTo(path)`: change the location of the file (removing the original).
-  - `.rename(name)`: change the name of the file enforcing it remains in the same folder (removing the original).
-  - `.remove()`: deletes the file completely (alias: `.unlink()`).
-  - `.stream()`: returns a web `ReadableStream` that can be piped to a writable stream.
-  - `.nodeReadable()`: returns a Node.js `Readable` stream for use with `pipeline()` etc.
-  - `.writable()`: returns a web `WritableStream` that can receive data from a readable stream.
-  - `.nodeWritable()`: returns a Node.js `Writable` stream for use with `pipeline()` etc.
-  - `.publicUrl()`: the permanent public URL of the file (or `null`).
-  - `.signedUrl(opts)` / `.uploadUrl(opts)`: a time-limited download / upload URL.
-  - `.presign(opts?)`: Bun-style alias of the two above (`.uploadUrl()` for `{ method: "PUT" }`, otherwise `.signedUrl()`).
+- `.info()`: display the information about the current bucket.
+- `.list(filter?)`: return the list of all files in the bucket.
+- `.scan(filter?)`: async generator that lazily yields files (streams pages).
+- `.count(filter?)`: return the Number of items in the bucket.
+- `.remove(filter?)`: delete all files matching the filter, returning them.
+- `.file(path)`: creates a BucketFile instance for the given path
+- `.folder(path)`: a Bucket scoped to a path prefix (see below).
 
 ### Bucket()
 
-Each service exports a `Bucket` class. The first argument is always the bucket name; the second is a config object with credentials.
+Creates the instance attached to a single bucket; each service exports its own:
+
+```js
+S3("my-bucket-name", { id, secret, region });
+S3(); // bucket name and credentials from env vars
+```
+
+The first argument is always the bucket name; the second is a config object with credentials. All fields fall back to environment variables, so in most setups you can omit them entirely. See [Services](#services) for the env var names and options of each provider.
 
 ```js
 import S3 from "bucket/s3";
@@ -73,20 +58,18 @@ const bucket = S3("my-bucket-name", {
   secret: "secret-access-key",
   region: "us-east-1",
 });
+await bucket.file("hello.txt").write("hello world");
 ```
-
-All credential fields fall back to environment variables, so in most setups you can omit the config entirely:
-
-```js
-// Reads AWS_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION from process.env
-const bucket = S3();
-```
-
-See the [Services](#services) section for the env var names and options for each provider.
 
 ### bucket.info()
 
-Returns `Promise<BucketInfo>` with basic information about the bucket:
+Retrieves basic information about the bucket:
+
+```js
+await bucket.info();
+```
+
+Every provider resolves to the same `BucketInfo` shape: the provider `type`, the bucket `name`, its base `url`, and the account or credential `id`.
 
 ```js
 const info = await bucket.info();
@@ -100,12 +83,18 @@ const info = await bucket.info();
 
 ### bucket.list()
 
-Returns `Promise<BucketFile[]>` with all files in the bucket. Accepts an optional `RegExp` to filter by pattern; to scope to a path prefix, use [`.folder()`](#bucketfolder).
+Returns all the files in the bucket as an array of `BucketFile`:
 
 ```js
-const all = await bucket.list();
-const images = await bucket.list(/\.jpe?g$/);
-const logs = await bucket.folder("logs").list(); // everything under logs/
+await bucket.list();
+await bucket.list(/\.jpe?g$/);
+```
+
+Accepts an optional `RegExp` to filter by pattern; to scope to a path prefix, use [`.folder()`](#bucketfolder), whose filters match below the folder.
+
+```js
+const logs = await bucket.folder("logs").list(/\.log$/);
+console.log(logs.map((file) => file.path)); // ["logs/access.log", ...]
 ```
 
 You can also iterate the bucket directly with `for await`, which streams pages lazily and stops fetching if you `break`:
@@ -118,9 +107,21 @@ for await (const file of bucket) {
 }
 ```
 
+#### Related methods
+
+- [`.scan(filter?)`](#bucketscan): stream the listing page by page instead of buffering it.
+- [`.count(filter?)`](#bucketcount): just the number of matches.
+
 ### bucket.scan()
 
-Returns an async generator that yields files, fetching provider pages as they're consumed instead of buffering the whole listing. Unlike the bare `for await (const f of bucket)` form it accepts an optional `RegExp` filter, so you can filter while streaming, which is ideal for very large buckets or when you may stop early:
+Lazily yields the files in the bucket, fetching provider pages as they are consumed:
+
+```js
+for await (const file of bucket.scan()) { ... }
+for await (const file of bucket.scan(/\.log$/)) { ... }
+```
+
+Unlike the bare `for await (const f of bucket)` form it accepts an optional `RegExp` filter, so you can filter while streaming. That is ideal for very large buckets or when you may stop early; `list()` is simply `scan()` collected into an array, and the bare iteration delegates to it.
 
 ```js
 for await (const file of bucket.scan(/\.log$/)) {
@@ -128,45 +129,92 @@ for await (const file of bucket.scan(/\.log$/)) {
 }
 ```
 
-`list()` is simply `scan()` collected into an array, and `for await (const f of bucket)` delegates to it.
+#### Related methods
+
+- [`.list(filter?)`](#bucketlist): the whole listing as an array.
 
 ### bucket.count()
 
-Returns `Promise<number>` with the total number of files. Accepts the same filter as `.list()`.
+Counts the files in the bucket:
 
 ```js
-const total = await bucket.count();
-const images = await bucket.count(/\.jpe?g$/);
+await bucket.count();
+await bucket.count(/\.jpe?g$/);
 ```
+
+Accepts the same filter as `.list()`.
+
+```js
+const images = await bucket.count(/\.jpe?g$/);
+console.log(`There are ${images} images`);
+```
+
+#### Related methods
+
+- [`.list(filter?)`](#bucketlist): the matching files themselves.
 
 ### bucket.remove()
 
-Deletes every file matching the optional `RegExp` and returns the deleted `BucketFile` objects; with no filter it empties the bucket (or the folder, when called on one). On S3 and R2 the deletion is batched into as few requests as possible.
+Deletes every file matching the filter, returning the deleted files:
 
 ```js
-await bucket.remove(/\.tmp$/); // delete every .tmp file
-const deleted = await bucket.folder("cache").remove(); // delete everything under cache/
+await bucket.remove();
+await bucket.remove(/\.tmp$/);
+```
+
+With no filter it empties the bucket (or the folder, when called on one). On S3 and R2 the deletion is batched into as few requests as possible.
+
+```js
+const deleted = await bucket.folder("cache").remove(); // everything under cache/
 console.log(`removed ${deleted.length} files`);
 ```
 
+#### Related methods
+
+- [`file.remove()`](#fileremove): delete a single file.
+
 ### bucket.file()
 
-Returns a `BucketFile` handle for the given path. It mirrors the `Blob` read API (`.text()`, `.json()`, `.arrayBuffer()`, `.bytes()`, `.blob()`, `.stream()`), but it is a **lazy remote handle, not a `Blob` itself**, so to hand it to `FormData`, `Response`, or `fetch`, materialize it first with `await file.blob()` (buffered) or `file.stream()` (streaming). See [Guides](#guides). This is a synchronous operation. It does not make any network requests or check whether the file exists.
+Creates a `BucketFile` handle for the given path, synchronously and without any network requests:
 
 ```js
-const file = bucket.file("photos/avatar.jpg");
-console.log(await file.text()); // or .json(), or .stream(), etc
+bucket.file("hello.txt");
+bucket.file("photos/avatar.jpg");
 ```
 
-The returned object has three properties set immediately:
+The handle mirrors the `Blob` read API (`.text()`, `.json()`, `.arrayBuffer()`, `.bytes()`, `.blob()`, `.stream()`), but it is a **lazy remote handle, not a `Blob` itself**, so to hand it to `FormData`, `Response`, or `fetch`, materialize it first with `await file.blob()` (buffered) or `file.stream()` (streaming). See [Guides](#guides). It does not check whether the file exists, and it has two properties set immediately:
 
-- `id`: a unique identifier for the file (the path for S3/R2/B2, a hash for the filesystem)
 - `name`: the filename without the directory, e.g. `"avatar.jpg"`
 - `path`: the full path within the bucket, e.g. `"photos/avatar.jpg"`
 
+```js
+const file = bucket.file("photos/avatar.jpg");
+console.log(file.name); // "avatar.jpg"
+console.log(await file.text()); // or .json(), or .stream(), etc
+```
+
+Paths are resolved within the bucket: `.` and `..` segments are applied and a leading `/` means the bucket root. The resolved path must stay inside the bucket (or the folder it is called on); anything else throws a `BucketError` with code `"INVALID_PATH"`:
+
+```js
+bucket.file("photos/../a.txt"); // same file as bucket.file("a.txt")
+bucket.file("/a.txt"); // leading "/" means the bucket root
+bucket.file("../outside.txt"); // throws BucketError INVALID_PATH
+```
+
+#### Related methods
+
+- [`.folder(path)`](#bucketfolder): scope a whole bucket to a prefix instead.
+
 ### bucket.folder()
 
-Returns a `Bucket` scoped to a path prefix. It behaves like any other bucket, but every operation is confined to that folder: `.file()` resolves names inside it, and `.list()`, `.count()`, `.remove()`, and iteration only see files within it. Folders nest, and the prefix is normalized (`"./public/"` and `"public"` are equivalent). This is synchronous and makes no network requests.
+Returns a `Bucket` scoped to a path prefix, synchronously and without any network requests:
+
+```js
+bucket.folder("public");
+bucket.folder("../"); // navigate to the parent folder
+```
+
+It behaves like any other bucket, but every operation is confined to that folder: `.file()` resolves names inside it, and `.list()`, `.count()`, `.remove()`, and iteration only see files within it. Folders nest, and the prefix is normalized (`"./public/"` and `"public"` are equivalent). `folder("../")` navigates to the parent folder and `folder("/")` returns to the bucket root; navigation is bounded by the bucket root, so a path that would climb above it throws a `BucketError` with code `"INVALID_PATH"`.
 
 ```js
 const assets = bucket.folder("public");
@@ -174,71 +222,152 @@ await assets.file("favicon.ico").write(icon); // stored at "public/favicon.ico"
 const styles = await assets.folder("css").list(); // only files under "public/css/"
 ```
 
-File paths stay absolute, relative to the bucket root, so `assets.file("favicon.ico").path` is `"public/favicon.ico"`. A `RegExp` passed to a folder's `.list()` is matched against the path below the folder, so `assets.list(/^favicon/)` matches `public/favicon.ico`.
+File paths are always the full path from the bucket root, on every provider including the filesystem, so `assets.file("favicon.ico").path` is `"public/favicon.ico"`. A `RegExp` passed to a folder's `.list()` is matched against the path below the folder, so `assets.list(/^favicon/)` matches `public/favicon.ico`.
+
+#### Related methods
+
+- [`.file(path)`](#bucketfile): a handle to a single file.
+- [`.list(filter?)`](#bucketlist): list the folder's contents.
+
+## BucketFile
+
+The file handle, returned by `bucket.file()` and as every item of `list()` and `scan()`. It is named `BucketFile` to differentiate it from the browser's native `File` object. It has `name` and `path` set synchronously, and everything else is a method:
+
+- **Info**
+  - `.name`: the filename without the directory.
+  - `.path`: the full path within the bucket.
+  - `.info()`: returns the file's metadata (`size`, `type`, `modified`, `version`, `metadata`), or `null` if the file does not exist.
+  - `.exists()`: checks whether a file exists, returning `true` if it does.
+
+- **Read**
+  - `.text()`: read the contents of the file as a string.
+  - `.json()`: read the contents of the file as parsed JSON.
+  - `.arrayBuffer()`: read the contents of the file as an `ArrayBuffer`.
+  - `.blob()`: read the contents of the file as a `Blob`.
+  - `.bytes()`: read the contents of the file as a `Uint8Array`.
+  - `.slice(start, end?)`: a read-only view of a byte range.
+  - `.stream()`: returns a web `ReadableStream`.
+  - `.nodeReadable()`: returns a Node.js `Readable` stream.
+
+- **Write**
+  - `.write(body, options?)`: writes content to the file.
+  - `.copyTo(path)`: creates a duplicate of the file with a different name.
+  - `.moveTo(path)`: moves the file to a different location.
+  - `.rename(name)`: renames the file within the same folder.
+  - `.remove()`: deletes the file (alias: `.unlink()`).
+  - `.writable()`: returns a web `WritableStream`.
+  - `.nodeWritable()`: returns a Node.js `Writable` stream.
+
+- **URLs**
+  - `.publicUrl()`: the permanent public URL of the file (or `null`).
+  - `.signedUrl(opts)`: a time-limited download URL.
+  - `.uploadUrl(opts)`: a time-limited upload URL.
+
+URL availability per provider:
+
+|           | `publicUrl()` | `signedUrl()` | `uploadUrl()` |
+| --------- | :-----------: | :-----------: | :-----------: |
+| **S3**    |      ✅       |      ✅       |      ✅       |
+| **R2**    |      ❌       |      ✅       |      ✅       |
+| **GCS**   |      ✅       |      ✅       |      ✅       |
+| **Azure** |      ✅       |      ✅       |      ✅       |
+| **B2**    |      ✅       |      ✅       |      ❌       |
+| **FS**    |      ❌       |      ❌       |      ❌       |
+
+- ✅: returns a URL. For `publicUrl()` it only answers if the bucket or object is publicly readable, and GCS/Azure signing needs key credentials (`null` with anonymous GCS or Azure managed identity).
+- ❌: always returns `null`: R2's storage endpoint is never public (public access goes through an `r2.dev` or custom domain), B2 uploads require auth headers so a standalone upload URL cannot exist (use `.write()` instead), and the local filesystem has no URLs of any kind.
 
 ### file.info()
 
-Returns a `Promise<FileInfo>` with metadata about the file:
+Retrieves the file's metadata, or `null` when the file does not exist:
 
 ```js
-const info = await bucket.file("photo.jpg").info();
+await bucket.file("photo.jpg").info();
+// null, or:
 // {
-//   id: "photo.jpg",
-//   name: "photo.jpg",
-//   path: "photo.jpg",
-//   exists: true,
-//   type: "image/jpeg",
-//   size: 175888,
-//   date: Date,
-//   url: "https://...",  // null for local filesystem
+//   size: 175888,        // bytes; respects .slice() ranges
+//   type: "image/jpeg",  // MIME type, null when unknown
+//   modified: Date,      // when the content was last written
+//   version: "...",      // provider version id, or null (see below)
 //   metadata: {}         // custom metadata, lowercase keys
 // }
 ```
 
-If the file does not exist, `exists` is `false`, `type` is `null`, `size` is `0`, `date`/`url` are `null`, and `metadata` is `{}`.
+Only a missing file resolves to `null`; other failures, like permissions or network errors, still throw. The `version` field is the provider's version identifier: the fileId on Backblaze, `generation` on GCS, `VersionId` on S3 and Azure when the bucket has versioning enabled, and `null` otherwise (always `null` for the local filesystem). The `metadata` field holds the custom key-value metadata set with `write(..., { metadata })`; keys are normalized to lowercase on both write and read so they round-trip consistently, and the local filesystem has no metadata store, so it always returns `{}`.
 
-The `url` field is the file's public URL when it exists (the canonical address; whether it is actually reachable depends on the bucket or object being public). It is `null` for the local filesystem, and `null` when the file does not exist.
+```js
+const info = await bucket.file("photo.jpg").info();
+if (!info) throw new Error("photo.jpg is missing");
+console.log(`${info.size} bytes of ${info.type}, written ${info.modified}`);
+```
 
-The `metadata` field holds the custom key-value metadata set with `write(..., { metadata })`. Keys are normalized to lowercase on both write and read so they round-trip consistently. The local filesystem has no metadata store, so it always returns `{}`.
+#### Related methods
+
+- [`.exists()`](#fileexists): just the boolean.
 
 ### file.exists()
 
-Returns `Promise<boolean>`. Shorthand for `(await file.info()).exists`.
+Checks whether the file exists:
+
+```js
+await bucket.file("photo.jpg").exists(); // true or false
+```
+
+Shorthand for `(await file.info()) !== null`.
 
 ```js
 const photo = bucket.file("photo.jpg");
 if (await photo.exists()) { ... }
 ```
 
+#### Related methods
+
+- [`.info()`](#fileinfo): the full metadata.
+
 ### file.text()
 
-Returns `Promise<string>` with the full contents of the file decoded as UTF-8. Matches the `Blob`/`Response` API.
+Reads the full contents of the file, decoded as UTF-8:
 
 ```js
-const content = await bucket.file("readme.txt").text();
+await bucket.file("readme.txt").text();
 ```
+
+Matches the `Blob`/`Response` API. Throws `NOT_FOUND` if the file does not exist.
 
 ### file.json()
 
-Returns `Promise<unknown>` with the file contents parsed as JSON. Matches the `Blob`/`Response` API.
+Reads the file contents parsed as JSON:
 
 ```js
-const data = await bucket.file("config.json").json();
+await bucket.file("config.json").json();
 ```
+
+Matches the `Blob`/`Response` API. Throws `NOT_FOUND` if the file does not exist.
 
 ### file.arrayBuffer()
 
-Returns `Promise<ArrayBuffer>` with the raw binary contents. Works in any runtime (see [Which runtimes are supported?](#which-runtimes-are-supported)). Matches the `Blob`/`Response` API.
+Reads the raw binary contents as an `ArrayBuffer`:
+
+```js
+await bucket.file("photo.jpg").arrayBuffer();
+```
+
+Works in any runtime (see [Which runtimes are supported?](#which-runtimes-are-supported)). Matches the `Blob`/`Response` API.
 
 ```js
 const buf = await bucket.file("photo.jpg").arrayBuffer();
-// Node.js: Buffer.from(buf)
-// Everywhere: new Uint8Array(buf)
+const data = new Uint8Array(buf); // or Buffer.from(buf) in Node.js
 ```
 
 ### file.blob()
 
-Returns `Promise<Blob>` with the file contents as a `Blob`. Useful for passing to `FormData`, `Response`, or browser APIs.
+Reads the file contents as a `Blob`:
+
+```js
+await bucket.file("photo.jpg").blob();
+```
+
+Useful for passing to `FormData`, `Response`, or browser APIs; the Blob carries the file's content-type.
 
 ```js
 const blob = await bucket.file("photo.jpg").blob();
@@ -248,22 +377,30 @@ formData.append("photo", blob, "photo.jpg");
 
 ### file.bytes()
 
-Returns `Promise<Uint8Array>` with the raw binary contents as a typed array. Works in any runtime. Matches the `Blob`/`Response` API.
+Reads the raw binary contents as a `Uint8Array`:
 
 ```js
-const bytes = await bucket.file("photo.jpg").bytes();
+await bucket.file("photo.jpg").bytes();
 ```
+
+Works in any runtime. Matches the `Blob`/`Response` API.
 
 ### file.slice()
 
-Returns a **read-only view of a byte range**, synchronously, like [`Blob.slice()`](https://developer.mozilla.org/docs/Web/API/Blob/slice): `end` is exclusive and defaults to the end of the file. It returns a `BucketFile`, so every read method (`.text()`, `.bytes()`, `.arrayBuffer()`, `.blob()`, `.stream()`, `.nodeReadable()`) reads only that range. Remote providers translate it to an HTTP `Range` request; the filesystem reads only those bytes. Ranges are clamped to the file size and compose (`file.slice(0, 100).slice(10, 20)`).
+Returns a **read-only view of a byte range** of the file, synchronously:
 
 ```js
-const head = await bucket.file("big.csv").slice(0, 1024).bytes(); // first 1 KiB
-const rest = bucket.file("big.csv").slice(1024).stream(); // from 1 KiB to EOF
+bucket.file("big.csv").slice(0, 1024); // first 1 KiB
+bucket.file("big.csv").slice(1024); // from 1 KiB to EOF
 ```
 
-`info().size` on a slice reports the **clamped slice length** (the bytes this view yields), while every other field (`type`, `date`, `exists`, `url`) still describes the underlying file:
+It works like [`Blob.slice()`](https://developer.mozilla.org/docs/Web/API/Blob/slice): `end` is exclusive and defaults to the end of the file. It returns a `BucketFile`, so every read method (`.text()`, `.bytes()`, `.arrayBuffer()`, `.blob()`, `.stream()`, `.nodeReadable()`) reads only that range. Remote providers translate it to an HTTP `Range` request; the filesystem reads only those bytes. Ranges are clamped to the file size and compose (`file.slice(0, 100).slice(10, 20)`).
+
+```js
+const head = await bucket.file("big.csv").slice(0, 1024).bytes();
+```
+
+`info().size` on a slice reports the **clamped slice length** (the bytes this view yields), while every other field (`type`, `modified`, `version`, `metadata`) still describes the underlying file:
 
 ```js
 (await bucket.file("data.txt").slice(0, 4).info()).size; // 4
@@ -273,7 +410,9 @@ This makes range serving a one-liner, e.g. answering an HTTP `Range` request:
 
 ```js
 const [start, end] = parseRange(req.headers.get("range")); // inclusive
-const { size, type } = await file.info();
+const info = await file.info();
+if (!info) return new Response("Not Found", { status: 404 });
+const { size, type } = info;
 return new Response(file.slice(start, end + 1).stream(), {
   status: 206,
   headers: {
@@ -286,22 +425,17 @@ return new Response(file.slice(start, end + 1).stream(), {
 
 ### file.write(body, options?)
 
-Writes content to the file. If the file already exists it is overwritten. Intermediate directories are created automatically. Accepts:
-
-- `string`
-- `Buffer` / `Uint8Array`
-- `Blob`
-- `ReadableStream` (web)
-- `Readable` (Node.js)
-- Another `BucketFile` instance (copies the content)
+Writes content to the file, replacing anything already there:
 
 ```js
-await bucket.file("hello.txt").write("hello world");
-await bucket.file("data.bin").write(new Uint8Array([1, 2, 3]));
-await bucket.file("copy.txt").write(bucket.file("original.txt"));
+await file.write("hello world"); // string
+await file.write(new Uint8Array([1, 2, 3])); // Uint8Array or Buffer
+await file.write(blob); // Blob
+await file.write(stream); // web ReadableStream or Node.js Readable
+await file.write(bucket.file("original.txt")); // another BucketFile (copies it)
 ```
 
-**Content-type** is inferred automatically from the file extension (e.g. `.jpg` → `image/jpeg`, `.json` → `application/json`). You can override it and set other metadata through the optional second argument:
+Intermediate directories are created automatically. **Content-type** is inferred from the file extension (e.g. `.jpg` → `image/jpeg`, `.json` → `application/json`). You can override it and set other metadata through the optional second argument:
 
 | Option         | Type                     | Description                                                                |
 | -------------- | ------------------------ | -------------------------------------------------------------------------- |
@@ -326,45 +460,100 @@ await bucket.file("image.jpg").write(data, {
 Creates a duplicate of the file at a new path, keeping the original:
 
 ```js
-await bucket.file("photo.jpg").copyTo("backup/photo.jpg");
+await file.copyTo("backup/photo.jpg");
+await file.copyTo("../published/"); // trailing "/" keeps the file name
+await file.copyTo(otherBucket.file("photo.jpg")); // into another bucket
 ```
+
+The string destination resolves against the bucket or folder the file came from: `"../"` navigates toward the bucket root, a leading `/` means the bucket root, and a trailing `/` copies into that folder keeping the file name. Destinations outside the bucket throw a `BucketError` with code `"INVALID_PATH"`. Pass a `BucketFile` instead of a string to copy into another bucket, even one from a different provider.
+
+```js
+const doc = bucket.folder("drafts").file("doc.md");
+await doc.copyTo("copy.md"); // drafts/copy.md
+await doc.copyTo("../published/"); // published/doc.md
+```
+
+#### Related methods
+
+- [`.moveTo(path)`](#filemovetopath): same, removing the original.
+- [`.rename(name)`](#filerenamename): change only the name.
 
 ### file.moveTo(path)
 
 Moves the file to a new path, removing the original:
 
 ```js
+await file.moveTo("photos/avatar.jpg");
+await file.moveTo(otherBucket.file("avatar.jpg")); // into another bucket
+```
+
+The destination follows the same rules as [`copyTo()`](#filecopytopath).
+
+```js
 await bucket.file("tmp/upload.jpg").moveTo("photos/avatar.jpg");
 ```
 
+#### Related methods
+
+- [`.copyTo(path)`](#filecopytopath): same, keeping the original.
+
 ### file.rename(name)
 
-Renames the file within the same directory. Throws if `name` contains a `/`, use `.moveTo()` to change directories.
+Renames the file within the same directory:
 
 ```js
 await bucket.file("photos/old-name.jpg").rename("new-name.jpg");
+// now at "photos/new-name.jpg"
 ```
+
+Throws if `name` is empty, `"."`, `".."`, or contains a `/`; use `.moveTo()` to change directories.
+
+#### Related methods
+
+- [`.moveTo(path)`](#filemovetopath): move anywhere in the bucket.
 
 ### file.remove()
 
-Deletes the file.
+Deletes the file:
 
 ```js
 await bucket.file("temp.txt").remove();
 ```
 
+Alias: `.unlink()`, matching Bun's `S3File`.
+
+#### Related methods
+
+- [`bucket.remove(filter?)`](#bucketremove): delete many files at once.
+
 ### file.stream()
 
-Returns a web `ReadableStream<Uint8Array>` synchronously. Works in any runtime. Matches `Blob.stream()`.
+Returns a web `ReadableStream<Uint8Array>` of the file contents, synchronously:
+
+```js
+bucket.file("video.mp4").stream();
+```
+
+Works in any runtime and matches `Blob.stream()`, so it plugs straight into `Response`, `pipeTo()`, and other web APIs.
 
 ```js
 const stream = bucket.file("video.mp4").stream();
-return new Response(stream); // e.g. stream it straight to an HTTP response
+return new Response(stream); // stream it straight to an HTTP response
 ```
+
+#### Related methods
+
+- [`.nodeReadable()`](#filenodereadable): the Node.js flavor.
 
 ### file.nodeReadable()
 
-Returns a Node.js `Readable` stream. Use this with Node.js `pipeline()` or any library that expects a Node stream.
+Returns a Node.js `Readable` stream of the file contents:
+
+```js
+bucket.file("data.csv").nodeReadable();
+```
+
+Use it with Node.js `pipeline()` or any library that expects a Node stream.
 
 ```js
 import { pipeline } from "node:stream/promises";
@@ -377,18 +566,38 @@ await pipeline(
 );
 ```
 
+#### Related methods
+
+- [`.stream()`](#filestream): the web flavor.
+
 ### file.writable()
 
-Returns a web `WritableStream<Uint8Array>` synchronously. Use with `.pipeTo()`.
+Returns a web `WritableStream<Uint8Array>` that writes to the file, synchronously:
+
+```js
+bucket.file("output.txt").writable();
+```
+
+Use it as the target of `.pipeTo()` from any web `ReadableStream`.
 
 ```js
 const stream = bucket.file("output.txt").writable();
 await readableStream.pipeTo(stream);
 ```
 
+#### Related methods
+
+- [`.nodeWritable()`](#filenodewritable): the Node.js flavor.
+
 ### file.nodeWritable()
 
-Returns a Node.js `Writable` stream. Use with Node.js `pipeline()` or any library that writes to a Node stream.
+Returns a Node.js `Writable` stream that writes to the file:
+
+```js
+bucket.file("output.txt").nodeWritable();
+```
+
+Use it with Node.js `pipeline()` or any library that writes to a Node stream.
 
 ```js
 import { pipeline } from "node:stream/promises";
@@ -398,6 +607,78 @@ await pipeline(
   bucket.file("output.txt").nodeWritable(),
 );
 ```
+
+#### Related methods
+
+- [`.writable()`](#filewritable): the web flavor.
+
+### file.publicUrl()
+
+Retrieves the file's permanent, unauthenticated URL, or `null`:
+
+```js
+await bucket.file("logo.png").publicUrl();
+// "https://my-bucket.s3.us-east-1.amazonaws.com/logo.png" or null
+```
+
+The URL is the file's canonical address; whether it actually answers depends on the bucket or object being publicly readable. It is `null` when the provider has no public URL at all: always on the local filesystem, and on R2, whose storage endpoint rejects unsigned requests (public R2 access goes through an `r2.dev` or custom domain). See the availability table at the top of this chapter for a per-provider summary.
+
+```js
+// Serve a public URL when available, falling back to a temporary signed one:
+const src =
+  (await file.publicUrl()) ?? (await file.signedUrl({ expires: "1h" }));
+```
+
+#### Related methods
+
+- [`.signedUrl(opts)`](#filesignedurlopts): a time-limited URL for private files.
+
+### file.signedUrl(opts)
+
+Creates a time-limited signed URL to download the file:
+
+```js
+await file.signedUrl({ expires: 3600 }); // seconds
+await file.signedUrl({ expires: "15min" }); // or a duration string
+```
+
+The URL is cryptographically signed with your credentials and grants anyone holding it read access until it expires, so a private object can be shared without opening the bucket. Returns `null` when the credentials cannot sign (GCS without a service-account key, Azure with managed identity) and always on the local filesystem.
+
+```js
+const url = await bucket.file("invoice.pdf").signedUrl({ expires: "15min" });
+await sendEmail({ to: user.email, link: url });
+```
+
+#### Related methods
+
+- [`.uploadUrl(opts)`](#fileuploadurlopts): the same for uploads.
+- [`.publicUrl()`](#filepublicurl): the permanent address of public files.
+
+### file.uploadUrl(opts)
+
+Creates a time-limited signed URL that accepts a `PUT` upload to this path:
+
+```js
+await file.uploadUrl({ expires: 300 }); // seconds
+await file.uploadUrl({ expires: "5min" }); // or a duration string
+```
+
+It lets a browser upload directly to the bucket without ever seeing your credentials. Same `expires` and `null` rules as `signedUrl()`, plus `null` on Backblaze, whose API has no standalone upload URLs (use `.write()` instead).
+
+```js
+// Server: hand the browser a one-off upload address
+const url = await bucket.file(`uploads/${crypto.randomUUID()}.jpg`).uploadUrl({
+  expires: "5min",
+});
+
+// Browser: upload straight to the bucket
+await fetch(url, { method: "PUT", body: fileInput.files[0] });
+```
+
+#### Related methods
+
+- [`.signedUrl(opts)`](#filesignedurlopts): the same for downloads.
+- [`.write(body)`](#filewritebody-options): upload through your server instead.
 
 ## Services
 
@@ -414,6 +695,8 @@ const bucket = FileSystem("./my-folder");
 ```
 
 The path is resolved relative to the current working directory. No credentials needed.
+
+Paths are bucket-relative, exactly like the remote providers: a leading `/` means the bucket root (the folder above), never the filesystem root, and `file.path` is the path within the bucket. The real location on disk is `join(root, file.path)`. Nothing ever resolves outside the root folder; escapes throw a `BucketError` with code `"INVALID_PATH"`. The check is lexical: a symlink inside the folder that points outside is not caught.
 
 ### Backblaze B2
 
@@ -742,7 +1025,7 @@ import type { Bucket, BucketFile, FileInfo } from "bucket/s3";
 
 const bucket: Bucket = S3("my-bucket");
 const file: BucketFile = bucket.file("photo.jpg");
-const info: FileInfo = await file.info();
+const info: FileInfo | null = await file.info();
 ```
 
 ### Which runtimes are supported?
@@ -753,15 +1036,15 @@ On Cloudflare Workers, use a remote provider with the web helpers (`.stream()`, 
 
 ### What happens when a file doesn't exist?
 
-`.info()` and `.exists()` never throw: they return `exists: false` and `false` respectively. All other read methods (`.text()`, `.json()`, `.arrayBuffer()`, etc.) will throw if the file doesn't exist.
+`.info()` and `.exists()` never throw for a missing file: they return `null` and `false` respectively. All other read methods (`.text()`, `.json()`, `.arrayBuffer()`, etc.) will throw if the file doesn't exist.
 
 ### What happens on a network or auth error?
 
 Methods throw a `BucketError` (a subclass of `Error`). Alongside the human-readable `message` it carries structured fields you can branch on:
 
-- `code`: a normalized, uppercase string, one of `"NOT_FOUND" | "FORBIDDEN" | "UNAUTHORIZED" | "CONFLICT" | "UNKNOWN"`. It means the same thing across every provider, including the filesystem.
+- `code`: a normalized, uppercase string, one of `"NOT_FOUND" | "FORBIDDEN" | "UNAUTHORIZED" | "CONFLICT" | "INVALID_PATH" | "UNKNOWN"`. It means the same thing across every provider, including the filesystem.
 - `status`: the raw HTTP status, when the failure came from an HTTP response (absent for the filesystem).
-- `provider`: which backend produced it (e.g. `"S3"`).
+- `provider`: which backend produced it (e.g. `"S3"`). Absent for `"INVALID_PATH"`, which is thrown before any provider is involved.
 
 There is no automatic retry.
 
@@ -800,51 +1083,4 @@ await pipeline(
   sharp().resize(300),
   bucket.file("thumb.jpg").nodeWritable(),
 );
-```
-
-## Testing
-
-```bash
-bun test                 # mocked suites, signer oracles, FileSystem (no network)
-EXPENSIVE=true bun test  # also the cloud providers, when credentials are present
-```
-
-The test suite has three layers, the first two of which need **no credentials**:
-
-1. **Mocked unit tests** (`*/index.test.ts`): exercise each provider's request/response handling with a stubbed `fetch`.
-2. **Signer oracle tests** (`lib/*.test.ts`): prove the request signing is correct without hitting any service:
-   - S3/R2 AWS Signature V4 is cross-checked against [`aws4`](https://www.npmjs.com/package/aws4) (the reference signer): identical signature, byte for byte.
-   - GCS V4 signatures are verified cryptographically against the public key.
-3. **Integration tests** (`test/index.test.ts`): the full API against a real backend. FileSystem always runs; the cloud providers (S3, R2, GCS, Azure, B2) are opt-in and run only with `EXPENSIVE=true` set, plus their credentials (or an emulator endpoint). A plain `bun test` stays local and makes no network calls.
-
-### Emulators
-
-S3, R2, GCS and Azure can be tested end-to-end against local emulators, no Docker required. MinIO and Azurite **validate request signatures**, so a green run proves the signer against a real server.
-
-The emulators run as native binaries. Azurite ships as a devDependency (installed by `bun install`); MinIO (S3 + R2) and fake-gcs-server (GCS) are standalone binaries that need to be on your `PATH`:
-
-```bash
-brew install minio fake-gcs-server   # macOS; see each project's docs for other OSes
-```
-
-Then a single command starts all three, seeds the buckets, runs the suite, and tears everything down:
-
-```bash
-npm run test:emulators
-```
-
-Configuration lives in [`.env.emulators`](.env.emulators) (well-known emulator defaults, no secrets). To run against one provider only, start the emulators yourself and filter with `BUCKET`:
-
-```bash
-npx azurite-blob --silent --location /tmp/azurite &
-bun run emulators:setup
-BUCKET=Azure bun --env-file=.env.emulators test test/index.test.ts
-```
-
-### Real credentials
-
-Copy `.env.sample` to `.env` and fill in the providers you want to exercise, then opt in with `EXPENSIVE=true`; the buckets whose credentials are present are picked up automatically.
-
-```bash
-EXPENSIVE=true bun test
 ```

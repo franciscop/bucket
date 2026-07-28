@@ -9,6 +9,7 @@ import {
 } from "../lib/signGCS.ts";
 import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
+import { destKey } from "../lib/prefix.ts";
 import {
   composeRange,
   isEmptyRange,
@@ -28,6 +29,7 @@ export interface GCSObjectMeta {
   contentType: string;
   size: string;
   updated: string;
+  generation?: string;
   mediaLink: string;
   metadata?: Record<string, string>;
 }
@@ -35,13 +37,15 @@ export interface GCSObjectMeta {
 export type GCSAuth = { clientEmail: string; privateKey: string } | null;
 
 export class GCSFile implements BucketFile {
-  id: string;
   name: string;
   path: string;
   #bucket: string;
   #authPromise: Promise<GCSAuth>;
   #url: string;
   #anonymous: boolean;
+  // Folder prefix of the bucket that created this file; copyTo()/moveTo()
+  // destinations and rename() resolve against it.
+  #prefix: string;
   #range: ByteRange | null = null;
 
   constructor(
@@ -50,14 +54,15 @@ export class GCSFile implements BucketFile {
     authPromise: Promise<GCSAuth>,
     url: string = "https://storage.googleapis.com",
     anonymous: boolean = false,
+    prefix: string = "",
   ) {
     this.path = path.startsWith("/") ? path.slice(1) : path;
     this.name = this.path.split("/").pop() || this.path;
-    this.id = this.path;
     this.#bucket = bucket;
     this.#authPromise = authPromise;
     this.#url = url;
     this.#anonymous = anonymous;
+    this.#prefix = prefix;
   }
 
   slice(start: number, end?: number): GCSFile {
@@ -67,6 +72,7 @@ export class GCSFile implements BucketFile {
       this.#authPromise,
       this.#url,
       this.#anonymous,
+      this.#prefix,
     );
     f.#range = composeRange(this.#range, start, end);
     return f;
@@ -107,21 +113,9 @@ export class GCSFile implements BucketFile {
     return { Authorization: `Bearer ${token}`, ...extra };
   }
 
-  async info(): Promise<FileInfo> {
+  async info(): Promise<FileInfo | null> {
     const res = await fetch(this.#apiUrl(), { headers: await this.#headers() });
-    if (res.status === 404) {
-      return {
-        id: this.id,
-        name: this.name,
-        path: this.path,
-        exists: false,
-        type: null,
-        size: 0,
-        date: null,
-        url: null,
-        metadata: {},
-      };
-    }
+    if (res.status === 404) return null;
     if (!res.ok)
       throw new BucketError(`GCS info error: ${res.status}`, {
         provider: "GCS",
@@ -129,20 +123,16 @@ export class GCSFile implements BucketFile {
       });
     const meta = (await res.json()) as GCSObjectMeta;
     return {
-      id: this.id,
-      name: this.name,
-      path: this.path,
-      exists: true,
-      type: meta.contentType,
       size: rangeSize(this.#range, parseInt(meta.size, 10)),
-      date: new Date(meta.updated),
-      url: this.publicUrl(),
+      type: meta.contentType,
+      modified: new Date(meta.updated),
+      version: meta.generation ?? null,
       metadata: meta.metadata ?? {},
     };
   }
 
   async exists(): Promise<boolean> {
-    return (await this.info()).exists;
+    return (await this.info()) !== null;
   }
 
   async text(): Promise<string> {
@@ -248,7 +238,7 @@ export class GCSFile implements BucketFile {
       await dest.write(this);
       return;
     }
-    const dst = dest.startsWith("/") ? dest.slice(1) : dest;
+    const dst = destKey(this.#prefix, dest, this.name);
     const url = `${this.#url}/storage/v1/b/${this.#bucket}/o/${encodeURIComponent(this.path)}/copyTo/b/${this.#bucket}/o/${encodeURIComponent(dst)}`;
     const res = await fetch(url, {
       method: "POST",
@@ -267,9 +257,13 @@ export class GCSFile implements BucketFile {
   }
 
   async rename(name: string): Promise<void> {
+    if (!name || name === "." || name === "..")
+      throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
       throw new Error("rename() cannot change directory, use moveTo() instead");
-    const dir = this.path.split("/").slice(0, -1).join("/");
+    const prefix = this.#prefix;
+    const rel = prefix ? this.path.slice(prefix.length + 1) : this.path;
+    const dir = rel.split("/").slice(0, -1).join("/");
     await this.moveTo(dir ? dir + "/" + name : name);
   }
 
@@ -288,18 +282,6 @@ export class GCSFile implements BucketFile {
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
   unlink(): Promise<void> {
     return this.remove();
-  }
-
-  presign(opts?: {
-    method?: string;
-    expiresIn?: number;
-    expires?: number | string;
-  }): Promise<string | null> {
-    const expires = opts?.expires ?? opts?.expiresIn ?? 3600;
-    const method = (opts?.method ?? "GET").toUpperCase();
-    return method === "PUT" || method === "POST"
-      ? this.uploadUrl({ expires })
-      : this.signedUrl({ expires });
   }
 
   stream(): ReadableStream {
@@ -322,7 +304,7 @@ export class GCSFile implements BucketFile {
     );
   }
 
-  publicUrl(): string {
+  async publicUrl(): Promise<string> {
     return `${this.#url}/${this.#bucket}/${this.path}`;
   }
 

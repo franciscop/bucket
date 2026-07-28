@@ -5,6 +5,7 @@ import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
 import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
+import { destKey } from "../lib/prefix.ts";
 import metaFromHeaders from "../lib/meta.ts";
 import {
   composeRange,
@@ -31,10 +32,12 @@ export interface S3BucketContext {
   getAuth: () => Promise<S3Auth>;
   bucketName: string;
   url: string;
+  // Folder prefix of the bucket that created this file; copyTo()/moveTo()
+  // destinations and rename() resolve against it.
+  prefix: string;
 }
 
 export class S3File implements BucketFile {
-  id: string;
   name: string;
   path: string;
   #ctx: S3BucketContext;
@@ -43,7 +46,6 @@ export class S3File implements BucketFile {
   constructor(path: string, ctx: S3BucketContext) {
     this.path = path.startsWith("/") ? path.slice(1) : path;
     this.name = this.path.split("/").pop() || this.path;
-    this.id = this.path;
     this.#ctx = ctx;
   }
 
@@ -70,44 +72,28 @@ export class S3File implements BucketFile {
     return res;
   }
 
-  async info(): Promise<FileInfo> {
+  async info(): Promise<FileInfo | null> {
     const res = await this.#ctx.doRequest("HEAD", this.path);
-    if (res.status === 404) {
-      return {
-        id: this.id,
-        name: this.name,
-        path: this.path,
-        exists: false,
-        type: null,
-        size: 0,
-        date: null,
-        url: null,
-        metadata: {},
-      };
-    }
+    if (res.status === 404) return null;
     if (!res.ok)
       throw new BucketError(`S3 HEAD error: ${res.status}`, {
         provider: "S3",
         status: res.status,
       });
     return {
-      id: this.id,
-      name: this.name,
-      path: this.path,
-      exists: true,
-      type: res.headers.get("content-type"),
       size: rangeSize(
         this.#range,
         parseInt(res.headers.get("content-length") ?? "0", 10),
       ),
-      date: new Date(res.headers.get("last-modified") ?? Date.now()),
-      url: this.#ctx.makeUrl(this.path),
+      type: res.headers.get("content-type"),
+      modified: new Date(res.headers.get("last-modified") ?? Date.now()),
+      version: res.headers.get("x-amz-version-id"),
       metadata: metaFromHeaders(res.headers, "x-amz-meta-"),
     };
   }
 
   async exists(): Promise<boolean> {
-    return (await this.info()).exists;
+    return (await this.info()) !== null;
   }
 
   async text(): Promise<string> {
@@ -176,7 +162,7 @@ export class S3File implements BucketFile {
       await dest.write(this);
       return;
     }
-    const dst = dest.startsWith("/") ? dest.slice(1) : dest;
+    const dst = destKey(this.#ctx.prefix, dest, this.name);
     const res = await this.#ctx.doRequest("PUT", dst, {
       headers: { "x-amz-copy-source": `/${this.#ctx.bucketName}/${this.path}` },
     });
@@ -193,9 +179,13 @@ export class S3File implements BucketFile {
   }
 
   async rename(name: string): Promise<void> {
+    if (!name || name === "." || name === "..")
+      throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
       throw new Error("rename() cannot change directory, use moveTo() instead");
-    const dir = this.path.split("/").slice(0, -1).join("/");
+    const prefix = this.#ctx.prefix;
+    const rel = prefix ? this.path.slice(prefix.length + 1) : this.path;
+    const dir = rel.split("/").slice(0, -1).join("/");
     await this.moveTo(dir ? dir + "/" + name : name);
   }
 
@@ -211,18 +201,6 @@ export class S3File implements BucketFile {
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
   unlink(): Promise<void> {
     return this.remove();
-  }
-
-  presign(opts?: {
-    method?: string;
-    expiresIn?: number;
-    expires?: number | string;
-  }): Promise<string | null> {
-    const expires = opts?.expires ?? opts?.expiresIn ?? 3600;
-    const method = (opts?.method ?? "GET").toUpperCase();
-    return method === "PUT" || method === "POST"
-      ? this.uploadUrl({ expires })
-      : this.signedUrl({ expires });
   }
 
   stream(): ReadableStream {
@@ -245,7 +223,7 @@ export class S3File implements BucketFile {
     );
   }
 
-  publicUrl(): string {
+  async publicUrl(): Promise<string> {
     return this.#ctx.makeUrl(this.path);
   }
 

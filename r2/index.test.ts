@@ -172,21 +172,16 @@ describe("R2 file().info()", () => {
       ),
     );
     const info = await bucket.file("hello.txt").info();
-    expect(info.exists).toBe(true);
-    expect(info.name).toBe("hello.txt");
-    expect(info.type).toBe("text/plain");
-    expect(info.size).toBe(5);
+    expect(info).not.toBeNull();
+    expect(info!.type).toBe("text/plain");
+    expect(info!.size).toBe(5);
   });
 
   it("returns exists: false for a missing file (404)", async () => {
     const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(null, 404)));
     const info = await bucket.file("nonexistent.txt").info();
-    expect(info.exists).toBe(false);
-    expect(info.type).toBeNull();
-    expect(info.size).toBe(0);
-    expect(info.date).toBeNull();
-    expect(info.url).toBeNull();
+    expect(info).toBeNull();
   });
 });
 
@@ -306,10 +301,9 @@ describe("R2 file().remove()", () => {
 });
 
 describe("R2 file().publicUrl()", () => {
-  it("returns the correct URL", () => {
+  it("returns null: the R2 storage endpoint is never public", async () => {
     const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
-    const url = bucket.file("path/to/file.txt").publicUrl();
-    expect(url).toBe(`${TEST_URL}/path/to/file.txt`);
+    expect(await bucket.file("path/to/file.txt").publicUrl()).toBeNull();
   });
 });
 

@@ -2,13 +2,21 @@
 // identifier you can branch on the same way across providers (and the
 // filesystem); `status` is the raw HTTP status when the failure came from an
 // HTTP response. The message stays human-readable and provider-specific.
+// INVALID_PATH is raised client-side, before any provider is involved, when a
+// path would escape the bucket or folder it is resolved against.
 
 export type BucketErrorCode =
-  "NOT_FOUND" | "FORBIDDEN" | "UNAUTHORIZED" | "CONFLICT" | "UNKNOWN";
+  | "NOT_FOUND"
+  | "FORBIDDEN"
+  | "UNAUTHORIZED"
+  | "CONFLICT"
+  | "INVALID_PATH"
+  | "UNKNOWN";
 
 export interface BucketErrorOptions {
-  /** Provider that produced the error, e.g. "S3", "GCS", "FILESYSTEM" */
-  provider: string;
+  /** Provider that produced the error, e.g. "S3", "GCS", "FILESYSTEM".
+   * Absent for errors raised before reaching a provider (INVALID_PATH). */
+  provider?: string;
   /** Raw HTTP status, when the error came from an HTTP response */
   status?: number;
   /** Normalized code; derived from `status` when omitted */
@@ -25,7 +33,7 @@ const CODE_BY_STATUS: Record<number, BucketErrorCode> = {
 };
 
 export default class BucketError extends Error {
-  readonly provider: string;
+  readonly provider?: string;
   readonly status?: number;
   readonly code: BucketErrorCode;
 

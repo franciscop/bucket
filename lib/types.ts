@@ -1,21 +1,15 @@
-/** Metadata returned by `file.info()` */
+/** Metadata returned by `file.info()`; `info()` resolves to `null` when the
+ * file does not exist, so every field here is always real. */
 export interface FileInfo {
-  /** File identifier: the path for remote stores, a hash for the filesystem */
-  id: string;
-  /** Filename only (no directory) */
-  name: string;
-  /** Full path within the bucket */
-  path: string;
-  /** Whether the file exists */
-  exists: boolean;
-  /** MIME type, or null if unknown or file does not exist */
-  type: string | null;
-  /** File size in bytes */
+  /** File size in bytes (respects `.slice()` ranges) */
   size: number;
-  /** Last-modified date, or null if unknown or file does not exist */
-  date: Date | null;
-  /** Public URL, or null if not publicly accessible */
-  url: string | null;
+  /** MIME type, or null if unknown */
+  type: string | null;
+  /** When the file content was last written */
+  modified: Date;
+  /** Provider version identifier: the fileId on B2, `generation` on GCS,
+   * `VersionId` on S3/Azure when versioning is enabled; null otherwise */
+  version: string | null;
   /** Custom metadata (lowercase keys); empty when none or unsupported */
   metadata: Record<string, string>;
 }
@@ -56,15 +50,14 @@ export interface WriteOptions {
 
 /** A handle to a single file within a bucket */
 export interface BucketFile {
-  /** File identifier: the path for remote stores, a hash for the filesystem */
-  id: string;
   /** Filename only (no directory) */
   name: string;
   /** Full path within the bucket */
   path: string;
 
-  /** Returns metadata about the file (existence, size, type, date, URL) */
-  info(): Promise<FileInfo>;
+  /** Returns the file's metadata (size, type, modified, version, custom
+   * metadata), or `null` when the file does not exist */
+  info(): Promise<FileInfo | null>;
   /** Returns `true` if the file exists */
   exists(): Promise<boolean>;
 
@@ -113,22 +106,14 @@ export interface BucketFile {
   /** Returns a Node.js `WritableStream` that writes to this file */
   nodeWritable(options?: WriteOptions): NodeJS.WritableStream;
 
-  /** Returns the permanent public URL, or `null` if not publicly accessible */
-  publicUrl(): string | null;
+  /** Returns the permanent public URL, or `null` when the provider has no
+   * public URL for this file. The URL only answers if the bucket or object
+   * is configured publicly readable. */
+  publicUrl(): Promise<string | null>;
   /** Returns a time-limited signed URL for downloading the file */
   signedUrl(opts: { expires: number | string }): Promise<string | null>;
   /** Returns a time-limited signed URL for uploading to this file path */
   uploadUrl(opts: { expires: number | string }): Promise<string | null>;
-  /**
-   * Bun-style presigned URL (matches `Bun.s3` `.presign()`). Delegates to
-   * `uploadUrl()` for `method: "PUT"`/`"POST"`, otherwise `signedUrl()`.
-   * Accepts `expiresIn` (seconds, Bun-style) or `expires` (number or duration string).
-   */
-  presign(opts?: {
-    method?: string;
-    expiresIn?: number;
-    expires?: number | string;
-  }): Promise<string | null>;
 }
 
 /** A bucket (or container) that holds files */

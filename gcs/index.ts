@@ -1,6 +1,6 @@
 import { getAccessToken, getMetadataToken } from "../lib/signGCS.ts";
 import BucketError from "../lib/BucketError.ts";
-import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
+import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import type { Bucket, BucketInfo } from "../lib/types.ts";
 import { GCSFile, type GCSAuth, type GCSObjectMeta } from "./File.ts";
 
@@ -118,6 +118,7 @@ class GCSBucket implements Bucket {
             this.#auth,
             this.#url,
             this.#anonymous,
+            this.PREFIX,
           ),
         );
       }
@@ -140,11 +141,12 @@ class GCSBucket implements Bucket {
   file(name: string): GCSFile {
     if (!name) throw new Error("No name");
     return new GCSFile(
-      withPrefix(this.PREFIX, name),
+      fileKey(this.PREFIX, name),
       this.#bucket,
       this.#auth,
       this.#url,
       this.#anonymous,
+      this.PREFIX,
     );
   }
 
@@ -154,7 +156,7 @@ class GCSBucket implements Bucket {
       anonymous: this.#anonymous,
     });
     b.#auth = this.#auth;
-    b.PREFIX = joinPrefix(this.PREFIX, path);
+    b.PREFIX = folderKey(this.PREFIX, path);
     return b;
   }
 

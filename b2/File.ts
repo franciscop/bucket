@@ -4,6 +4,7 @@ import { sha1hex } from "../lib/webcrypto.ts";
 import promiseToReadable from "../lib/promiseToReadable.ts";
 import promiseToWritable from "../lib/promiseToWritable.ts";
 import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
+import { destKey } from "../lib/prefix.ts";
 import metaFromHeaders from "../lib/meta.ts";
 import {
   composeRange,
@@ -31,21 +32,18 @@ export interface B2BucketContext {
   apiBase: string;
   base: string;
   name: string;
+  // Folder prefix of the bucket that created this file; copyTo()/moveTo()
+  // destinations and rename() resolve against it.
+  PREFIX: string;
 }
 
 export class B2File implements BucketFile {
-  id: string;
   name: string;
   path: string;
-  type?: string;
-  size?: number;
-  date?: Date;
-  url?: string;
   #bucket: B2BucketContext;
   #range: ByteRange | null = null;
 
   constructor(path: string, bucket: B2BucketContext) {
-    this.id = "";
     this.name = path.split("/").pop()!;
     this.path = path;
     this.#bucket = bucket;
@@ -69,7 +67,7 @@ export class B2File implements BucketFile {
     return this.#bucket.fetch(url, rh ? { headers: { Range: rh } } : {});
   }
 
-  async info(): Promise<FileInfo> {
+  async info(): Promise<FileInfo | null> {
     // B2 has no metadata-by-name endpoint, but a HEAD on the download-by-name
     // URL returns it in headers. `bucket.fetch` throws on any non-2xx, so a
     // missing file (404) surfaces as a throw; per the documented contract
@@ -80,32 +78,17 @@ export class B2File implements BucketFile {
     try {
       res = await this.#bucket.fetch(url, { method: "HEAD" });
     } catch {
-      return {
-        id: this.id,
-        name: this.name,
-        path: this.path,
-        exists: false,
-        type: null,
-        size: 0,
-        date: null,
-        url: null,
-        metadata: {},
-      };
+      return null;
     }
-    this.id = res.headers.get("x-bz-file-id") ?? this.id;
-    this.type = res.headers.get("content-type") ?? undefined;
-    this.size = Number(res.headers.get("content-length") ?? 0);
     const ts = res.headers.get("x-bz-upload-timestamp");
-    this.date = ts ? new Date(Number(ts)) : undefined;
     return {
-      id: this.id,
-      name: this.name,
-      path: this.path,
-      exists: true,
-      type: this.type ?? null,
-      size: rangeSize(this.#range, this.size),
-      date: this.date ?? null,
-      url,
+      size: rangeSize(
+        this.#range,
+        Number(res.headers.get("content-length") ?? 0),
+      ),
+      type: res.headers.get("content-type"),
+      modified: ts ? new Date(Number(ts)) : new Date(),
+      version: res.headers.get("x-bz-file-id"),
       metadata: metaFromHeaders(res.headers, "x-bz-info-", (k) =>
         k.startsWith("b2-"),
       ),
@@ -133,7 +116,7 @@ export class B2File implements BucketFile {
   }
 
   async exists(): Promise<boolean> {
-    return (await this.info()).exists;
+    return (await this.info()) !== null;
   }
 
   async #put(data: string | Buffer, options: WriteOptions = {}): Promise<void> {
@@ -167,8 +150,7 @@ export class B2File implements BucketFile {
       method: "POST",
       headers: headers as Record<string, string>,
     });
-    const uploaded = (await res2.json()) as { fileId: string };
-    this.id = uploaded.fileId;
+    await res2.json();
   }
 
   async write(content: WriteContent, options?: WriteOptions): Promise<void> {
@@ -194,7 +176,10 @@ export class B2File implements BucketFile {
       await dest.write(this);
       return;
     }
-    await new B2File(dest, this.#bucket).write(this);
+    await new B2File(
+      destKey(this.#bucket.PREFIX, dest, this.name),
+      this.#bucket,
+    ).write(this);
   }
 
   async moveTo(dest: string | BucketFile): Promise<void> {
@@ -203,9 +188,13 @@ export class B2File implements BucketFile {
   }
 
   async rename(name: string): Promise<void> {
+    if (!name || name === "." || name === "..")
+      throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
       throw new Error("rename() cannot change directory, use moveTo() instead");
-    const dir = this.path.split("/").slice(0, -1).join("/");
+    const prefix = this.#bucket.PREFIX;
+    const rel = prefix ? this.path.slice(prefix.length + 1) : this.path;
+    const dir = rel.split("/").slice(0, -1).join("/");
     await this.moveTo(dir ? dir + "/" + name : name);
   }
 
@@ -248,24 +237,11 @@ export class B2File implements BucketFile {
           }),
       ),
     );
-    this.id = "";
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
   unlink(): Promise<void> {
     return this.remove();
-  }
-
-  presign(opts?: {
-    method?: string;
-    expiresIn?: number;
-    expires?: number | string;
-  }): Promise<string | null> {
-    const expires = opts?.expires ?? opts?.expiresIn ?? 3600;
-    const method = (opts?.method ?? "GET").toUpperCase();
-    return method === "PUT" || method === "POST"
-      ? this.uploadUrl({ expires })
-      : this.signedUrl({ expires });
   }
 
   stream(): ReadableStream {
@@ -290,12 +266,11 @@ export class B2File implements BucketFile {
     );
   }
 
-  publicUrl(): string | null {
-    // Built from the bucket's download base, like the other providers. The base
-    // is only known once the bucket has authenticated, so it is null before then.
-    return this.#bucket.base
-      ? `${this.#bucket.base}file/${this.#bucket.name}/${this.path}`
-      : null;
+  async publicUrl(): Promise<string> {
+    // The download base is only known once the bucket has authenticated;
+    // info() resolves that auth, so the URL is always available here.
+    const bucket = await this.#bucket.info();
+    return `${bucket.url}file/${bucket.name}/${this.path}`;
   }
 
   async signedUrl(opts: { expires: number | string }): Promise<string> {

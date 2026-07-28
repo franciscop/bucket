@@ -197,10 +197,9 @@ describe("S3 file().info()", () => {
     );
 
     const info = await bucket.file("hello.txt").info();
-    expect(info.exists).toBe(true);
-    expect(info.name).toBe("hello.txt");
-    expect(info.type).toBe("text/plain");
-    expect(info.size).toBe(5);
+    expect(info).not.toBeNull();
+    expect(info!.type).toBe("text/plain");
+    expect(info!.size).toBe(5);
   });
 
   it("returns exists: false for a missing file (404)", async () => {
@@ -208,11 +207,7 @@ describe("S3 file().info()", () => {
     mockFetch(() => Promise.resolve(makeResponse(null, 404)));
 
     const info = await bucket.file("nonexistent.txt").info();
-    expect(info.exists).toBe(false);
-    expect(info.type).toBeNull();
-    expect(info.size).toBe(0);
-    expect(info.date).toBeNull();
-    expect(info.url).toBeNull();
+    expect(info).toBeNull();
   });
 });
 
@@ -538,9 +533,9 @@ describe("S3 file().rename()", () => {
 });
 
 describe("S3 file().publicUrl()", () => {
-  it("returns the correct S3 URL", () => {
+  it("returns the correct S3 URL", async () => {
     const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    const url = bucket.file("path/to/file.txt").publicUrl();
+    const url = await bucket.file("path/to/file.txt").publicUrl();
     expect(url).toContain(TEST_BUCKET);
     expect(url).toContain("path/to/file.txt");
   });
@@ -567,24 +562,5 @@ describe("S3 file().uploadUrl()", () => {
     const url = await bucket.file("file.txt").uploadUrl({ expires: 3600 });
     expect(url).toContain("X-Amz-Signature");
     expect(url).toContain("X-Amz-Expires=3600");
-  });
-});
-
-describe("S3 file().presign() (Bun-style alias)", () => {
-  it("defaults to a download URL (signedUrl), honouring expiresIn", async () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    const url = await bucket.file("file.txt").presign({ expiresIn: 3600 });
-    expect(url).toContain("X-Amz-Signature");
-    expect(url).toContain("X-Amz-Expires=3600");
-  });
-
-  it("delegates to an upload URL for method PUT", async () => {
-    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
-    const url = await bucket.file("file.txt").presign({
-      method: "PUT",
-      expiresIn: 900,
-    });
-    expect(url).toContain("X-Amz-Signature");
-    expect(url).toContain("X-Amz-Expires=900");
   });
 });

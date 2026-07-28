@@ -124,19 +124,15 @@ describe("B2 bucket.list()", () => {
     expect(files[1].path).toBe("data/world.json");
   });
 
-  it("populates metadata (type, size, date, url)", async () => {
+  it("returns plain file handles (name and path only)", async () => {
     const bucket = await makeBucket((url) => {
       if ((url as string).includes("b2_list_file_names"))
         return Promise.resolve(makeResponse(JSON.stringify(B2_LIST_RESPONSE)));
       return Promise.resolve(makeResponse(null));
     });
     const files = await bucket.list();
-    expect(files[0].type).toBe("text/plain");
-    expect(files[0].size).toBe(5);
-    expect(files[0].date).toBeInstanceOf(Date);
-    expect(files[0].url).toBe(
-      "https://f001.backblazeb2.com/file/test-bucket/hello.txt",
-    );
+    expect(files[0].name).toBe("hello.txt");
+    expect(files[0].path).toBe("hello.txt");
   });
 
   it("handles empty bucket", async () => {
@@ -234,23 +230,19 @@ describe("B2 file().info()", () => {
       return Promise.resolve(makeResponse(null));
     });
     const info = await bucket.file("hello.txt").info();
-    expect(info.exists).toBe(true);
-    expect(info.type).toBe("text/plain");
-    expect(info.size).toBe(5);
+    expect(info).not.toBeNull();
+    expect(info!.type).toBe("text/plain");
+    expect(info!.size).toBe(5);
+    expect(info!.version).toBe("id123");
   });
 
-  it("returns exists: false when the HEAD 404s", async () => {
+  it("returns null when the HEAD 404s", async () => {
     const bucket = await makeBucket((url, init) => {
       if ((url as string).includes("/file/") && init?.method === "HEAD")
         return Promise.resolve(makeResponse(null, 404));
       return Promise.resolve(makeResponse(null));
     });
-    const info = await bucket.file("nonexistent.txt").info();
-    expect(info.exists).toBe(false);
-    expect(info.type).toBeNull();
-    expect(info.size).toBe(0);
-    expect(info.date).toBeNull();
-    expect(info.url).toBeNull();
+    expect(await bucket.file("nonexistent.txt").info()).toBeNull();
   });
 });
 
@@ -419,7 +411,7 @@ describe("B2 file().publicUrl()", () => {
 
   it("builds the URL from the bucket base once authenticated", async () => {
     const bucket = await makeBucket();
-    expect(bucket.file("hello.txt").publicUrl()).toBe(
+    expect(await bucket.file("hello.txt").publicUrl()).toBe(
       "https://f001.backblazeb2.com/file/test-bucket/hello.txt",
     );
   });
@@ -431,7 +423,7 @@ describe("B2 file().publicUrl()", () => {
       return Promise.resolve(makeResponse(null));
     });
     const files = await bucket.list();
-    expect(files[0].publicUrl()).toBe(
+    expect(await files[0].publicUrl()).toBe(
       "https://f001.backblazeb2.com/file/test-bucket/hello.txt",
     );
   });

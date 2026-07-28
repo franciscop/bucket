@@ -86,7 +86,7 @@ describe("Interop: Bun file APIs", () => {
   bunIt("writes a Bun.file() (a Blob) into a bucket", async () => {
     const file = bucket.file(tmp("jpg"));
     await file.write(Bun.file("./test/bucket/nero.jpg"));
-    expect((await file.info()).size).toBe(175888);
+    expect((await file.info())!.size).toBe(175888);
   });
 
   bunIt("writes a bucket file's blob to disk with Bun.write", async () => {
@@ -117,6 +117,6 @@ describe("Interop: Bun file APIs", () => {
     expect(meta.width).toBe(200);
     expect(meta.height).toBe(200);
     expect(meta.format).toBe("webp");
-    expect((await thumb.info()).type).toBe("image/webp");
+    expect((await thumb.info())!.type).toBe("image/webp");
   });
 });

@@ -1,8 +1,9 @@
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
 import encodeS3Path from "../lib/encodeS3Path.ts";
+import { escapeXml, unescapeXml } from "../lib/xml.ts";
 import { sha256base64 } from "../lib/webcrypto.ts";
 import BucketError from "../lib/BucketError.ts";
-import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
+import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import type { Bucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
 import { R2File, type R2BucketContext } from "./File.ts";
 
@@ -142,7 +143,7 @@ class CloudflareR2Bucket implements Bucket {
       const xmlStr = await res.text();
       const page: R2File[] = [];
       for (const item of extractTags(xmlStr, "Contents")) {
-        const key = getTag(item, "Key");
+        const key = unescapeXml(getTag(item, "Key"));
         if (!s.test(key)) continue;
         page.push(this.handle(key));
       }
@@ -174,7 +175,9 @@ class CloudflareR2Bucket implements Bucket {
       const batch = files.slice(i, i + 1000);
       const body =
         `<Delete>` +
-        batch.map((f) => `<Object><Key>${f.path}</Key></Object>`).join("") +
+        batch
+          .map((f) => `<Object><Key>${escapeXml(f.path)}</Key></Object>`)
+          .join("") +
         `</Delete>`;
 
       const url = new URL(this.makeUrl(""));
@@ -200,7 +203,9 @@ class CloudflareR2Bucket implements Bucket {
         );
 
       const xmlStr = await res.text();
-      const keys = extractTags(xmlStr, "Deleted").map((d) => getTag(d, "Key"));
+      const keys = extractTags(xmlStr, "Deleted").map((d) =>
+        unescapeXml(getTag(d, "Key")),
+      );
       deleted.push(...batch.filter((f) => keys.includes(f.path)));
     }
 
@@ -214,19 +219,20 @@ class CloudflareR2Bucket implements Bucket {
       getAuth: () => this.#auth,
       bucketName: this.bucketName,
       url: this.url,
+      prefix: this.PREFIX,
     };
     return new R2File(path, ctx);
   }
 
   file(name: string): R2File {
     if (!name) throw new Error("No name");
-    return this.handle(withPrefix(this.PREFIX, name));
+    return this.handle(fileKey(this.PREFIX, name));
   }
 
   folder(path: string): CloudflareR2Bucket {
     const b = new CloudflareR2Bucket(this.bucketName, { url: this.url });
     b.#auth = this.#auth;
-    b.PREFIX = joinPrefix(this.PREFIX, path);
+    b.PREFIX = folderKey(this.PREFIX, path);
     return b;
   }
 

@@ -1,5 +1,5 @@
 import type { Bucket, BucketInfo } from "../lib/types.ts";
-import { withPrefix, scope, joinPrefix } from "../lib/prefix.ts";
+import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import BucketError from "../lib/BucketError.ts";
 import { B2File, type B2BucketContext } from "./File.ts";
 
@@ -131,13 +131,13 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
 
   file(name: string): B2File {
     if (!name) throw new Error("No name");
-    return new B2File(withPrefix(this.PREFIX, name), this);
+    return new B2File(fileKey(this.PREFIX, name), this);
   }
 
   folder(path: string): BackBlazeInstance {
     const b = new BackBlazeInstance(this.name, { eager: false });
     b.#adopt(this.#auth);
-    b.PREFIX = joinPrefix(this.PREFIX, path);
+    b.PREFIX = folderKey(this.PREFIX, path);
     return b;
   }
 
@@ -172,13 +172,7 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
       const page: B2File[] = [];
       for (const fileData of data.files) {
         if (!s.test(fileData.fileName)) continue;
-        const f = new B2File(fileData.fileName, this);
-        f.id = fileData.fileId;
-        f.type = fileData.contentType;
-        f.size = fileData.contentLength;
-        f.date = new Date(fileData.uploadTimestamp);
-        f.url = this.base + "file/" + this.name + "/" + fileData.fileName;
-        page.push(f);
+        page.push(new B2File(fileData.fileName, this));
       }
       yield page;
 

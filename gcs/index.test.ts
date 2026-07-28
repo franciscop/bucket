@@ -242,9 +242,9 @@ describe("GCS bucket.list()", () => {
 });
 
 describe("GCS file().publicUrl()", () => {
-  it("returns the correct GCS URL", () => {
+  it("returns the correct GCS URL", async () => {
     const bucket = GCS(TEST_BUCKET);
-    expect(bucket.file("path/to/file.txt").publicUrl()).toBe(
+    expect(await bucket.file("path/to/file.txt").publicUrl()).toBe(
       `https://storage.googleapis.com/${TEST_BUCKET}/path/to/file.txt`,
     );
   });
@@ -320,24 +320,18 @@ describe("GCS file().info()", () => {
     }) as typeof fetch;
 
     const info = await bucket.file("hello.txt").info();
-    expect(info.exists).toBe(true);
-    expect(info.name).toBe("hello.txt");
-    expect(info.type).toBe("text/plain");
-    expect(info.size).toBe(5);
+    expect(info).not.toBeNull();
+    expect(info!.type).toBe("text/plain");
+    expect(info!.size).toBe(5);
   });
 
-  it("returns exists: false for a missing file (404)", async () => {
+  it("returns null for a missing file (404)", async () => {
     const bucket = GCS(TEST_BUCKET);
     globalThis.fetch = withTokenMock(() =>
       Promise.resolve(makeResponse(null, 404)),
     ) as typeof fetch;
 
-    const info = await bucket.file("nonexistent.txt").info();
-    expect(info.exists).toBe(false);
-    expect(info.type).toBeNull();
-    expect(info.size).toBe(0);
-    expect(info.date).toBeNull();
-    expect(info.url).toBeNull();
+    expect(await bucket.file("nonexistent.txt").info()).toBeNull();
   });
 });
 
