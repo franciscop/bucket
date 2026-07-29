@@ -49,6 +49,15 @@ const bucket = S3("my-bucket-name", {
 await bucket.file("hello.txt").write("hello world");
 ```
 
+The root import exposes every service under its name, which is handy when a project talks to more than one. The subpath imports (`bucket/s3`, `bucket/fs`, ...) stay the slim, tree-shakeable option since the root bundles all providers:
+
+```js
+import bucket from "bucket";
+
+const aws = bucket.S3("my-bucket", { id, secret });
+const local = bucket.FS("./uploads");
+```
+
 Every bucket instance has the same methods:
 
 - [`.info()`](#info): display the information about the current bucket.

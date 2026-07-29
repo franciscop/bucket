@@ -1,13 +1,25 @@
 // Bucket: unified API for file storage services
 // Main entry point
 
+import FileSystem from "./fs/index.ts";
 import S3 from "./s3/index.ts";
-import type { Bucket } from "./lib/types.ts";
+import CloudflareR2 from "./r2/index.ts";
+import GCS from "./gcs/index.ts";
+import Azure from "./azure/index.ts";
+import BackBlaze from "./b2/index.ts";
 
-// A ready-to-use S3 bucket from the environment. Typed as the `Bucket`
-// interface so the default export has a nameable type in the built d.ts.
-const defaultBucket: Bucket = S3();
-export default defaultBucket;
+// Every provider under its service name; prefer the subpath imports
+// ("bucket/s3", "bucket/fs", ...) when bundle size matters, since this
+// namespace pulls in all of them.
+export default {
+  FS: FileSystem,
+  S3,
+  R2: CloudflareR2,
+  GCS,
+  Azure,
+  B2: BackBlaze,
+};
+
 export { default as FileSystem } from "./fs/index.ts";
 export { default as BackBlaze } from "./b2/index.ts";
 export { default as CloudflareR2 } from "./r2/index.ts";
