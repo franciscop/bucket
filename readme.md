@@ -1,8 +1,6 @@
 # Bucket [![bucket](https://img.shields.io/npm/v/bucket?label=bucket&color=greenlime)](https://www.npmjs.com/package/bucket) [![tests](https://github.com/franciscop/bucket/workflows/tests/badge.svg)](https://github.com/franciscop/bucket/actions)
 
-A small library to talk to any of the popular file storage solutions with a unified API.
-
-## Getting Started
+A small library to talk to any of the popular file storage solutions with a unified API:
 
 ```js
 import BackBlaze from "bucket/b2"; // or /s3, /r2, /fs, etc
@@ -27,6 +25,50 @@ const b2 = BackBlaze("mybucketname", { id, secret });
 const source = fs.file("local.txt").stream();
 const target = b2.file("newfile.txt").writable();
 await source.pipeTo(target);
+```
+
+## Getting Started
+
+First install the library:
+
+```sh
+npm install bucket
+```
+
+Then decide which bucket you're going to use, and grab its credentials. Put them in a gitignored `.env`, let's say S3, so put these variables:
+
+```sh
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+# Optional
+AWS_REGION=
+AWS_URL=
+AWS_BUCKET=
+```
+
+Finally, you can import and initializze the library:
+
+```ts
+import S3 from "bucket/S3";
+
+// Read the variables automatically
+const bucket = S3("bucket-name");
+
+// Or inject them manually
+const bucket = S3("bucket-name", {
+  id: "...",
+  secret: "...",
+  region: "us-east-1",
+  url: "...",
+});
+```
+
+To use it, see the next section [Bucket API](#bucketapi), but here's a quick example reading and writing a JSON file:
+
+```ts
+const data = await bucket.file("./test.json").json();
+// data is a JS object here, since we're parsing it as .json()
+await bucket.file("output.json").write(data);
 ```
 
 ## Bucket API
