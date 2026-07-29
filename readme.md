@@ -1,6 +1,8 @@
 # Bucket [![bucket](https://img.shields.io/npm/v/bucket?label=bucket&color=greenlime)](https://www.npmjs.com/package/bucket) [![tests](https://github.com/franciscop/bucket/workflows/tests/badge.svg)](https://github.com/franciscop/bucket/actions)
 
-A small library to talk to any of the popular file storage solutions with a unified API:
+A small library to talk to any of the popular file storage solutions with a unified API.
+
+## Getting Started
 
 ```js
 import BackBlaze from "bucket/b2"; // or /s3, /r2, /fs, etc
@@ -27,7 +29,7 @@ const target = b2.file("newfile.txt").writable();
 await source.pipeTo(target);
 ```
 
-## Bucket Methods
+## Bucket API
 
 Bucket() creates the instance attached to a single bucket; each service exports its own:
 
@@ -206,7 +208,7 @@ File paths are always the full path from the bucket root, on every provider incl
 
 ### .file()
 
-Creates a [`BucketFile`](#file-methods) handle for the given path, synchronously and without any network requests:
+Creates a [`BucketFile`](#file-api) handle for the given path, synchronously and without any network requests:
 
 ```js
 bucket.file("hello.txt");
@@ -236,7 +238,7 @@ bucket.file("../outside.txt"); // throws BucketError INVALID_PATH
 
 - [`.folder(path)`](#folder): scope a whole bucket to a prefix instead.
 
-## File Methods
+## File API
 
 The file handle, returned by [`bucket.file()`](#file) and as every item of [`list()`](#list) and [`scan()`](#scan). The type is named `BucketFile` to differentiate it from the browser's native `File` object. It has `name` and `path` set synchronously, and everything else is a method:
 
@@ -728,8 +730,6 @@ Environment variable fallbacks:
 
 ### AWS S3
 
-S3 is the default export of the package, so `import bucket from "bucket"` is equivalent to `import S3 from "bucket/s3"`.
-
 ```js
 import S3 from "bucket/s3";
 
@@ -1039,9 +1039,9 @@ const info: FileInfo | null = await file.info();
 
 ### Which runtimes are supported?
 
-Node, Bun, Deno, browsers, and Cloudflare Workers. Request signing uses **WebCrypto** (`crypto.subtle`), and reads/writes use the Web `fetch`, `Blob`, and Streams APIs, so there is no `node:crypto` dependency. The only Node-specific imports are `node:stream` (used solely by the optional `.nodeReadable()` / `.nodeWritable()` helpers) and `node:fs` / `node:os` (the FileSystem provider only).
+Node.js, Bun, and Deno, fully. Cloudflare Workers works with the remote providers when the `nodejs_compat` flag is enabled (the flag is required to deploy at all, since every provider imports `node:stream` for the `.nodeReadable()` / `.nodeWritable()` helpers). `FileSystem` is not supported on Workers: there is no persistent disk, and recent Workers runtimes expose an in-memory `node:fs`, so writes may appear to succeed and then vanish.
 
-On Cloudflare Workers, use a remote provider with the web helpers (`.stream()`, `.writable()`); enable the `nodejs_compat` flag if you also want the `.nodeReadable()` / `.nodeWritable()` helpers.
+Everything else is Web standards: request signing uses **WebCrypto** (`crypto.subtle`), and reads/writes use the Web `fetch`, `Blob`, and Streams APIs, so there is no `node:crypto` dependency. Beyond `node:stream`, the only Node-specific imports are `node:fs` / `node:os` in the FileSystem provider. For browsers, don't use this library directly (it would expose your credentials); hand the browser [`signedUrl()`](#filesignedurlopts) / [`uploadUrl()`](#fileuploadurlopts) links instead.
 
 ### What happens when a file doesn't exist?
 
