@@ -1,5 +1,9 @@
 import { signAzure, accountPathPrefix } from "../lib/signAzure.ts";
-import { unescapeXml } from "../lib/xml.ts";
+import {
+  unescapeXml,
+  extractTags as extractXmlTags,
+  getTag as getXmlTag,
+} from "../lib/xml.ts";
 import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import type { Bucket, BucketInfo } from "../lib/types.ts";
@@ -25,18 +29,6 @@ export interface AzureConfig {
   /** Full Azure connection string (falls back to `AZURE_CONNECTION_STRING`).
    * When present, its account, key, and BlobEndpoint are used. */
   connectionString?: string;
-}
-
-function extractXmlTags(xml: string, tag: string): string[] {
-  const results: string[] = [];
-  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "g");
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml))) results.push(m[1]);
-  return results;
-}
-
-function getXmlTag(xml: string, tag: string): string {
-  return extractXmlTags(xml, tag)[0] ?? "";
 }
 
 // The account in a blob URL is the subdomain (`<account>.blob.core.windows.net`)

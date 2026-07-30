@@ -6,7 +6,10 @@ import {
 } from "../lib/signAzure.ts";
 import parse from "../lib/parse.ts";
 import promiseToReadable from "../lib/promiseToReadable.ts";
-import promiseToWritable from "../lib/promiseToWritable.ts";
+import chunkedWritable, {
+  writeChunked,
+  type ChunkedTarget,
+} from "../lib/chunkedWritable.ts";
 import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
 import { destKey } from "../lib/prefix.ts";
@@ -174,21 +177,27 @@ export class AzureFile implements BucketFile {
     return new Uint8Array(await this.arrayBuffer());
   }
 
+  #blobHeaders(options: WriteOptions = {}): Record<string, string> {
+    const headers: Record<string, string> = {};
+    const type = options.type ?? getContentType(this.path);
+    if (type) headers["x-ms-blob-content-type"] = type;
+    if (options.cacheControl)
+      headers["x-ms-blob-cache-control"] = options.cacheControl;
+    if (options.disposition)
+      headers["x-ms-blob-content-disposition"] = options.disposition;
+    if (options.metadata) {
+      for (const [k, v] of Object.entries(options.metadata)) {
+        headers[`x-ms-meta-${k.toLowerCase()}`] = v;
+      }
+    }
+    return headers;
+  }
+
   async #put(data: string | Buffer, options: WriteOptions = {}): Promise<void> {
     const extraHeaders: Record<string, string> = {
       "x-ms-blob-type": "BlockBlob",
+      ...this.#blobHeaders(options),
     };
-    const type = options.type ?? getContentType(this.path);
-    if (type) extraHeaders["x-ms-blob-content-type"] = type;
-    if (options.cacheControl)
-      extraHeaders["x-ms-blob-cache-control"] = options.cacheControl;
-    if (options.disposition)
-      extraHeaders["x-ms-blob-content-disposition"] = options.disposition;
-    if (options.metadata) {
-      for (const [k, v] of Object.entries(options.metadata)) {
-        extraHeaders[`x-ms-meta-${k.toLowerCase()}`] = v;
-      }
-    }
     const res = await this.#request("PUT", extraHeaders, data);
     if (!res.ok)
       throw new BucketError(`Azure PUT error: ${res.status}`, {
@@ -197,17 +206,123 @@ export class AzureFile implements BucketFile {
       });
   }
 
+  // Like #request but with query params, which Azure's SharedKey signature
+  // includes in the canonical resource (needed for ?comp=block / blocklist).
+  async #requestQuery(
+    method: string,
+    params: Record<string, string>,
+    extraHeaders: Record<string, string> = {},
+    body?: Buffer | string,
+  ): Promise<Response> {
+    const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${this.path}`;
+    const query = new URLSearchParams(params).toString();
+    const url = `${this.#baseUrl()}?${query}`;
+    const allExtra = {
+      ...extraHeaders,
+      ...(body !== undefined
+        ? { "Content-Length": String(Buffer.byteLength(body as string)) }
+        : {}),
+    };
+
+    if (this.#auth.type === "shared-key") {
+      const headers = await signAzure(
+        method,
+        blobPath,
+        allExtra,
+        { account: this.#account, key: this.#auth.key },
+        params,
+      );
+      return fetch(url, {
+        method,
+        headers,
+        body: body as BodyInit | undefined,
+      });
+    }
+
+    const token = await this.#auth.getToken();
+    return fetch(url, {
+      method,
+      headers: {
+        ...allExtra,
+        "x-ms-date": new Date().toUTCString(),
+        "x-ms-version": "2020-10-02",
+        Authorization: `Bearer ${token}`,
+      },
+      body: body as BodyInit | undefined,
+    });
+  }
+
+  // Azure block upload: Put Block × n, then Put Block List to commit. There
+  // is no server-side session to open or abort; uncommitted blocks are
+  // garbage-collected by Azure after about a week.
+  #target(options: WriteOptions = {}): ChunkedTarget<string[], string> {
+    // Block ids must be base64 and all the same length, so pad the index.
+    const blockId = (n: number): string =>
+      Buffer.from(String(n).padStart(6, "0")).toString("base64");
+    return {
+      partSize: 8 * 1024 * 1024,
+      single: (data) => this.#put(data, options),
+      start: async () => [],
+      part: async (ids, n, data) => {
+        const id = blockId(n);
+        const res = await this.#requestQuery(
+          "PUT",
+          { comp: "block", blockid: id },
+          {},
+          data,
+        );
+        if (!res.ok)
+          throw new BucketError(`Azure block error: ${res.status}`, {
+            provider: "Azure",
+            status: res.status,
+          });
+        await res.text();
+        ids.push(id);
+        return id;
+      },
+      finish: async (ids) => {
+        const body =
+          `<?xml version="1.0" encoding="utf-8"?><BlockList>` +
+          ids.map((id) => `<Latest>${id}</Latest>`).join("") +
+          `</BlockList>`;
+        const res = await this.#requestQuery(
+          "PUT",
+          { comp: "blocklist" },
+          this.#blobHeaders(options),
+          body,
+        );
+        if (!res.ok)
+          throw new BucketError(`Azure block commit error: ${res.status}`, {
+            provider: "Azure",
+            status: res.status,
+          });
+        await res.text();
+      },
+      abort: async () => {},
+    };
+  }
+
   async write(content: WriteContent, options?: WriteOptions): Promise<void> {
-    if (typeof content === "string") return this.#put(content, options);
+    if (typeof content === "string")
+      return writeChunked(this.#target(options), Buffer.from(content));
     if (content instanceof Buffer || content instanceof Uint8Array)
-      return this.#put(Buffer.from(content), options);
-    if (content instanceof Blob)
-      return this.#put(Buffer.from(await content.arrayBuffer()), {
+      return writeChunked(this.#target(options), Buffer.from(content));
+    if (content instanceof Blob) {
+      const opts = {
         ...options,
         type: resolveContentType(this.path, content, options),
-      });
-    if (content instanceof AzureFile)
-      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+      };
+      return writeChunked(
+        this.#target(opts),
+        Buffer.from(await content.arrayBuffer()),
+      );
+    }
+    // A BucketFile from this or any other provider: stream it across
+    if (
+      typeof (content as BucketFile).stream === "function" &&
+      typeof (content as BucketFile).info === "function"
+    )
+      return (content as BucketFile).stream().pipeTo(this.writable(options));
     if (typeof (content as ReadableStream).pipeTo === "function")
       return (content as ReadableStream).pipeTo(this.writable(options));
     if (content instanceof Readable)
@@ -304,7 +419,7 @@ export class AzureFile implements BucketFile {
   }
 
   writable(options?: WriteOptions): WritableStream {
-    return promiseToWritable((data: Buffer) => this.#put(data, options));
+    return chunkedWritable(this.#target(options));
   }
 
   nodeWritable(options?: WriteOptions): NodeJS.WritableStream {

@@ -1,6 +1,6 @@
 import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
 import encodeS3Path from "../lib/encodeS3Path.ts";
-import { escapeXml, unescapeXml } from "../lib/xml.ts";
+import { escapeXml, unescapeXml, extractTags, getTag } from "../lib/xml.ts";
 import { sha256base64 } from "../lib/webcrypto.ts";
 import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
@@ -100,18 +100,6 @@ function toCache(region: string, data: InstanceCredResponse): CachedAuth {
 }
 
 // ── XML helpers ───────────────────────────────────────────────────────────────
-
-function extractTags(xmlStr: string, tag: string): string[] {
-  const results: string[] = [];
-  const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "g");
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(xmlStr)) !== null) results.push(match[1]);
-  return results;
-}
-
-function getTag(xmlStr: string, tag: string): string {
-  return extractTags(xmlStr, tag)[0] ?? "";
-}
 
 // The bucket in a path-style endpoint (MinIO, LocalStack, `s3.amazonaws.com/<bucket>`)
 // is the first path segment. Virtual-hosted URLs put it in the subdomain, but S3

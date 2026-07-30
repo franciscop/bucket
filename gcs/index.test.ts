@@ -494,7 +494,7 @@ describe("GCS file().write()", () => {
     expect(capturedMethod).toBe("POST");
     expect(capturedUrl).toContain("uploadType=media");
     expect(capturedUrl).toContain("hello.txt");
-    expect(capturedBody).toBe("hello world");
+    expect(String(capturedBody)).toBe("hello world");
   });
 
   it("throws on non-OK response", async () => {

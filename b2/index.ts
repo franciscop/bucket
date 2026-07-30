@@ -24,6 +24,7 @@ interface B2Auth {
   token: string;
   apiBase: string;
   base: string;
+  absoluteMinimumPartSize: number;
 }
 
 interface B2Config {
@@ -47,12 +48,14 @@ async function authorize(id: string, secret: string): Promise<B2Auth> {
     authorizationToken: string;
     apiUrl: string;
     downloadUrl: string;
+    absoluteMinimumPartSize?: number;
   };
   return {
     bucketId: data.allowed.bucketId,
     token: data.authorizationToken,
     apiBase: data.apiUrl + API_VERSION_URL,
     base: data.downloadUrl.replace(/\/$/, "") + "/",
+    absoluteMinimumPartSize: data.absoluteMinimumPartSize ?? 5 * 1024 * 1024,
   };
 }
 
@@ -86,6 +89,14 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
       .catch(() => {
         // Swallow here; the rejection resurfaces wherever #auth is awaited.
       });
+  }
+
+  // Part size for chunked (large file) uploads. B2's recommendedPartSize is
+  // ~100 MB, far too much to buffer per part, so we use our own 8 MiB default
+  // and only defer to B2 when its absolute minimum is higher.
+  async partSize(): Promise<number> {
+    const auth = await this.#auth;
+    return Math.max(auth.absoluteMinimumPartSize, 8 * 1024 * 1024);
   }
 
   async info(): Promise<BucketInfo> {

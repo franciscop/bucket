@@ -61,6 +61,59 @@ describe("FileSystem bucket-relative paths", () => {
     expect(bucket.file("a/../b.txt").path).toBe("b.txt");
   });
 
+  it("failed streaming writes are atomic: old content stays, no temp files", async () => {
+    const file = bucket.file("atomic-check.txt");
+    await file.write("original");
+    const bad = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("partial data that must not land"));
+      },
+      pull(c) {
+        c.error(new Error("boom"));
+      },
+    });
+    let threw = false;
+    try {
+      await bad.pipeTo(file.writable());
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(await file.text()).toBe("original"); // untouched by the failed write
+    const fs = await import("node:fs/promises");
+    const leftovers = (await fs.readdir(ROOT)).filter((e) =>
+      e.includes(".tmp-"),
+    );
+    expect(leftovers).toEqual([]);
+    await file.remove();
+  });
+
+  it("readers never observe a half-written file during a streaming write", async () => {
+    const file = bucket.file("atomic-visible.txt");
+    await file.write("before");
+    // Stream that pauses mid-write so we can peek at the visible content
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const source = new ReadableStream<Uint8Array>({
+      async start(c) {
+        c.enqueue(new TextEncoder().encode("after-"));
+        await gate;
+        c.enqueue(new TextEncoder().encode("complete"));
+        c.close();
+      },
+    });
+    const done = source.pipeTo(file.writable());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await file.text()).toBe("before"); // old content still visible
+    // The in-progress temp sibling is invisible to listings too
+    const listed = (await bucket.list()).map((f) => f.path);
+    expect(listed.some((p) => p.includes(".tmp-"))).toBe(false);
+    release();
+    await done;
+    expect(await file.text()).toBe("after-complete");
+    await file.remove();
+  });
+
   it("rejects OS-style paths that start with the bucket's own root", async () => {
     expect(errorCode(() => bucket.file(ROOT + "/a/b.txt"))).toBe(
       "INVALID_PATH",

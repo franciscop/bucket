@@ -2,7 +2,10 @@ import { Readable, Writable } from "node:stream";
 import parse from "../lib/parse.ts";
 import { sha1hex } from "../lib/webcrypto.ts";
 import promiseToReadable from "../lib/promiseToReadable.ts";
-import promiseToWritable from "../lib/promiseToWritable.ts";
+import chunkedWritable, {
+  writeChunked,
+  type ChunkedTarget,
+} from "../lib/chunkedWritable.ts";
 import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
 import { destKey } from "../lib/prefix.ts";
 import metaFromHeaders from "../lib/meta.ts";
@@ -29,6 +32,8 @@ export interface B2UploadAuth {
 export interface B2BucketContext {
   info(): Promise<BucketInfo>;
   fetch(url: string, options?: RequestInit): Promise<Response>;
+  /** Part size for chunked uploads, resolved from the account's auth. */
+  partSize(): Promise<number>;
   apiBase: string;
   base: string;
   name: string;
@@ -153,17 +158,108 @@ export class B2File implements BucketFile {
     await res2.json();
   }
 
+  // B2 large-file upload: b2_start_large_file → b2_upload_part × n →
+  // b2_finish_large_file, cancelling on failure so no orphan parts remain.
+  #target(
+    options: WriteOptions = {},
+  ): ChunkedTarget<{ fileId: string }, string> {
+    return {
+      partSize: () => this.#bucket.partSize(),
+      single: (data) => this.#put(data, options),
+      start: async () => {
+        const bucket = await this.#bucket.info();
+        const type = options.type ?? getContentType(this.path) ?? "b2/x-auto";
+        const fileInfo: Record<string, string> = {};
+        if (options.cacheControl)
+          fileInfo["b2-cache-control"] = options.cacheControl;
+        if (options.disposition)
+          fileInfo["b2-content-disposition"] = options.disposition;
+        if (options.metadata) {
+          for (const [k, v] of Object.entries(options.metadata)) {
+            fileInfo[k.toLowerCase()] = v;
+          }
+        }
+        const res = await this.#bucket.fetch(
+          this.#bucket.apiBase + "b2_start_large_file",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              bucketId: bucket.id,
+              fileName: this.path,
+              contentType: type,
+              fileInfo,
+            }),
+          },
+        );
+        const { fileId } = (await res.json()) as { fileId: string };
+        return { fileId };
+      },
+      part: async (ctx, n, data) => {
+        const urlRes = await this.#bucket.fetch(
+          this.#bucket.apiBase + "b2_get_upload_part_url?fileId=" + ctx.fileId,
+        );
+        const auth = (await urlRes.json()) as B2UploadAuth;
+        const sha1 = await sha1hex(data);
+        const res = await this.#bucket.fetch(auth.uploadUrl, {
+          method: "POST",
+          body: data as unknown as BodyInit,
+          headers: {
+            Authorization: auth.authorizationToken,
+            "X-Bz-Part-Number": String(n),
+            "Content-Length": String(data.length),
+            "X-Bz-Content-Sha1": sha1,
+          },
+        });
+        await res.json();
+        return sha1;
+      },
+      finish: async (ctx, parts) => {
+        const res = await this.#bucket.fetch(
+          this.#bucket.apiBase + "b2_finish_large_file",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileId: ctx.fileId, partSha1Array: parts }),
+          },
+        );
+        await res.json();
+      },
+      abort: async (ctx) => {
+        const res = await this.#bucket.fetch(
+          this.#bucket.apiBase + "b2_cancel_large_file",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileId: ctx.fileId }),
+          },
+        );
+        await res.json();
+      },
+    };
+  }
+
   async write(content: WriteContent, options?: WriteOptions): Promise<void> {
-    if (typeof content === "string") return this.#put(content, options);
+    if (typeof content === "string")
+      return writeChunked(this.#target(options), Buffer.from(content));
     if (content instanceof Buffer || content instanceof Uint8Array)
-      return this.#put(Buffer.from(content), options);
-    if (content instanceof Blob)
-      return this.#put(Buffer.from(await content.arrayBuffer()), {
+      return writeChunked(this.#target(options), Buffer.from(content));
+    if (content instanceof Blob) {
+      const opts = {
         ...options,
         type: resolveContentType(this.path, content, options),
-      });
-    if (content instanceof B2File)
-      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+      };
+      return writeChunked(
+        this.#target(opts),
+        Buffer.from(await content.arrayBuffer()),
+      );
+    }
+    // A BucketFile from this or any other provider: stream it across
+    if (
+      typeof (content as BucketFile).stream === "function" &&
+      typeof (content as BucketFile).info === "function"
+    )
+      return (content as BucketFile).stream().pipeTo(this.writable(options));
     if (typeof (content as ReadableStream).pipeTo === "function")
       return (content as ReadableStream).pipeTo(this.writable(options));
     if (content instanceof Readable)
@@ -257,7 +353,7 @@ export class B2File implements BucketFile {
   }
 
   writable(options?: WriteOptions): WritableStream {
-    return promiseToWritable((data: Buffer) => this.#put(data, options));
+    return chunkedWritable(this.#target(options));
   }
 
   nodeWritable(options?: WriteOptions): NodeJS.WritableStream {

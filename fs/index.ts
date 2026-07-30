@@ -55,6 +55,8 @@ class FileSystemBucket implements Bucket {
         );
         return relative(this.path, abs).split(sep).join("/");
       })
+      // Skip in-progress streaming writes (temp siblings, renamed on close)
+      .filter((rel: string) => !/\.tmp-[a-z0-9]+$/.test(rel))
       .filter((rel: string) => !filter || filter.test(rel))
       .map(
         (rel: string) =>

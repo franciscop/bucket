@@ -143,8 +143,12 @@ export class FSFile implements BucketFile {
       await fsp.mkdir(dirname(this.#abs), { recursive: true });
       return fsp.writeFile(this.#abs, Buffer.from(await content.arrayBuffer()));
     }
-    if (content instanceof FSFile) {
-      return content.stream().pipeTo(this.writable());
+    // A BucketFile from this or any other provider: stream it across
+    if (
+      typeof (content as BucketFile).stream === "function" &&
+      typeof (content as BucketFile).info === "function"
+    ) {
+      return (content as BucketFile).stream().pipeTo(this.writable());
     }
     if (typeof (content as { pipeTo?: unknown }).pipeTo === "function") {
       return (content as ReadableStream<Uint8Array>).pipeTo(this.writable());
@@ -233,13 +237,17 @@ export class FSFile implements BucketFile {
   }
 
   writable(_options?: WriteOptions): WritableStream {
-    const filePath = this.#abs;
+    // Stream into a temp sibling and rename on close: readers never observe
+    // a half-written file, and a failed or aborted write leaves the previous
+    // content (or absence) untouched.
+    const finalPath = this.#abs;
+    const tmpPath = `${finalPath}.tmp-${Math.random().toString(36).slice(2)}`;
     let writer: ReturnType<typeof createWriteStream> | null = null;
 
     return new WritableStream<Uint8Array>({
       async start() {
-        await fsp.mkdir(dirname(filePath), { recursive: true });
-        writer = createWriteStream(filePath);
+        await fsp.mkdir(dirname(finalPath), { recursive: true });
+        writer = createWriteStream(tmpPath);
         await new Promise<void>((resolve) => writer!.on("open", resolve));
       },
       write(chunk) {
@@ -250,10 +258,15 @@ export class FSFile implements BucketFile {
           writer!.once("error", reject);
         });
       },
-      close() {
-        return new Promise<void>((resolve, reject) => {
+      async close() {
+        await new Promise<void>((resolve, reject) => {
           writer!.end((err?: Error | null) => (err ? reject(err) : resolve()));
         });
+        await fsp.rename(tmpPath, finalPath);
+      },
+      async abort() {
+        writer?.destroy();
+        await fsp.unlink(tmpPath).catch(() => {});
       },
     });
   }

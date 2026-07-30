@@ -22,6 +22,18 @@ const ENTITIES: Record<string, string> = {
 export const escapeXml = (text: string): string =>
   text.replace(/[&<>"']/g, (c) => ESCAPES[c]);
 
+export function extractTags(xmlStr: string, tag: string): string[] {
+  const results: string[] = [];
+  const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "g");
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(xmlStr)) !== null) results.push(match[1]);
+  return results;
+}
+
+export function getTag(xmlStr: string, tag: string): string {
+  return extractTags(xmlStr, tag)[0] ?? "";
+}
+
 export const unescapeXml = (text: string): string =>
   text.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-z]+);/g, (all, entity: string) => {
     if (entity[0] === "#") {

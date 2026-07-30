@@ -373,6 +373,102 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
       });
     });
 
+    // ── Large / chunked uploads ───────────────────────────────────────────────
+
+    describe("large uploads (chunked)", () => {
+      // 17 MiB streamed crosses the 8 MiB internal part size twice, so this
+      // exercises the provider's chunked upload path (multipart / blocks /
+      // resumable) over three parts, driven by the real stream machinery.
+      it("round-trips a stream spanning three parts, with headers", async () => {
+        const size = 17 * 1024 * 1024;
+        const chunk = 256 * 1024;
+        const data = Buffer.alloc(size);
+        for (let i = 0; i < size; i += 4) data.writeUInt32LE(i, i);
+        const name = testFile("bin");
+
+        let offset = 0;
+        const source = new ReadableStream<Uint8Array>({
+          pull(c) {
+            if (offset >= size) return c.close();
+            c.enqueue(data.subarray(offset, Math.min(offset + chunk, size)));
+            offset += chunk;
+          },
+        });
+        await bucket
+          .file(name)
+          .write(source, { metadata: { check: "chunked" } });
+
+        // Type and metadata ride on the session-start call in chunked mode,
+        // a different request than the single-shot PUT, so assert them here.
+        const info = await bucket.file(name).info();
+        expect(info!.size).toBe(size);
+        expect(info!.type).toBe("application/octet-stream");
+        if (bucket.type !== "FILESYSTEM") {
+          expect(info!.metadata.check).toBe("chunked");
+        }
+
+        // Spot-check bytes at the start, at both part boundaries, and at the
+        // end, instead of comparing 17 MiB strings.
+        const at = async (pos: number) =>
+          Buffer.from(
+            await bucket
+              .file(name)
+              .slice(pos, pos + 4)
+              .arrayBuffer(),
+          ).readUInt32LE(0);
+        expect(await at(0)).toBe(0);
+        expect(await at(8 * 1024 * 1024)).toBe(8 * 1024 * 1024);
+        expect(await at(16 * 1024 * 1024)).toBe(16 * 1024 * 1024);
+        expect(await at(size - 4)).toBe(size - 4);
+
+        await bucket.file(name).remove();
+      }, 120000);
+
+      it("an erroring source after escalation cleans up the session", async () => {
+        // 10 × 1 MiB crosses the 8 MiB threshold, so a chunked session is
+        // open when the source errors: this walks the provider's real abort
+        // (AbortMultipartUpload / cancel / session delete), not just a local
+        // buffer discard.
+        const name = testFile("bin");
+        let sent = 0;
+        const source = new ReadableStream<Uint8Array>({
+          pull(c) {
+            if (sent >= 10) return c.error(new Error("boom"));
+            c.enqueue(new Uint8Array(1024 * 1024));
+            sent++;
+          },
+        });
+        let threw = false;
+        try {
+          await bucket.file(name).write(source);
+        } catch {
+          threw = true;
+        }
+        expect(threw).toBe(true);
+        expect(await bucket.file(name).exists()).toBe(false);
+      }, 120000);
+
+      it("an erroring source stream leaves no file behind", async () => {
+        const name = testFile("bin");
+        const source = new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(new Uint8Array(1024));
+          },
+          pull(c) {
+            c.error(new Error("boom"));
+          },
+        });
+        let threw = false;
+        try {
+          await bucket.file(name).write(source);
+        } catch {
+          threw = true;
+        }
+        expect(threw).toBe(true);
+        expect(await bucket.file(name).exists()).toBe(false);
+      });
+    });
+
     // ── copy / move / rename ──────────────────────────────────────────────────
 
     describe("copy()", () => {

@@ -506,6 +506,8 @@ await bucket.file("image.jpg").write(data, {
 
 > **Note:** Options are silently ignored by the FileSystem provider.
 
+Uploads use bounded memory: bodies beyond ~8 MiB are sent through the provider's chunked mechanism internally (multipart on S3/R2, large files on B2, blocks on Azure, a resumable session on GCS), while smaller ones go in a single request. A failed or aborted write is cleaned up on the provider and never leaves a partial object behind.
+
 ### file.copyTo(path)
 
 Creates a duplicate of the file at a new path, keeping the original:
@@ -629,7 +631,7 @@ Returns a web `WritableStream<Uint8Array>` that writes to the file, synchronousl
 bucket.file("output.txt").writable();
 ```
 
-Use it as the target of `.pipeTo()` from any web `ReadableStream`.
+Use it as the target of `.pipeTo()` from any web `ReadableStream`. The stream uploads in ~8 MiB chunks with backpressure, so arbitrarily large files upload with constant memory.
 
 ```js
 const stream = bucket.file("output.txt").writable();

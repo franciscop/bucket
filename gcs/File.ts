@@ -1,7 +1,10 @@
 import { Readable, Writable } from "node:stream";
 import parse from "../lib/parse.ts";
 import promiseToReadable from "../lib/promiseToReadable.ts";
-import promiseToWritable from "../lib/promiseToWritable.ts";
+import chunkedWritable, {
+  writeChunked,
+  type ChunkedTarget,
+} from "../lib/chunkedWritable.ts";
 import {
   getAccessToken,
   getMetadataToken,
@@ -215,17 +218,96 @@ export class GCSFile implements BucketFile {
     }
   }
 
+  // GCS resumable upload: open a session (the URI is a capability, no auth
+  // needed on the chunks), then PUT sequential ranges. The final chunk
+  // carries the total size in Content-Range, which completes the object, so
+  // finish() is a no-op. Chunks must be 256 KiB multiples; 8 MiB is.
+  #target(
+    options: WriteOptions = {},
+  ): ChunkedTarget<{ uri: string; offset: number }, number> {
+    return {
+      partSize: 8 * 1024 * 1024,
+      single: (data) => this.#put(data, options),
+      start: async () => {
+        const type = options.type ?? getContentType(this.path);
+        const metaObj: Record<string, unknown> = { name: this.path };
+        if (type) metaObj.contentType = type;
+        if (options.cacheControl) metaObj.cacheControl = options.cacheControl;
+        if (options.disposition)
+          metaObj.contentDisposition = options.disposition;
+        if (options.metadata)
+          metaObj.metadata = Object.fromEntries(
+            Object.entries(options.metadata).map(([k, v]) => [
+              k.toLowerCase(),
+              v,
+            ]),
+          );
+        const url = `${this.#url}/upload/storage/v1/b/${this.#bucket}/o?uploadType=resumable&name=${encodeURIComponent(this.path)}`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: await this.#headers({ "Content-Type": "application/json" }),
+          body: JSON.stringify(metaObj),
+        });
+        if (!res.ok)
+          throw new BucketError(`GCS resumable start error: ${res.status}`, {
+            provider: "GCS",
+            status: res.status,
+          });
+        await res.text();
+        const uri = res.headers.get("location");
+        if (!uri)
+          throw new BucketError("GCS resumable start: no session URI", {
+            provider: "GCS",
+          });
+        return { uri, offset: 0 };
+      },
+      part: async (ctx, n, data, isLast) => {
+        const from = ctx.offset;
+        const to = ctx.offset + data.length - 1;
+        const total = isLast ? String(ctx.offset + data.length) : "*";
+        const res = await fetch(ctx.uri, {
+          method: "PUT",
+          headers: { "Content-Range": `bytes ${from}-${to}/${total}` },
+          body: data as unknown as BodyInit,
+        });
+        // 308 means "resume incomplete": expected for every non-final chunk
+        if (res.status !== 308 && !res.ok)
+          throw new BucketError(`GCS resumable part error: ${res.status}`, {
+            provider: "GCS",
+            status: res.status,
+          });
+        await res.text();
+        ctx.offset += data.length;
+        return n;
+      },
+      finish: async () => {},
+      abort: async (ctx) => {
+        await fetch(ctx.uri, { method: "DELETE" }).catch(() => {});
+      },
+    };
+  }
+
   async write(content: WriteContent, options?: WriteOptions): Promise<void> {
-    if (typeof content === "string") return this.#put(content, options);
+    if (typeof content === "string")
+      return writeChunked(this.#target(options), Buffer.from(content));
     if (content instanceof Buffer || content instanceof Uint8Array)
-      return this.#put(Buffer.from(content), options);
-    if (content instanceof Blob)
-      return this.#put(Buffer.from(await content.arrayBuffer()), {
+      return writeChunked(this.#target(options), Buffer.from(content));
+    if (content instanceof Blob) {
+      const opts = {
         ...options,
         type: resolveContentType(this.path, content, options),
-      });
-    if (content instanceof GCSFile)
-      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+      };
+      return writeChunked(
+        this.#target(opts),
+        Buffer.from(await content.arrayBuffer()),
+      );
+    }
+    // A BucketFile from this or any other provider: stream it across
+    if (
+      typeof (content as BucketFile).stream === "function" &&
+      typeof (content as BucketFile).info === "function"
+    )
+      return (content as BucketFile).stream().pipeTo(this.writable(options));
     if (typeof (content as ReadableStream).pipeTo === "function")
       return (content as ReadableStream).pipeTo(this.writable(options));
     if (content instanceof Readable)
@@ -295,7 +377,7 @@ export class GCSFile implements BucketFile {
   }
 
   writable(options?: WriteOptions): WritableStream {
-    return promiseToWritable((data: Buffer) => this.#put(data, options));
+    return chunkedWritable(this.#target(options));
   }
 
   nodeWritable(options?: WriteOptions): NodeJS.WritableStream {

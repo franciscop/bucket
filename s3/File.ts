@@ -2,7 +2,8 @@ import { Readable, Writable } from "node:stream";
 import { presignS3 } from "../lib/presignS3.ts";
 import parse from "../lib/parse.ts";
 import promiseToReadable from "../lib/promiseToReadable.ts";
-import promiseToWritable from "../lib/promiseToWritable.ts";
+import chunkedWritable, { writeChunked } from "../lib/chunkedWritable.ts";
+import multipartS3 from "../lib/multipartS3.ts";
 import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
 import { destKey } from "../lib/prefix.ts";
@@ -116,7 +117,7 @@ export class S3File implements BucketFile {
     return new Uint8Array(await this.arrayBuffer());
   }
 
-  async #put(data: string | Buffer, options: WriteOptions = {}): Promise<void> {
+  #putHeaders(options: WriteOptions = {}): Record<string, string> {
     const headers: Record<string, string> = {};
     const type = options.type ?? getContentType(this.path);
     if (type) headers["Content-Type"] = type;
@@ -128,9 +129,13 @@ export class S3File implements BucketFile {
         headers[`x-amz-meta-${k.toLowerCase()}`] = v;
       }
     }
+    return headers;
+  }
+
+  async #put(data: string | Buffer, options: WriteOptions = {}): Promise<void> {
     const res = await this.#ctx.doRequest("PUT", this.path, {
       body: data,
-      headers,
+      headers: this.#putHeaders(options),
     });
     if (!res.ok)
       throw new BucketError(`S3 PUT error: ${res.status}`, {
@@ -139,17 +144,38 @@ export class S3File implements BucketFile {
       });
   }
 
+  #target(options?: WriteOptions) {
+    return multipartS3({
+      provider: "S3",
+      path: this.path,
+      makeUrl: this.#ctx.makeUrl,
+      getAuth: this.#ctx.getAuth,
+      headers: this.#putHeaders(options),
+      single: (data) => this.#put(data, options),
+    });
+  }
+
   async write(content: WriteContent, options?: WriteOptions): Promise<void> {
-    if (typeof content === "string") return this.#put(content, options);
+    if (typeof content === "string")
+      return writeChunked(this.#target(options), Buffer.from(content));
     if (content instanceof Buffer || content instanceof Uint8Array)
-      return this.#put(Buffer.from(content), options);
-    if (content instanceof Blob)
-      return this.#put(Buffer.from(await content.arrayBuffer()), {
+      return writeChunked(this.#target(options), Buffer.from(content));
+    if (content instanceof Blob) {
+      const opts = {
         ...options,
         type: resolveContentType(this.path, content, options),
-      });
-    if (content instanceof S3File)
-      return this.#put(Buffer.from(await content.arrayBuffer()), options);
+      };
+      return writeChunked(
+        this.#target(opts),
+        Buffer.from(await content.arrayBuffer()),
+      );
+    }
+    // A BucketFile from this or any other provider: stream it across
+    if (
+      typeof (content as BucketFile).stream === "function" &&
+      typeof (content as BucketFile).info === "function"
+    )
+      return (content as BucketFile).stream().pipeTo(this.writable(options));
     if (typeof (content as ReadableStream).pipeTo === "function")
       return (content as ReadableStream).pipeTo(this.writable(options));
     if (content instanceof Readable)
@@ -214,7 +240,7 @@ export class S3File implements BucketFile {
   }
 
   writable(options?: WriteOptions): WritableStream {
-    return promiseToWritable((data: Buffer) => this.#put(data, options));
+    return chunkedWritable(this.#target(options));
   }
 
   nodeWritable(options?: WriteOptions): NodeJS.WritableStream {

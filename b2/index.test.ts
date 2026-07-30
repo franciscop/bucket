@@ -274,6 +274,131 @@ describe("B2 file().exists()", () => {
   });
 });
 
+describe("B2 large-file (chunked) upload", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  // Just over one 8 MiB part, so the chunker escalates into two parts
+  const SIZE = 8 * 1024 * 1024 + 100;
+
+  it("runs start → parts (with SHA1s) → finish", async () => {
+    const calls: string[] = [];
+    const partNumbers: string[] = [];
+    let startBody: Record<string, unknown> | null = null;
+    let finishBody: {
+      fileId: string;
+      partSha1Array: string[];
+    } | null = null;
+
+    const bucket = await makeBucket((url, init) => {
+      const u = url as string;
+      if (u.includes("b2_start_large_file")) {
+        calls.push("start");
+        startBody = JSON.parse(init?.body as string);
+        return Promise.resolve(
+          makeResponse(JSON.stringify({ fileId: "large-1" })),
+        );
+      }
+      if (u.includes("b2_get_upload_part_url")) {
+        return Promise.resolve(
+          makeResponse(
+            JSON.stringify({
+              uploadUrl: "https://part.example/upload",
+              authorizationToken: "part-token",
+            }),
+          ),
+        );
+      }
+      if (u === "https://part.example/upload") {
+        calls.push("part");
+        const headers = Object.fromEntries(
+          new Headers(init?.headers).entries(),
+        );
+        partNumbers.push(headers["x-bz-part-number"]);
+        expect(headers["x-bz-content-sha1"]).toMatch(/^[0-9a-f]{40}$/);
+        return Promise.resolve(makeResponse("{}"));
+      }
+      if (u.includes("b2_finish_large_file")) {
+        calls.push("finish");
+        finishBody = JSON.parse(init?.body as string);
+        return Promise.resolve(makeResponse("{}"));
+      }
+      return Promise.resolve(makeResponse("{}"));
+    });
+
+    await bucket
+      .file("big.bin")
+      .write(Buffer.alloc(SIZE), { metadata: { check: "chunked" } });
+
+    expect(calls).toEqual(["start", "part", "part", "finish"]);
+    expect(partNumbers).toEqual(["1", "2"]);
+    expect(startBody!.fileName).toBe("big.bin");
+    expect((startBody!.fileInfo as Record<string, string>).check).toBe(
+      "chunked",
+    );
+    expect(finishBody!.fileId).toBe("large-1");
+    expect(finishBody!.partSha1Array).toHaveLength(2);
+    expect(finishBody!.partSha1Array[0]).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it("cancels the large file when a part fails", async () => {
+    const calls: string[] = [];
+    let cancelBody: { fileId: string } | null = null;
+    let parts = 0;
+
+    const bucket = await makeBucket((url, init) => {
+      const u = url as string;
+      if (u.includes("b2_start_large_file")) {
+        calls.push("start");
+        return Promise.resolve(
+          makeResponse(JSON.stringify({ fileId: "large-2" })),
+        );
+      }
+      if (u.includes("b2_get_upload_part_url")) {
+        return Promise.resolve(
+          makeResponse(
+            JSON.stringify({
+              uploadUrl: "https://part.example/upload",
+              authorizationToken: "part-token",
+            }),
+          ),
+        );
+      }
+      if (u === "https://part.example/upload") {
+        parts++;
+        if (parts === 2)
+          return Promise.resolve(makeResponse("part failed", 500));
+        return Promise.resolve(makeResponse("{}"));
+      }
+      if (u.includes("b2_cancel_large_file")) {
+        calls.push("cancel");
+        cancelBody = JSON.parse(init?.body as string);
+        return Promise.resolve(makeResponse("{}"));
+      }
+      if (u.includes("b2_finish_large_file")) {
+        calls.push("finish");
+        return Promise.resolve(makeResponse("{}"));
+      }
+      return Promise.resolve(makeResponse("{}"));
+    });
+
+    let threw = false;
+    try {
+      await bucket.file("big.bin").write(Buffer.alloc(SIZE));
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(calls).toEqual(["start", "cancel"]); // no finish
+    expect(cancelBody!.fileId).toBe("large-2");
+  });
+});
+
 describe("B2 file().write()", () => {
   let originalFetch: typeof fetch;
   beforeEach(() => {
