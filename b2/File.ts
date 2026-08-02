@@ -35,8 +35,6 @@ export interface B2BucketContext {
   /** Part size for chunked uploads, resolved from the account's auth. */
   partSize(): Promise<number>;
   apiBase: string;
-  base: string;
-  name: string;
   // Folder prefix of the bucket that created this file; copyTo()/moveTo()
   // destinations and rename() resolve against it.
   PREFIX: string;

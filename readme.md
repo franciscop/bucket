@@ -319,14 +319,14 @@ URL availability per provider:
 |           | `publicUrl()` | `signedUrl()` | `uploadUrl()` |
 | --------- | :-----------: | :-----------: | :-----------: |
 | **S3**    |      ✅       |      ✅       |      ✅       |
-| **R2**    |      ❌       |      ✅       |      ✅       |
+| **R2**    |      ✅       |      ✅       |      ✅       |
 | **GCS**   |      ✅       |      ✅       |      ✅       |
 | **Azure** |      ✅       |      ✅       |      ✅       |
 | **B2**    |      ✅       |      ✅       |      ❌       |
 | **FS**    |      ❌       |      ❌       |      ❌       |
 
-- ✅: returns a URL. For `publicUrl()` it only answers if the bucket or object is publicly readable, and GCS/Azure signing needs key credentials (`null` with anonymous GCS or Azure managed identity).
-- ❌: always returns `null`: R2's storage endpoint is never public (public access goes through an `r2.dev` or custom domain), B2 uploads require auth headers so a standalone upload URL cannot exist (use `.write()` instead), and the local filesystem has no URLs of any kind.
+- ✅: returns a URL. For `publicUrl()` it only answers if the bucket or object is publicly readable; R2 additionally needs the [`publicUrl` config option](#cloudflare-r2) (`null` without it), and GCS/Azure signing needs key credentials (`null` with anonymous GCS or Azure managed identity).
+- ❌: always returns `null`: B2 uploads require auth headers so a standalone upload URL cannot exist (use `.write()` instead), and the local filesystem has no URLs of any kind.
 
 ### file.info()
 
@@ -674,7 +674,7 @@ await bucket.file("logo.png").publicUrl();
 // "https://my-bucket.s3.us-east-1.amazonaws.com/logo.png" or null
 ```
 
-The URL is the file's canonical address; whether it actually answers depends on the bucket or object being publicly readable. It is `null` when the provider has no public URL at all: always on the local filesystem, and on R2, whose storage endpoint rejects unsigned requests (public R2 access goes through an `r2.dev` or custom domain). See the availability table at the top of this chapter for a per-provider summary.
+The URL is the file's canonical address; whether it actually answers depends on the bucket or object being publicly readable. It is `null` when the provider has no public URL: always on the local filesystem, and on R2 unless the bucket's public domain is set with the [`publicUrl` config option](#cloudflare-r2) (R2's storage endpoint rejects unsigned requests). See the availability table at the top of this chapter for a per-provider summary.
 
 ```js
 // Serve a public URL when available, falling back to a temporary signed one:
@@ -753,6 +753,8 @@ Paths are bucket-relative, exactly like the remote providers: a leading `/` mean
 
 As a safety net, passing the bucket's own OS path back in throws instead of silently nesting: `FileSystem("/data").file("/data/a.png")` is almost always a mistake for `file("a.png")`, so it throws `INVALID_PATH` with the suggested fix rather than creating `/data/data/a.png`.
 
+Streaming writes go to a temporary `.tmp-` sibling and are renamed into place on completion, so a file is never observable half-written; `list()` skips these temp entries.
+
 ### Backblaze B2
 
 ```js
@@ -811,6 +813,14 @@ const bucket = R2("my-bucket", {
 
 The `url` is the full R2 endpoint URL, including the bucket name at the end; it must match the bucket `name` passed as the first argument.
 
+R2's storage endpoint is never publicly readable, so `file.publicUrl()` returns `null` unless you set `publicUrl` to the bucket's public domain (the `r2.dev` subdomain or a custom domain configured in Cloudflare):
+
+```js
+const bucket = R2("my-bucket", { publicUrl: "https://cdn.example.com" });
+await bucket.file("logo.png").publicUrl();
+// "https://cdn.example.com/logo.png"
+```
+
 Environment variable fallbacks:
 
 | Option      | Env var                |
@@ -819,6 +829,7 @@ Environment variable fallbacks:
 | `url`       | `R2_URL`               |
 | `id`        | `R2_ACCESS_KEY_ID`     |
 | `secret`    | `R2_SECRET_ACCESS_KEY` |
+| `publicUrl` | `R2_PUBLIC_URL`        |
 
 ### Google Cloud Storage
 

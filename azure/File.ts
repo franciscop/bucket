@@ -28,6 +28,15 @@ import type {
   WriteOptions,
 } from "../lib/types.ts";
 
+// Azure signs the canonicalized resource with the path as sent, and the WHATWG
+// URL parser percent-encodes "<" and ">" in URL paths, so encode them up
+// front and sign that same form (mirrors lib/encodeS3Path for S3/R2).
+const encodePath = (path: string): string =>
+  path.replace(
+    /[<>]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
+
 export type AzureFileAuth =
   | { type: "shared-key"; key: string }
   | { type: "managed-identity"; getToken: () => Promise<string> };
@@ -92,7 +101,7 @@ export class AzureFile implements BucketFile {
   }
 
   #baseUrl(): string {
-    return `${this.#url}/${this.#container}/${this.path}`;
+    return `${this.#url}/${this.#container}/${encodePath(this.path)}`;
   }
 
   async #request(
@@ -100,7 +109,7 @@ export class AzureFile implements BucketFile {
     extraHeaders: Record<string, string> = {},
     body?: string | Buffer,
   ): Promise<Response> {
-    const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${this.path}`;
+    const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${encodePath(this.path)}`;
     const allExtra = {
       ...extraHeaders,
       ...(body !== undefined
@@ -214,7 +223,7 @@ export class AzureFile implements BucketFile {
     extraHeaders: Record<string, string> = {},
     body?: Buffer | string,
   ): Promise<Response> {
-    const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${this.path}`;
+    const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${encodePath(this.path)}`;
     const query = new URLSearchParams(params).toString();
     const url = `${this.#baseUrl()}?${query}`;
     const allExtra = {
@@ -344,7 +353,7 @@ export class AzureFile implements BucketFile {
       this.#url,
       this.#prefix,
     );
-    const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${dst.path}`;
+    const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${encodePath(dst.path)}`;
 
     if (this.#auth.type === "shared-key") {
       const headers = await signAzure(

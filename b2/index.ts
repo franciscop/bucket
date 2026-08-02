@@ -59,7 +59,7 @@ async function authorize(id: string, secret: string): Promise<B2Auth> {
   };
 }
 
-class BackBlazeInstance implements Bucket, B2BucketContext {
+class BackBlazeInstance implements Bucket {
   readonly type = "BACKBLAZE";
   name: string;
   // Non-secret connection details, mirrored from the resolved auth so
@@ -70,11 +70,31 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
   base = "";
   PREFIX = "";
   #auth!: Promise<B2Auth>;
+  // What B2File needs from its bucket, kept off the public class surface.
+  #ctx: B2BucketContext;
 
   constructor(name: string = ENV_NAME || "", config: B2Config = {}) {
     const { id = ENV_ID || "", secret = ENV_KEY || "", eager = true } = config;
     this.name = name;
     if (eager) this.#adopt(authorize(id, secret));
+    const self = this;
+    this.#ctx = {
+      info: () => self.info(),
+      fetch: (url, options) => self.fetch(url, options),
+      // Part size for chunked (large file) uploads. B2's recommendedPartSize
+      // is ~100 MB, far too much to buffer per part, so we use our own 8 MiB
+      // default and only defer to B2 when its absolute minimum is higher.
+      partSize: async () => {
+        const auth = await self.#auth;
+        return Math.max(auth.absoluteMinimumPartSize, 8 * 1024 * 1024);
+      },
+      get apiBase() {
+        return self.apiBase;
+      },
+      get PREFIX() {
+        return self.PREFIX;
+      },
+    };
   }
 
   // Store the auth promise and mirror its non-secret fields onto this instance.
@@ -89,14 +109,6 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
       .catch(() => {
         // Swallow here; the rejection resurfaces wherever #auth is awaited.
       });
-  }
-
-  // Part size for chunked (large file) uploads. B2's recommendedPartSize is
-  // ~100 MB, far too much to buffer per part, so we use our own 8 MiB default
-  // and only defer to B2 when its absolute minimum is higher.
-  async partSize(): Promise<number> {
-    const auth = await this.#auth;
-    return Math.max(auth.absoluteMinimumPartSize, 8 * 1024 * 1024);
   }
 
   async info(): Promise<BucketInfo> {
@@ -142,7 +154,7 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
 
   file(name: string): B2File {
     if (!name) throw new Error("No name");
-    return new B2File(fileKey(this.PREFIX, name), this);
+    return new B2File(fileKey(this.PREFIX, name), this.#ctx);
   }
 
   folder(path: string): BackBlazeInstance {
@@ -183,7 +195,7 @@ class BackBlazeInstance implements Bucket, B2BucketContext {
       const page: B2File[] = [];
       for (const fileData of data.files) {
         if (!s.test(fileData.fileName)) continue;
-        page.push(new B2File(fileData.fileName, this));
+        page.push(new B2File(fileData.fileName, this.#ctx));
       }
       yield page;
 

@@ -301,9 +301,29 @@ describe("R2 file().remove()", () => {
 });
 
 describe("R2 file().publicUrl()", () => {
-  it("returns null: the R2 storage endpoint is never public", async () => {
+  it("returns null without a configured public domain", async () => {
     const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     expect(await bucket.file("path/to/file.txt").publicUrl()).toBeNull();
+  });
+
+  it("uses the publicUrl config option (trailing slash normalized)", async () => {
+    const bucket = CloudflareR2(TEST_NAME, {
+      ...TEST_CONFIG,
+      publicUrl: "https://cdn.example.com/",
+    });
+    expect(await bucket.file("path/to/file.txt").publicUrl()).toBe(
+      "https://cdn.example.com/path/to/file.txt",
+    );
+  });
+
+  it("is inherited by folders and list-style handles", async () => {
+    const bucket = CloudflareR2(TEST_NAME, {
+      ...TEST_CONFIG,
+      publicUrl: "https://cdn.example.com",
+    });
+    expect(await bucket.folder("img").file("a.png").publicUrl()).toBe(
+      "https://cdn.example.com/img/a.png",
+    );
   });
 });
 

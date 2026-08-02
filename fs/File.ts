@@ -248,7 +248,10 @@ export class FSFile implements BucketFile {
       async start() {
         await fsp.mkdir(dirname(finalPath), { recursive: true });
         writer = createWriteStream(tmpPath);
-        await new Promise<void>((resolve) => writer!.on("open", resolve));
+        await new Promise<void>((resolve, reject) => {
+          writer!.once("open", resolve);
+          writer!.once("error", reject);
+        });
       },
       write(chunk) {
         return new Promise<void>((resolve, reject) => {

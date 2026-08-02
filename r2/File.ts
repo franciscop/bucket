@@ -33,6 +33,8 @@ export interface R2BucketContext {
   getAuth: () => S3Auth;
   bucketName: string;
   url: string;
+  /** Public base (r2.dev or custom domain) for publicUrl(); "" when unset. */
+  publicUrl: string;
   // Folder prefix of the bucket that created this file; copyTo()/moveTo()
   // destinations and rename() resolve against it.
   prefix: string;
@@ -249,11 +251,11 @@ export class R2File implements BucketFile {
     );
   }
 
-  async publicUrl(): Promise<null> {
-    // R2's storage endpoint rejects unsigned requests, so it is never a public
-    // URL. Public access goes through an r2.dev or custom domain, which the
-    // library cannot derive; use signedUrl() instead.
-    return null;
+  async publicUrl(): Promise<string | null> {
+    // R2's storage endpoint rejects unsigned requests, so a public URL only
+    // exists through the bucket's r2.dev or custom domain, which the library
+    // cannot derive: it comes from the `publicUrl` config option.
+    return this.#ctx.publicUrl ? `${this.#ctx.publicUrl}/${this.path}` : null;
   }
 
   async signedUrl(opts: { expires: number | string }): Promise<string> {

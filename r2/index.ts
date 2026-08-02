@@ -14,6 +14,7 @@ const {
   R2_SECRET_ACCESS_KEY: ENV_KEY,
   R2_SESSION_TOKEN: ENV_SESSION_TOKEN,
   R2_REGION: ENV_REGION,
+  R2_PUBLIC_URL: ENV_PUBLIC_URL,
 } = process.env;
 
 export interface R2Config {
@@ -25,6 +26,11 @@ export interface R2Config {
    * `https://<account>.r2.cloudflarestorage.com/<bucket>` (falls back to
    * `R2_URL`). */
   url?: string;
+  /** Public base for `file.publicUrl()`: the bucket's `r2.dev` or custom
+   * domain, e.g. `https://cdn.example.com` (falls back to `R2_PUBLIC_URL`).
+   * Without it `publicUrl()` returns null, since R2's storage endpoint is
+   * never publicly readable. */
+  publicUrl?: string;
 }
 
 function extractBucketName(url: string): string {
@@ -38,6 +44,7 @@ function extractBucketName(url: string): string {
 class CloudflareR2Bucket implements Bucket {
   readonly type = "R2";
   private url: string;
+  #publicUrl: string;
   #auth: S3Auth;
   private bucketName: string;
   PREFIX = "";
@@ -50,9 +57,11 @@ class CloudflareR2Bucket implements Bucket {
       region = ENV_REGION || "auto",
       sessionToken = ENV_SESSION_TOKEN,
       url = ENV_URL || "",
+      publicUrl = ENV_PUBLIC_URL || "",
     }: R2Config = {},
   ) {
     this.url = url.replace(/\/$/, "");
+    this.#publicUrl = publicUrl.replace(/\/$/, "");
     // R2's request URL already ends with the bucket path, so the two must agree.
     const derived = extractBucketName(this.url);
     if (name && derived && name !== derived)
@@ -207,6 +216,7 @@ class CloudflareR2Bucket implements Bucket {
       getAuth: () => this.#auth,
       bucketName: this.bucketName,
       url: this.url,
+      publicUrl: this.#publicUrl,
       prefix: this.PREFIX,
     };
     return new R2File(path, ctx);
@@ -218,7 +228,10 @@ class CloudflareR2Bucket implements Bucket {
   }
 
   folder(path: string): CloudflareR2Bucket {
-    const b = new CloudflareR2Bucket(this.bucketName, { url: this.url });
+    const b = new CloudflareR2Bucket(this.bucketName, {
+      url: this.url,
+      publicUrl: this.#publicUrl,
+    });
     b.#auth = this.#auth;
     b.PREFIX = folderKey(this.PREFIX, path);
     return b;
