@@ -21,11 +21,33 @@ interface B2FileEntry {
 
 interface B2Auth {
   bucketId: string;
+  bucketName: string;
   token: string;
   apiBase: string;
   base: string;
   absoluteMinimumPartSize: number;
 }
+
+// b2_authorize_account. `allowed` describes what the application key may do:
+// a key restricted to one bucket names it, while master keys (and any key with
+// account-wide access) leave bucketId/bucketName null and need a lookup.
+interface B2AuthResponse {
+  accountId: string;
+  authorizationToken: string;
+  apiUrl: string;
+  downloadUrl: string;
+  absoluteMinimumPartSize?: number;
+  allowed: {
+    capabilities?: string[];
+    bucketId?: string | null;
+    bucketName?: string | null;
+    namePrefix?: string | null;
+  };
+}
+
+const authError = (message: string, status?: number): never => {
+  throw new BucketError(message, { provider: "BACKBLAZE", status });
+};
 
 interface B2Config {
   id?: string;
@@ -36,27 +58,110 @@ interface B2Config {
   eager?: boolean;
 }
 
-async function authorize(id: string, secret: string): Promise<B2Auth> {
+async function authorize(
+  id: string,
+  secret: string,
+  name: string,
+  knownBucketId = "",
+): Promise<B2Auth> {
   const derived = Buffer.from(id + ":" + secret).toString("base64");
   // Use fetch directly to avoid circular dependency during init
   const res = await fetch(
     "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
     { headers: { Authorization: "Basic " + derived } },
   );
-  const data = (await res.json()) as {
-    allowed: { bucketId: string };
-    authorizationToken: string;
-    apiUrl: string;
-    downloadUrl: string;
-    absoluteMinimumPartSize?: number;
-  };
-  return {
-    bucketId: data.allowed.bucketId,
+  if (!res.ok) authError(`B2 authorize error: ${res.status}`, res.status);
+  const data = (await res.json()) as B2AuthResponse;
+  const apiBase = data.apiUrl + API_VERSION_URL;
+  const auth = {
     token: data.authorizationToken,
-    apiBase: data.apiUrl + API_VERSION_URL,
+    apiBase,
     base: data.downloadUrl.replace(/\/$/, "") + "/",
     absoluteMinimumPartSize: data.absoluteMinimumPartSize ?? 5 * 1024 * 1024,
   };
+
+  // A bucket-restricted key already tells us the bucket: use it, and make sure
+  // it is the one that was asked for instead of silently working on another.
+  const allowedId = data.allowed?.bucketId ?? "";
+  const allowedName = data.allowed?.bucketName ?? "";
+  if (allowedId) {
+    if (name && allowedName && name !== allowedName) {
+      authError(
+        `B2 key is restricted to the bucket "${allowedName}", so it cannot be used for "${name}"`,
+      );
+    }
+    return { ...auth, bucketId: allowedId, bucketName: allowedName || name };
+  }
+
+  // A re-authorization already knows the id, so skip the lookup below.
+  if (knownBucketId)
+    return { ...auth, bucketId: knownBucketId, bucketName: name };
+
+  // Otherwise the id has to be looked up by name, which needs both a name and
+  // the listBuckets capability.
+  if (!name) {
+    authError(
+      "B2 needs a bucket name: this key is not restricted to a single bucket, so pass one to BackBlaze() or set B2_BUCKET",
+    );
+  }
+  if (data.allowed?.capabilities?.includes("listBuckets") === false) {
+    authError(
+      `B2 cannot resolve the bucket "${name}": this key is not restricted to a bucket and lacks the "listBuckets" capability. Use a bucket-restricted key, or grant it listBuckets.`,
+    );
+  }
+  const url =
+    apiBase +
+    "b2_list_buckets?accountId=" +
+    encodeURIComponent(data.accountId) +
+    "&bucketName=" +
+    encodeURIComponent(name);
+  const listRes = await fetch(url, { headers: { Authorization: auth.token } });
+  if (!listRes.ok) {
+    authError(
+      `B2 cannot resolve the bucket "${name}": list buckets failed with ${listRes.status}`,
+      listRes.status,
+    );
+  }
+  const { buckets } = (await listRes.json()) as {
+    buckets?: { bucketId: string; bucketName: string }[];
+  };
+  const found = buckets?.find((b) => b.bucketName === name);
+  if (!found) {
+    authError(
+      `B2 bucket "${name}" does not exist, or this key cannot access it`,
+    );
+  }
+  return { ...auth, bucketId: found!.bucketId, bucketName: name };
+}
+
+// B2 authorization tokens expire after 24 hours, so a long-lived bucket has
+// to re-authorize. The token lives in a session shared by a bucket and every
+// folder cloned from it, so one refresh serves all of them.
+interface B2Session {
+  auth: Promise<B2Auth>;
+  refresh(stale: Promise<B2Auth>): Promise<B2Auth>;
+}
+
+function makeSession(
+  id: string,
+  secret: string,
+  name: string,
+  bucketId = "",
+): B2Session {
+  const session: B2Session = {
+    auth: authorize(id, secret, name, bucketId),
+    refresh(stale) {
+      // Only the first caller to notice the stale token re-authorizes; any
+      // other in-flight request awaits the replacement it started.
+      if (session.auth === stale) {
+        session.auth = stale
+          .then((a) => authorize(id, secret, a.bucketName, a.bucketId))
+          .catch(() => authorize(id, secret, name, bucketId));
+      }
+      return session.auth;
+    },
+  };
+  return session;
 }
 
 class BackBlazeInstance implements Bucket {
@@ -69,14 +174,14 @@ class BackBlazeInstance implements Bucket {
   apiBase = "";
   base = "";
   PREFIX = "";
-  #auth!: Promise<B2Auth>;
+  #session!: B2Session;
   // What B2File needs from its bucket, kept off the public class surface.
   #ctx: B2BucketContext;
 
   constructor(name: string = ENV_NAME || "", config: B2Config = {}) {
     const { id = ENV_ID || "", secret = ENV_KEY || "", eager = true } = config;
     this.name = name;
-    if (eager) this.#adopt(authorize(id, secret));
+    if (eager) this.#adopt(makeSession(id, secret, name));
     const self = this;
     this.#ctx = {
       info: () => self.info(),
@@ -85,7 +190,7 @@ class BackBlazeInstance implements Bucket {
       // is ~100 MB, far too much to buffer per part, so we use our own 8 MiB
       // default and only defer to B2 when its absolute minimum is higher.
       partSize: async () => {
-        const auth = await self.#auth;
+        const auth = await self.#session.auth;
         return Math.max(auth.absoluteMinimumPartSize, 8 * 1024 * 1024);
       },
       get apiBase() {
@@ -97,12 +202,15 @@ class BackBlazeInstance implements Bucket {
     };
   }
 
-  // Store the auth promise and mirror its non-secret fields onto this instance.
-  #adopt(auth: Promise<B2Auth>): void {
-    this.#auth = auth;
-    auth
+  // Store the session and mirror its non-secret fields onto this instance.
+  #adopt(session: B2Session): void {
+    this.#session = session;
+    session.auth
       .then((a) => {
         this.id = a.bucketId;
+        // A bucket-restricted key knows its own name, so adopt it when the
+        // caller did not pass one.
+        this.name = a.bucketName;
         this.apiBase = a.apiBase;
         this.base = a.base;
       })
@@ -112,7 +220,7 @@ class BackBlazeInstance implements Bucket {
   }
 
   async info(): Promise<BucketInfo> {
-    await this.#auth;
+    await this.#session.auth;
     return {
       type: this.type,
       name: this.name,
@@ -122,14 +230,24 @@ class BackBlazeInstance implements Bucket {
   }
 
   async fetch(url: string, options: RequestInit = {}): Promise<Response> {
-    const { token } = await this.#auth;
-    const res = await fetch(url, {
-      ...options,
-      headers: {
-        Authorization: token,
-        ...(options.headers as Record<string, string>),
-      },
-    });
+    const send = (token: string): Promise<Response> =>
+      fetch(url, {
+        ...options,
+        headers: {
+          Authorization: token,
+          ...(options.headers as Record<string, string>),
+        },
+      });
+
+    const stale = this.#session.auth;
+    let res = await send((await stale).token);
+    // A 401 on a 24h-old token just means it expired: re-authorize once and
+    // retry. Skipped when the caller brought its own Authorization (B2 upload
+    // URLs carry a separate token, which re-authorizing would not renew).
+    const ownAuth = (options.headers as Record<string, string>)?.Authorization;
+    if (res.status === 401 && !ownAuth) {
+      res = await send((await this.#session.refresh(stale)).token);
+    }
     if (!res.ok) {
       const path = url.split(".com").pop();
       if (res.headers.get("content-type")?.includes("application/json")) {
@@ -159,7 +277,7 @@ class BackBlazeInstance implements Bucket {
 
   folder(path: string): BackBlazeInstance {
     const b = new BackBlazeInstance(this.name, { eager: false });
-    b.#adopt(this.#auth);
+    b.#adopt(this.#session);
     b.PREFIX = folderKey(this.PREFIX, path);
     return b;
   }
@@ -173,7 +291,7 @@ class BackBlazeInstance implements Bucket {
   }
 
   private async *pages(filter?: RegExp): AsyncGenerator<B2File[]> {
-    await this.#auth;
+    await this.#session.auth;
     let nextFileName: string | undefined;
     const s = scope(this.PREFIX, filter);
 

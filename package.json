@@ -12,7 +12,7 @@
     "start": "bun test --watch",
     "lint": "prettier --check .",
     "test": "npm run lint && bun test --timeout 30000",
-    "build": "tsup index.ts s3/index.ts b2/index.ts r2/index.ts fs/index.ts gcs/index.ts azure/index.ts --format esm --dts --out-dir dist --target node20",
+    "build": "tsup index.ts s3/index.ts b2/index.ts r2/index.ts fs/index.ts gcs/index.ts azure/index.ts --format esm --dts --out-dir dist --target node20 --clean",
     "prepare": "npm run build",
     "emulators:setup": "bun --env-file=.env.emulators test/setup-emulators.ts",
     "test:emulators": "bun --env-file=.env.emulators test/emulators.ts"

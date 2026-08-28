@@ -22,11 +22,42 @@ function makeResponse(
 }
 
 const AUTH_RESPONSE = {
-  allowed: { bucketId: "test-bucket-id" },
+  accountId: "test-account",
+  allowed: {
+    capabilities: ["listFiles", "readFiles", "writeFiles"],
+    bucketId: "test-bucket-id",
+    bucketName: "test-bucket",
+    namePrefix: null,
+  },
   authorizationToken: "test-auth-token",
   apiUrl: "https://api.backblazeb2.com",
   downloadUrl: "https://f001.backblazeb2.com",
 };
+
+// b2_authorize_account leaves allowed.bucketId null for master keys and any
+// key with account-wide access; the bucket then has to be looked up by name.
+const UNRESTRICTED_AUTH = {
+  ...AUTH_RESPONSE,
+  allowed: {
+    capabilities: ["listBuckets", "listFiles", "readFiles", "writeFiles"],
+    bucketId: null,
+    bucketName: null,
+    namePrefix: null,
+  },
+};
+
+const CREDS = { id: "test-id", secret: "test-key" };
+
+// Answer auth with the given response; everything else is up to the handler.
+function withAuth(auth: unknown, handler?: FetchHandler): void {
+  mockFetch((url, init) => {
+    if ((url as string).includes("b2_authorize_account"))
+      return Promise.resolve(makeResponse(JSON.stringify(auth)));
+    return handler
+      ? handler(url as string, init)
+      : Promise.resolve(makeResponse("{}"));
+  });
+}
 
 // Wrap a fetch handler so B2's auth request is always answered correctly.
 function withAuthMock(
@@ -72,6 +103,237 @@ const B2_LIST_RESPONSE = {
   ],
   nextFileName: null,
 };
+
+describe("B2 token refresh", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  // B2 tokens last 24h, so a long-lived bucket has to survive one expiring.
+  // Issues tok-1, tok-2, ...; expire(token) makes B2 reject that one from then
+  // on, exactly as it does once the 24h window closes.
+  function mockExpiry() {
+    const counts = { auths: 0, lookups: 0 };
+    const dead = new Set<string>();
+    mockFetch((url, init) => {
+      const u = url as string;
+      if (u.includes("b2_authorize_account")) {
+        counts.auths++;
+        return Promise.resolve(
+          makeResponse(
+            JSON.stringify({
+              ...UNRESTRICTED_AUTH,
+              authorizationToken: "tok-" + counts.auths,
+            }),
+          ),
+        );
+      }
+      if (u.includes("b2_list_buckets")) {
+        counts.lookups++;
+        return Promise.resolve(
+          makeResponse(
+            JSON.stringify({
+              buckets: [
+                { bucketId: "test-bucket-id", bucketName: "test-bucket" },
+              ],
+            }),
+          ),
+        );
+      }
+      const token = new Headers(init?.headers).get("authorization") ?? "";
+      if (dead.has(token)) {
+        return Promise.resolve(
+          makeResponse(
+            JSON.stringify({
+              status: 401,
+              code: "expired_auth_token",
+              message: "expired",
+            }),
+            401,
+            { "content-type": "application/json" },
+          ),
+        );
+      }
+      return Promise.resolve(
+        makeResponse(JSON.stringify({ files: [], nextFileName: null })),
+      );
+    });
+    return { counts, expire: (token: string) => dead.add(token) };
+  }
+
+  it("re-authorizes and retries, so the caller sees no error", async () => {
+    const m = mockExpiry();
+    const bucket = BackBlaze("test-bucket", CREDS);
+    await bucket.list();
+    expect(m.counts.auths).toBe(1);
+
+    m.expire("tok-1");
+    await bucket.list(); // 401 -> re-authorize -> retry, transparently
+    expect(m.counts.auths).toBe(2);
+    // The bucket id is already known, so the refresh skips the name lookup
+    expect(m.counts.lookups).toBe(1);
+  });
+
+  it("re-authorizes once for concurrent expired requests", async () => {
+    const m = mockExpiry();
+    const bucket = BackBlaze("test-bucket", CREDS);
+    await bucket.list();
+    m.expire("tok-1");
+    await Promise.all([
+      bucket.list(),
+      bucket.list(),
+      bucket.list(),
+      bucket.list(),
+    ]);
+    expect(m.counts.auths).toBe(2); // one initial, one shared refresh
+  });
+
+  it("shares the refresh between a bucket and its folders", async () => {
+    const m = mockExpiry();
+    const bucket = BackBlaze("test-bucket", CREDS);
+    const folder = bucket.folder("photos"); // cloned before any refresh
+    await bucket.list();
+
+    m.expire("tok-1");
+    await folder.list(); // the folder refreshes
+    expect(m.counts.auths).toBe(2);
+
+    await bucket.list(); // and the root is already on the new token
+    expect(m.counts.auths).toBe(2);
+  });
+
+  it("does not re-authorize when the caller brought its own token", async () => {
+    // B2 upload URLs carry a separate token, which re-authorizing the account
+    // would not renew, so a 401 there must surface instead of retrying.
+    let auths = 0;
+    mockFetch((url, init) => {
+      if ((url as string).includes("b2_authorize_account")) {
+        auths++;
+        return Promise.resolve(makeResponse(JSON.stringify(AUTH_RESPONSE)));
+      }
+      if (new Headers(init?.headers).get("authorization") === "upload-token") {
+        return Promise.resolve(
+          makeResponse(
+            JSON.stringify({
+              status: 401,
+              code: "expired_auth_token",
+              message: "x",
+            }),
+            401,
+            { "content-type": "application/json" },
+          ),
+        );
+      }
+      return Promise.resolve(makeResponse("{}"));
+    });
+    const bucket = BackBlaze("test-bucket", CREDS);
+    await bucket.info();
+    await expect(
+      bucket.fetch("https://upload.example/x", {
+        headers: { Authorization: "upload-token" },
+      }),
+    ).rejects.toThrow(/401/);
+    expect(auths).toBe(1);
+  });
+});
+
+describe("B2 bucket resolution at auth", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("looks the bucket up by name when the key is not bucket-restricted", async () => {
+    let listUrl = "";
+    let listAuth = "";
+    withAuth(UNRESTRICTED_AUTH, (url, init) => {
+      if ((url as string).includes("b2_list_buckets")) {
+        listUrl = url as string;
+        listAuth = new Headers(init?.headers).get("authorization") ?? "";
+        return Promise.resolve(
+          makeResponse(
+            JSON.stringify({
+              buckets: [
+                { bucketId: "other-id", bucketName: "another-bucket" },
+                { bucketId: "resolved-id", bucketName: "test-bucket" },
+              ],
+            }),
+          ),
+        );
+      }
+      return Promise.resolve(makeResponse("{}"));
+    });
+
+    const bucket = BackBlaze("test-bucket", CREDS);
+    const info = await bucket.info();
+    expect(info.id).toBe("resolved-id");
+    expect(info.name).toBe("test-bucket");
+    expect(listUrl).toContain("accountId=test-account");
+    expect(listUrl).toContain("bucketName=test-bucket");
+    expect(listAuth).toBe("test-auth-token");
+  });
+
+  it("explains that listBuckets is needed when the key lacks it", async () => {
+    withAuth({
+      ...UNRESTRICTED_AUTH,
+      allowed: { ...UNRESTRICTED_AUTH.allowed, capabilities: ["listFiles"] },
+    });
+    const bucket = BackBlaze("test-bucket", CREDS);
+    await expect(bucket.info()).rejects.toThrow(/listBuckets/);
+  });
+
+  it("asks for a bucket name when the key does not imply one", async () => {
+    withAuth(UNRESTRICTED_AUTH);
+    const bucket = BackBlaze("", CREDS);
+    await expect(bucket.info()).rejects.toThrow(/needs a bucket name/);
+  });
+
+  it("says so when the bucket does not exist", async () => {
+    withAuth(UNRESTRICTED_AUTH, (url) => {
+      if ((url as string).includes("b2_list_buckets"))
+        return Promise.resolve(makeResponse(JSON.stringify({ buckets: [] })));
+      return Promise.resolve(makeResponse("{}"));
+    });
+    const bucket = BackBlaze("missing-bucket", CREDS);
+    await expect(bucket.info()).rejects.toThrow(
+      /"missing-bucket" does not exist/,
+    );
+  });
+
+  it("refuses a name the restricted key cannot access", async () => {
+    // Silently using the key's own bucket would send writes and reads to
+    // different buckets, so this must fail loudly instead.
+    withAuth(AUTH_RESPONSE);
+    const bucket = BackBlaze("some-other-bucket", CREDS);
+    await expect(bucket.info()).rejects.toThrow(
+      /restricted to the bucket "test-bucket"/,
+    );
+  });
+
+  it("adopts the restricted key's bucket name when none is given", async () => {
+    withAuth(AUTH_RESPONSE);
+    const bucket = BackBlaze("", CREDS);
+    const info = await bucket.info();
+    expect(info.name).toBe("test-bucket");
+    expect(info.id).toBe("test-bucket-id");
+    expect(await bucket.file("a.txt").publicUrl()).toBe(
+      "https://f001.backblazeb2.com/file/test-bucket/a.txt",
+    );
+  });
+
+  it("surfaces a failed authorization instead of a later confusing error", async () => {
+    mockFetch(() => Promise.resolve(makeResponse("nope", 401)));
+    const bucket = BackBlaze("test-bucket", CREDS);
+    await expect(bucket.info()).rejects.toThrow(/B2 authorize error: 401/);
+  });
+});
 
 describe("B2 bucket.info()", () => {
   let originalFetch: typeof fetch;

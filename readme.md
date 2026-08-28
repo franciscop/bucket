@@ -766,6 +766,8 @@ const bucket = BackBlaze("my-bucket-name", {
 });
 ```
 
+Both a master key and a key restricted to one bucket work. A restricted key already identifies its bucket, so the name can be omitted; a key that is not restricted needs the `listBuckets` capability, since the bucket is resolved by name when authenticating.
+
 Environment variable fallbacks:
 
 | Option      | Env var                 |
