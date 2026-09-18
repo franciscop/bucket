@@ -4,7 +4,15 @@ import { escapeXml, unescapeXml, extractTags, getTag } from "../lib/xml.ts";
 import { sha256base64 } from "../lib/webcrypto.ts";
 import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
-import type { Bucket, BucketInfo, S3Auth, S3Request } from "../lib/types.ts";
+import { randomName } from "../lib/nanoid.ts";
+import type {
+  Bucket,
+  BucketInfo,
+  S3Auth,
+  S3Request,
+  WriteContent,
+  WriteOptions,
+} from "../lib/types.ts";
 import { R2File, type R2BucketContext } from "./File.ts";
 
 const {
@@ -225,6 +233,10 @@ class CloudflareR2Bucket implements Bucket {
   file(name: string): R2File {
     if (!name) throw new Error("No name");
     return this.handle(fileKey(this.PREFIX, name));
+  }
+
+  async create(content: WriteContent, options?: WriteOptions): Promise<R2File> {
+    return this.file(randomName(content, options)).write(content, options);
   }
 
   folder(path: string): CloudflareR2Bucket {

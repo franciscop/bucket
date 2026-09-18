@@ -130,7 +130,12 @@ export class FSFile implements BucketFile {
     return new Uint8Array(await this.arrayBuffer());
   }
 
-  async write(content: WriteContent, _options?: WriteOptions): Promise<void> {
+  async write(content: WriteContent, options?: WriteOptions): Promise<FSFile> {
+    await this.#write(content, options);
+    return this;
+  }
+
+  async #write(content: WriteContent, _options?: WriteOptions): Promise<void> {
     if (typeof content === "string") {
       await fsp.mkdir(dirname(this.#abs), { recursive: true });
       return fsp.writeFile(this.#abs, content);
@@ -161,30 +166,31 @@ export class FSFile implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(dest: string | BucketFile): Promise<void> {
-    if (typeof dest !== "string") {
-      await dest.write(this);
-      return;
-    }
+  async copyTo(dest: string | BucketFile): Promise<BucketFile> {
+    if (typeof dest !== "string") return dest.write(this);
     assertNotOsPath(this.#root, dest);
-    const dst = join(this.#root, destKey(this.#prefix, dest, this.name));
+    const key = destKey(this.#prefix, dest, this.name);
+    const dst = join(this.#root, key);
     await fsp.mkdir(dirname(dst), { recursive: true });
     await fsp.copyFile(this.#abs, dst).catch(fsError);
+    return new FSFile(key, this.#root, this.#prefix);
   }
 
-  async moveTo(dest: string | BucketFile): Promise<void> {
+  async moveTo(dest: string | BucketFile): Promise<BucketFile> {
     if (typeof dest !== "string") {
-      await dest.write(this);
+      const moved = await dest.write(this);
       await this.remove();
-      return;
+      return moved;
     }
     assertNotOsPath(this.#root, dest);
-    const dst = join(this.#root, destKey(this.#prefix, dest, this.name));
+    const key = destKey(this.#prefix, dest, this.name);
+    const dst = join(this.#root, key);
     await fsp.mkdir(dirname(dst), { recursive: true });
     await fsp.rename(this.#abs, dst).catch(fsError);
+    return new FSFile(key, this.#root, this.#prefix);
   }
 
-  async rename(name: string): Promise<void> {
+  async rename(name: string): Promise<BucketFile> {
     if (!name || name === "." || name === "..")
       throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
@@ -193,15 +199,16 @@ export class FSFile implements BucketFile {
       ? this.path.slice(this.#prefix.length + 1)
       : this.path;
     const dir = rel.split("/").slice(0, -1).join("/");
-    await this.moveTo(dir ? dir + "/" + name : name);
+    return this.moveTo(dir ? dir + "/" + name : name);
   }
 
-  async remove(): Promise<void> {
-    return fsp.unlink(this.#abs);
+  async remove(): Promise<FSFile> {
+    await fsp.unlink(this.#abs);
+    return this;
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
-  unlink(): Promise<void> {
+  unlink(): Promise<FSFile> {
     return this.remove();
   }
 

@@ -1,5 +1,11 @@
-import type { Bucket, BucketInfo } from "../lib/types.ts";
+import type {
+  Bucket,
+  BucketInfo,
+  WriteContent,
+  WriteOptions,
+} from "../lib/types.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
+import { randomName } from "../lib/nanoid.ts";
 import BucketError from "../lib/BucketError.ts";
 import { B2File, type B2BucketContext } from "./File.ts";
 
@@ -273,6 +279,10 @@ class BackBlazeInstance implements Bucket {
   file(name: string): B2File {
     if (!name) throw new Error("No name");
     return new B2File(fileKey(this.PREFIX, name), this.#ctx);
+  }
+
+  async create(content: WriteContent, options?: WriteOptions): Promise<B2File> {
+    return this.file(randomName(content, options)).write(content, options);
   }
 
   folder(path: string): BackBlazeInstance {

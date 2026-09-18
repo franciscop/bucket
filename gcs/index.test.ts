@@ -534,7 +534,8 @@ describe("GCS file().remove()", () => {
     globalThis.fetch = withTokenMock(() =>
       Promise.resolve(makeResponse(null, 204)),
     ) as typeof fetch;
-    await expect(bucket.file("hello.txt").remove()).resolves.toBeUndefined();
+    const removed = await bucket.file("hello.txt").remove();
+    expect(removed.path).toBe("hello.txt");
   });
 });
 

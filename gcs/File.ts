@@ -10,7 +10,7 @@ import {
   getMetadataToken,
   presignGCS,
 } from "../lib/signGCS.ts";
-import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
+import { resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
 import { destKey } from "../lib/prefix.ts";
 import {
@@ -159,7 +159,7 @@ export class GCSFile implements BucketFile {
   }
 
   async #put(data: string | Buffer, options: WriteOptions = {}): Promise<void> {
-    const type = options.type ?? getContentType(this.path);
+    const type = resolveContentType(this.path, undefined, options);
     const hasMeta =
       options.cacheControl || options.disposition || options.metadata;
 
@@ -229,7 +229,7 @@ export class GCSFile implements BucketFile {
       partSize: 8 * 1024 * 1024,
       single: (data) => this.#put(data, options),
       start: async () => {
-        const type = options.type ?? getContentType(this.path);
+        const type = resolveContentType(this.path, undefined, options);
         const metaObj: Record<string, unknown> = { name: this.path };
         if (type) metaObj.contentType = type;
         if (options.cacheControl) metaObj.cacheControl = options.cacheControl;
@@ -287,7 +287,24 @@ export class GCSFile implements BucketFile {
     };
   }
 
-  async write(content: WriteContent, options?: WriteOptions): Promise<void> {
+  async write(content: WriteContent, options?: WriteOptions): Promise<GCSFile> {
+    await this.#write(content, options);
+    return this;
+  }
+
+  // Same-scope handle for another key in this bucket
+  #at(key: string): GCSFile {
+    return new GCSFile(
+      key,
+      this.#bucket,
+      this.#authPromise,
+      this.#url,
+      this.#anonymous,
+      this.#prefix,
+    );
+  }
+
+  async #write(content: WriteContent, options?: WriteOptions): Promise<void> {
     if (typeof content === "string")
       return writeChunked(this.#target(options), Buffer.from(content));
     if (content instanceof Buffer || content instanceof Uint8Array)
@@ -315,11 +332,8 @@ export class GCSFile implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(dest: string | BucketFile): Promise<void> {
-    if (typeof dest !== "string") {
-      await dest.write(this);
-      return;
-    }
+  async copyTo(dest: string | BucketFile): Promise<BucketFile> {
+    if (typeof dest !== "string") return dest.write(this);
     const dst = destKey(this.#prefix, dest, this.name);
     const url = `${this.#url}/storage/v1/b/${this.#bucket}/o/${encodeURIComponent(this.path)}/copyTo/b/${this.#bucket}/o/${encodeURIComponent(dst)}`;
     const res = await fetch(url, {
@@ -331,14 +345,16 @@ export class GCSFile implements BucketFile {
         provider: "GCS",
         status: res.status,
       });
+    return this.#at(dst);
   }
 
-  async moveTo(dest: string | BucketFile): Promise<void> {
-    await this.copyTo(dest);
+  async moveTo(dest: string | BucketFile): Promise<BucketFile> {
+    const moved = await this.copyTo(dest);
     await this.remove();
+    return moved;
   }
 
-  async rename(name: string): Promise<void> {
+  async rename(name: string): Promise<BucketFile> {
     if (!name || name === "." || name === "..")
       throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
@@ -346,10 +362,10 @@ export class GCSFile implements BucketFile {
     const prefix = this.#prefix;
     const rel = prefix ? this.path.slice(prefix.length + 1) : this.path;
     const dir = rel.split("/").slice(0, -1).join("/");
-    await this.moveTo(dir ? dir + "/" + name : name);
+    return this.moveTo(dir ? dir + "/" + name : name);
   }
 
-  async remove(): Promise<void> {
+  async remove(): Promise<GCSFile> {
     const res = await fetch(this.#apiUrl(), {
       method: "DELETE",
       headers: await this.#headers(),
@@ -359,10 +375,11 @@ export class GCSFile implements BucketFile {
         provider: "GCS",
         status: res.status,
       });
+    return this;
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
-  unlink(): Promise<void> {
+  unlink(): Promise<GCSFile> {
     return this.remove();
   }
 

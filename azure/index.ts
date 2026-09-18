@@ -6,7 +6,13 @@ import {
 } from "../lib/xml.ts";
 import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
-import type { Bucket, BucketInfo } from "../lib/types.ts";
+import { randomName } from "../lib/nanoid.ts";
+import type {
+  Bucket,
+  BucketInfo,
+  WriteContent,
+  WriteOptions,
+} from "../lib/types.ts";
 import { AzureFile, type AzureFileAuth } from "./File.ts";
 
 const {
@@ -213,6 +219,13 @@ class AzureBucket implements Bucket {
       this.#url,
       this.PREFIX,
     );
+  }
+
+  async create(
+    content: WriteContent,
+    options?: WriteOptions,
+  ): Promise<AzureFile> {
+    return this.file(randomName(content, options)).write(content, options);
   }
 
   folder(path: string): AzureBucket {

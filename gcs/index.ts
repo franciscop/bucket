@@ -1,7 +1,13 @@
 import { getAccessToken, getMetadataToken } from "../lib/signGCS.ts";
 import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
-import type { Bucket, BucketInfo } from "../lib/types.ts";
+import { randomName } from "../lib/nanoid.ts";
+import type {
+  Bucket,
+  BucketInfo,
+  WriteContent,
+  WriteOptions,
+} from "../lib/types.ts";
 import { GCSFile, type GCSAuth, type GCSObjectMeta } from "./File.ts";
 
 const { GCS_BUCKET: ENV_BUCKET, GCS_URL: ENV_URL } = process.env;
@@ -148,6 +154,13 @@ class GCSBucket implements Bucket {
       this.#anonymous,
       this.PREFIX,
     );
+  }
+
+  async create(
+    content: WriteContent,
+    options?: WriteOptions,
+  ): Promise<GCSFile> {
+    return this.file(randomName(content, options)).write(content, options);
   }
 
   folder(path: string): GCSBucket {

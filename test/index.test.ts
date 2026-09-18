@@ -372,6 +372,19 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         expect(info!.size).toBe(175888);
         expect(info!.type).toBe("image/jpeg");
       });
+
+      it("takes the type option as a mime type or an extension", async () => {
+        // The path says .txt, so the stored type can only come from the
+        // option. The filesystem has no metadata store and always reports
+        // the type of the extension.
+        for (const type of ["text/csv", "csv", ".csv"]) {
+          const file = await bucket.file(testFile()).write("a,b", { type });
+          const expected =
+            bucket.type === "FILESYSTEM" ? "text/plain" : "text/csv";
+          expect((await file.info())!.type).toBe(expected);
+          await file.remove();
+        }
+      });
     });
 
     // ── Large / chunked uploads ───────────────────────────────────────────────
@@ -467,6 +480,147 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         }
         expect(threw).toBe(true);
         expect(await bucket.file(name).exists()).toBe(false);
+      });
+    });
+
+    // ── Returned files ────────────────────────────────────────────────────────
+
+    describe("mutating methods return the file", () => {
+      it("write() resolves to the same file, ready to read", async () => {
+        const name = testFile();
+        const file = await bucket.file(name).write("chained");
+        expect(file.path).toBe(name);
+        expect(await file.text()).toBe("chained");
+        await file.remove();
+      });
+
+      it("copyTo() resolves to the copy, moveTo() to the moved file", async () => {
+        const a = testFile();
+        const b = testFile();
+        const c = testFile();
+        const src = await bucket.file(a).write("returned");
+
+        const copy = await src.copyTo(b);
+        expect(copy.path).toBe(b);
+        expect(await copy.text()).toBe("returned");
+
+        const moved = await copy.moveTo(c);
+        expect(moved.path).toBe(c);
+        expect(await moved.text()).toBe("returned");
+        expect(await bucket.file(b).exists()).toBe(false);
+
+        await Promise.all([src.remove(), moved.remove()]);
+      });
+
+      it("copyTo('folder/') resolves to the file inside the folder", async () => {
+        const name = testFile();
+        const src = await bucket.file(name).write("in-folder");
+        const copy = await src.copyTo("nested/");
+        expect(copy.path).toBe("nested/" + name);
+        expect(await copy.text()).toBe("in-folder");
+        await Promise.all([src.remove(), copy.remove()]);
+      });
+
+      it("copyTo(file) resolves to the destination file", async () => {
+        const src = await bucket.file(testFile()).write("cross");
+        const dest = bucket.file(testFile());
+        const written = await src.copyTo(dest);
+        expect(written.path).toBe(dest.path);
+        expect(await written.text()).toBe("cross");
+        await Promise.all([src.remove(), dest.remove()]);
+      });
+
+      it("rename() resolves to the renamed file", async () => {
+        const folder = bucket.folder("nested");
+        const a = testFile();
+        const b = testFile();
+        const src = await folder.file(a).write("renamed");
+        const out = await src.rename(b);
+        expect(out.path).toBe("nested/" + b);
+        expect(await out.text()).toBe("renamed");
+        await out.remove();
+      });
+
+      it("remove() resolves to the file it deleted", async () => {
+        const name = testFile();
+        const file = await bucket.file(name).write("bye");
+        const removed = await file.remove();
+        expect(removed.path).toBe(name);
+        expect(await removed.exists()).toBe(false);
+      });
+    });
+
+    // ── create() ──────────────────────────────────────────────────────────────
+
+    describe("create()", () => {
+      it("writes under a generated name and returns the file", async () => {
+        const file = await bucket.create("generated");
+        expect(file.name).toMatch(/^[A-Za-z0-9]{21}$/);
+        expect(file.path).toBe(file.name);
+        expect(await file.text()).toBe("generated");
+        await file.remove();
+      });
+
+      it("never reuses a name", async () => {
+        const files = await Promise.all([
+          bucket.create("a"),
+          bucket.create("b"),
+          bucket.create("c"),
+        ]);
+        expect(new Set(files.map((f) => f.path)).size).toBe(3);
+        await Promise.all(files.map((f) => f.remove()));
+      });
+
+      it("creates inside the folder it is called on", async () => {
+        const file = await bucket.folder("nested").create("scoped");
+        expect(file.path).toMatch(/^nested\/[A-Za-z0-9]{21}$/);
+        expect(await file.text()).toBe("scoped");
+        await file.remove();
+      });
+
+      it("keeps the extension of a named body, and passes options through", async () => {
+        const file = await bucket.create(new File(["png-ish"], "photo.png"), {
+          metadata: { from: "create" },
+        });
+        expect(file.name).toMatch(/^[A-Za-z0-9]{21}\.png$/);
+        const info = await file.info();
+        expect(info!.type).toBe("image/png");
+        if (bucket.type !== "FILESYSTEM") {
+          expect(info!.metadata.from).toBe("create");
+        }
+        await file.remove();
+      });
+
+      it("keeps the extension when copying another file in", async () => {
+        const source = await bucket.file(testFile("csv")).write("a,b");
+        const file = await bucket.create(source);
+        expect(file.name).toMatch(/\.csv$/);
+        expect(await file.text()).toBe("a,b");
+        await Promise.all([source.remove(), file.remove()]);
+      });
+
+      it("has no extension when the body carries no name", async () => {
+        const file = await bucket.create(Buffer.from("raw"));
+        expect(file.name).toMatch(/^[A-Za-z0-9]{21}$/);
+        await file.remove();
+      });
+
+      it("takes the extension from the type, as a mime type or extension", async () => {
+        // The usual multipart-upload shape: a body with no name, but a
+        // content type from the parser
+        const fromMime = await bucket.create(Buffer.from("{}"), {
+          type: "application/json",
+        });
+        expect(fromMime.name).toMatch(/\.json$/);
+        expect((await fromMime.info())!.type).toBe("application/json");
+
+        const fromExt = await bucket.create(Buffer.from("{}"), {
+          type: "json",
+        });
+        expect(fromExt.name).toMatch(/\.json$/);
+        expect((await fromExt.info())!.type).toBe("application/json");
+
+        await Promise.all([fromMime.remove(), fromExt.remove()]);
       });
     });
 

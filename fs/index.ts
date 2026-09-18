@@ -2,8 +2,14 @@ import { userInfo } from "node:os";
 import fsp from "node:fs/promises";
 import { basename, join, relative, resolve, sep } from "node:path";
 
-import type { Bucket, BucketInfo } from "../lib/types.ts";
+import type {
+  Bucket,
+  BucketInfo,
+  WriteContent,
+  WriteOptions,
+} from "../lib/types.ts";
 import { fileKey, folderKey } from "../lib/prefix.ts";
+import { randomName } from "../lib/nanoid.ts";
 import assertNotOsPath from "./osPathGuard.ts";
 import { FSFile } from "./File.ts";
 
@@ -73,6 +79,10 @@ class FileSystemBucket implements Bucket {
     if (!name) throw new Error("No name");
     assertNotOsPath(this.#root, name);
     return new FSFile(fileKey(this.PREFIX, name), this.#root, this.PREFIX);
+  }
+
+  async create(content: WriteContent, options?: WriteOptions): Promise<FSFile> {
+    return this.file(randomName(content, options)).write(content, options);
   }
 
   folder(path: string): FileSystemBucket {

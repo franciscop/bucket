@@ -63,12 +63,12 @@ const bucket = S3("bucket-name", {
 });
 ```
 
-To use it, see the next section [Bucket API](#bucketapi), but here's a quick example reading and writing a JSON file:
+To use it, see the next section [Bucket API](#bucket-api), but here's a quick example reading and writing a JSON file:
 
 ```ts
-const data = await bucket.file("./test.json").json();
+const data = await bucket.file("test.json").json();
 // data is a JS object here, since we're parsing it as .json()
-await bucket.file("output.json").write(data);
+await bucket.file("output.json").write(JSON.stringify(data));
 ```
 
 ## Bucket API
@@ -111,6 +111,7 @@ Every bucket instance has the same methods:
 - [`.remove(filter?)`](#remove): delete all files matching the filter, returning them.
 - [`.folder(path)`](#folder): a Bucket scoped to a path prefix (see below).
 - [`.file(path)`](#file): creates a BucketFile instance for the given path.
+- [`.create(body, options?)`](#create): writes the body under a random file name.
 
 ### .info()
 
@@ -279,6 +280,35 @@ bucket.file("../outside.txt"); // throws BucketError INVALID_PATH
 #### Related methods
 
 - [`.folder(path)`](#folder): scope a whole bucket to a prefix instead.
+- [`.create(body, options?)`](#create): let the library pick the name.
+
+### .create()
+
+Writes the body under a random file name, resolving to the new file:
+
+```js
+await bucket.create(body);
+await bucket.create(body, { type: "image/png" });
+```
+
+The name is a 21-character alphanumeric id, unique enough that you never need to check for collisions. Everything else works like [`file.write()`](#filewritebody-options), including the options. Combined with [`.folder()`](#folder) it is the usual way to accept an upload without trusting a client-supplied name:
+
+```js
+const file = await bucket.folder("avatars").create(upload);
+file.path; // "avatars/V1StGXR8Z5jdHi6BmyT2a.png"
+await db.user.update({ avatar: file.path });
+```
+
+The extension comes from `type` when you pass one, and otherwise from a name the body carries of its own, which means a `File` or a file from any bucket. A body with neither (a string, a `Buffer`, a bare `Blob`, a stream) gets an id with no extension, since guessing one from the bytes would be wrong as often as right.
+
+```js
+// A multipart parser gives you the type but no name worth trusting
+await bucket.create(part.body, { type: part.mimetype }); // fO0k2lRz8qWpAx3cVbNmY.png
+```
+
+#### Related methods
+
+- [`.file(path)`](#file): choose the name yourself.
 
 ## File API
 
@@ -300,7 +330,7 @@ The file handle, returned by [`bucket.file()`](#file) and as every item of [`lis
   - `.stream()`: returns a web `ReadableStream`.
   - `.nodeReadable()`: returns a Node.js `Readable` stream.
 
-- **Write**
+- **Write** (each resolves to a file: the one written, copied, moved, renamed, or deleted)
   - `.write(body, options?)`: writes content to the file.
   - `.copyTo(path)`: creates a duplicate of the file with a different name.
   - `.moveTo(path)`: moves the file to a different location.
@@ -486,11 +516,11 @@ await file.write(stream); // web ReadableStream or Node.js Readable
 await file.write(bucket.file("original.txt")); // another BucketFile (copies it)
 ```
 
-Intermediate directories are created automatically. **Content-type** is inferred from the file extension (e.g. `.jpg` → `image/jpeg`, `.json` → `application/json`). You can override it and set other metadata through the optional second argument:
+Intermediate directories are created automatically. **Content-type** is inferred from the file extension (e.g. `.jpg` → `image/jpeg`, `.json` → `application/json`). You can override it and set other metadata through the optional second argument, where `type` takes either a MIME type or an extension (`"image/png"`, `"png"` and `".png"` are equivalent):
 
 | Option         | Type                     | Description                                                                |
 | -------------- | ------------------------ | -------------------------------------------------------------------------- |
-| `type`         | `string`                 | MIME type (overrides auto-detection)                                       |
+| `type`         | `string`                 | MIME type or extension (overrides auto-detection)                          |
 | `cacheControl` | `string`                 | `Cache-Control` header value, e.g. `"public, max-age=31536000"`            |
 | `disposition`  | `string`                 | `Content-Disposition` header value, e.g. `"attachment; filename=file.pdf"` |
 | `metadata`     | `Record<string, string>` | Provider-specific key/value metadata                                       |
@@ -508,9 +538,20 @@ await bucket.file("image.jpg").write(data, {
 
 Uploads use bounded memory: bodies beyond ~8 MiB are sent through the provider's chunked mechanism internally (multipart on S3/R2, large files on B2, blocks on Azure, a resumable session on GCS), while smaller ones go in a single request. A failed or aborted write is cleaned up on the provider and never leaves a partial object behind.
 
+It resolves to the file itself, so a write can be the start of a chain:
+
+```js
+const file = await bucket.file("notes.txt").write("hello");
+console.log(await file.text()); // "hello"
+```
+
+#### Related methods
+
+- [`bucket.create(body, options?)`](#create): write under a generated name.
+
 ### file.copyTo(path)
 
-Creates a duplicate of the file at a new path, keeping the original:
+Creates a duplicate of the file at a new path, keeping the original, and resolves to the copy:
 
 ```js
 await file.copyTo("backup/photo.jpg");
@@ -522,8 +563,9 @@ The string destination resolves against the bucket or folder the file came from:
 
 ```js
 const doc = bucket.folder("drafts").file("doc.md");
-await doc.copyTo("copy.md"); // drafts/copy.md
-await doc.copyTo("../published/"); // published/doc.md
+const copy = await doc.copyTo("copy.md"); // drafts/copy.md
+const published = await doc.copyTo("../published/"); // published/doc.md
+published.path; // "published/doc.md"
 ```
 
 #### Related methods
@@ -533,7 +575,7 @@ await doc.copyTo("../published/"); // published/doc.md
 
 ### file.moveTo(path)
 
-Moves the file to a new path, removing the original:
+Moves the file to a new path, removing the original, and resolves to the moved file:
 
 ```js
 await file.moveTo("photos/avatar.jpg");
@@ -543,7 +585,8 @@ await file.moveTo(otherBucket.file("avatar.jpg")); // into another bucket
 The destination follows the same rules as [`copyTo()`](#filecopytopath).
 
 ```js
-await bucket.file("tmp/upload.jpg").moveTo("photos/avatar.jpg");
+const avatar = await bucket.file("tmp/upload.jpg").moveTo("photos/avatar.jpg");
+avatar.path; // "photos/avatar.jpg"
 ```
 
 #### Related methods
@@ -552,11 +595,11 @@ await bucket.file("tmp/upload.jpg").moveTo("photos/avatar.jpg");
 
 ### file.rename(name)
 
-Renames the file within the same directory:
+Renames the file within the same directory, resolving to the renamed file:
 
 ```js
-await bucket.file("photos/old-name.jpg").rename("new-name.jpg");
-// now at "photos/new-name.jpg"
+const renamed = await bucket.file("photos/old-name.jpg").rename("new-name.jpg");
+renamed.path; // "photos/new-name.jpg"
 ```
 
 Throws if `name` is empty, `"."`, `".."`, or contains a `/`; use `.moveTo()` to change directories.
@@ -567,10 +610,11 @@ Throws if `name` is empty, `"."`, `".."`, or contains a `/`; use `.moveTo()` to 
 
 ### file.remove()
 
-Deletes the file:
+Deletes the file, resolving to it:
 
 ```js
-await bucket.file("temp.txt").remove();
+const gone = await bucket.file("temp.txt").remove();
+gone.path; // "temp.txt", useful for logging what was deleted
 ```
 
 Alias: `.unlink()`, matching Bun's `S3File`.
@@ -960,6 +1004,121 @@ async fetch(req) {
 }
 ```
 
+### Accept an upload
+
+An upload's file name is chosen by whoever is uploading, so it should never become a path. [`create()`](#create) writes the body under a generated name and hands back the file to store a reference to. What you pass it depends on what the framework parsed for you:
+
+- a `File` or `Blob`: pass it straight through, the extension comes along with it.
+- a stream: pass it with `{ type }`, since a stream carries no name.
+
+Frameworks built on web standards (Hono, Next.js, Elysia, Bun, Deno, SvelteKit) give you a `File` from `FormData`:
+
+```js
+// Bun.serve, Hono, Next.js route handlers, Elysia, ...
+async fetch(req) {
+  const form = await req.formData();
+  const file = await bucket.folder("avatars").create(form.get("avatar"));
+  return Response.json({ path: file.path }); // "avatars/V1StGXR8Z5jdHi6BmyT2a.png"
+}
+```
+
+### Fastify uploads
+
+`@fastify/multipart` is stream-based, so `part.file` is a Node stream and the type comes from `part.mimetype`. Uploading from the stream means the file never has to fit in memory:
+
+```js
+import Fastify from "fastify";
+import multipart from "@fastify/multipart";
+
+const app = Fastify();
+const uploads = bucket.folder("uploads");
+
+app.register(multipart, {
+  attachFieldsToBody: "keyValues",
+  async onFile(part) {
+    part.value = await uploads.create(part.file, { type: part.mimetype });
+  },
+});
+
+app.post("/upload", async (req) => {
+  return { path: req.body.profile.path }; // req.body.profile is a BucketFile
+});
+```
+
+`part.mimetype` comes from the client's own headers, so validate it against an allowlist if you will serve the file back.
+
+### Express and Multer
+
+Multer takes a storage engine, which is where the upload goes. This one streams to the bucket and puts the `BucketFile` on `req.file`, plus the `path` and `size` that Multer users expect:
+
+```js
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+
+function bucketStorage(bucket) {
+  return {
+    _handleFile(req, file, callback) {
+      let size = 0;
+      const meter = new Transform({
+        transform(chunk, encoding, done) {
+          size += chunk.length;
+          done(null, chunk);
+        },
+      });
+      Promise.all([
+        pipeline(file.stream, meter),
+        bucket.create(meter, { type: file.mimetype }),
+      ])
+        .then(([, bucketFile]) => {
+          callback(null, { bucketFile, path: bucketFile.path, size });
+        })
+        .catch((error) => {
+          meter.destroy(error);
+          callback(error);
+        });
+    },
+    // Called when Multer rolls an upload back
+    _removeFile(req, file, callback) {
+      if (!file.bucketFile) return callback(null);
+      file.bucketFile.remove().then(() => callback(null), callback);
+    },
+  };
+}
+
+const upload = multer({ storage: bucketStorage(bucket.folder("uploads")) });
+
+app.post("/upload", upload.single("profile"), (req, res) => {
+  res.json({ path: req.file.path }); // req.file.bucketFile is the BucketFile
+});
+```
+
+The same engine works with NestJS, whose `FileInterceptor` takes a Multer `storage`.
+
+### Formidable uploads
+
+Formidable's `fileWriteStreamHandler` has to return a `Writable` synchronously, so bridge it with a `PassThrough` and keep the upload's promise on the file that Formidable hands you:
+
+```js
+import formidable from "formidable";
+import { PassThrough } from "node:stream";
+
+const uploads = bucket.folder("uploads");
+
+const form = formidable({
+  fileWriteStreamHandler(file) {
+    const stream = new PassThrough();
+    file.bucketFile = uploads.create(stream, { type: file.mimetype });
+    return stream;
+  },
+});
+
+const [fields, files] = await form.parse(req);
+const profile = await files.profile[0].bucketFile;
+console.log(profile.path); // "uploads/81K2ladhL1tVdNrDvhPLR.png"
+```
+
+Putting the promise on `file` rather than on a variable outside the handler keeps each upload tied to its own field, so a form with several files works unchanged. Await every one of them: an upload nobody awaits turns a failure into an unhandled rejection.
+
 ### Combine buckets
 
 `write()` accepts a `BucketFile` from **any** provider, so moving data between services is one call:
@@ -978,11 +1137,11 @@ await s3.file("report.pdf").write(fs.file("report.pdf")); // upload disk → S3
 await s3.file("a.bin").stream().pipeTo(fs.file("a.bin").writable());
 ```
 
-**Direction:** `dst.write(src)` is a _pull_, so the file you call it on is the destination and it reads from the argument. To _push_ within a single bucket, use the source-side `src.copyTo(dst)` or `src.moveTo(dst)` instead. Cross-provider copies always use the pull form above, since `copyTo` / `moveTo` stay inside one bucket.
+**Direction:** `dst.write(src)` is a _pull_, so the file you call it on is the destination and it reads from the argument. `src.copyTo(dst)` and `src.moveTo(dst)` _push_ instead, and both accept either a path in the same bucket or a file from any other one.
 
 ### Bun's File
 
-A `Bun.file()` is a `Blob`, so it drops straight into `write()`, and a bucket file's `.blob()` drops into `Bun.write()`:
+`Bun.file()` and `bucket.file()` are both lazy handles over the same `Blob` read API, one on disk and one in a bucket, so they compose in either direction:
 
 ```js
 // Local file → bucket
@@ -992,7 +1151,25 @@ await bucket.file("photo.jpg").write(Bun.file("./local/photo.jpg"));
 await Bun.write("./local/photo.jpg", await bucket.file("photo.jpg").blob());
 ```
 
+Both of those hold the file in memory as it transfers, which is fine for photos and documents. Stream instead when the size is unbounded:
+
+```js
+// Local file → bucket
+await Bun.file("./video.mp4")
+  .stream()
+  .pipeTo(bucket.file("video.mp4").writable());
+
+// Bucket → local file, through a FileSink
+const sink = Bun.file("./video.mp4").writer();
+for await (const chunk of bucket.file("video.mp4").stream()) sink.write(chunk);
+await sink.end();
+```
+
+`Bun.file()` does not touch the disk until it is read, so passing one that does not exist fails at `write()` time, not before. Use `await Bun.file(path).exists()` first if the path is not yours.
+
 ### Resize with sharp
+
+[sharp](https://sharp.pixelplumbing.com) is a Node transform stream, so it slots between one file's reader and another's writer. Nothing buffers the whole image, which is what makes this safe for photos of any size:
 
 ```js
 import { pipeline } from "node:stream/promises";
@@ -1004,6 +1181,30 @@ await pipeline(
   bucket.file("thumbnail.jpg").nodeWritable(),
 );
 ```
+
+Changing format needs nothing extra: name the destination with the new extension and the stored content type follows from it.
+
+```js
+await pipeline(
+  bucket.file("original.jpg").nodeReadable(),
+  sharp().rotate().resize(400).webp(),
+  bucket.file("thumbnail.webp").nodeWritable(), // stored as image/webp
+);
+```
+
+`.rotate()` with no arguments applies the image's EXIF orientation, which photos from phones rely on: without it a portrait shot can arrive sideways.
+
+Both ends are just files, so the source and the result can live in different providers:
+
+```js
+await pipeline(
+  s3.file("uploads/a.jpg").nodeReadable(),
+  sharp().resize(800),
+  r2.file("thumbnails/a.jpg").nodeWritable(),
+);
+```
+
+sharp runs anywhere Node does. On Bun, [`Bun.Image`](#resize-with-bunimage) does the same job with no dependency, working on bytes instead of streams.
 
 ### Resize with `Bun.Image`
 

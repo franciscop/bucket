@@ -288,7 +288,8 @@ describe("R2 file().remove()", () => {
   it("accepts 204 No Content as success", async () => {
     const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
     mockFetch(() => Promise.resolve(makeResponse(null, 204)));
-    await expect(bucket.file("hello.txt").remove()).resolves.toBeUndefined();
+    const removed = await bucket.file("hello.txt").remove();
+    expect(removed.path).toBe("hello.txt");
   });
 
   it("throws on error responses", async () => {

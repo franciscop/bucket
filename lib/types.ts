@@ -38,7 +38,8 @@ export type WriteContent =
 
 /** Options for `file.write()`, `file.writable()`, and `file.nodeWritable()` */
 export interface WriteOptions {
-  /** MIME type, auto-detected from file extension if omitted */
+  /** MIME type (`"image/png"`) or extension (`"png"`, `".png"`),
+   * auto-detected from the file extension if omitted */
   type?: string;
   /** Cache-Control header value, e.g. `"max-age=31536000, public"` */
   cacheControl?: string;
@@ -72,22 +73,25 @@ export interface BucketFile {
   /** Downloads and returns the file content as a `Uint8Array` */
   bytes(): Promise<Uint8Array>;
 
-  /** Writes content to the file, replacing any existing content */
-  write(content: WriteContent, options?: WriteOptions): Promise<void>;
+  /** Writes content to the file, replacing any existing content.
+   * Resolves to this same file. */
+  write(content: WriteContent, options?: WriteOptions): Promise<BucketFile>;
 
-  /** Copies this file to a path (same bucket) or a file in any bucket */
-  copyTo(dest: string | BucketFile): Promise<void>;
-  /** Moves this file (copy + delete) to a path or a file in any bucket */
-  moveTo(dest: string | BucketFile): Promise<void>;
+  /** Copies this file to a path (same bucket) or a file in any bucket.
+   * Resolves to the destination file. */
+  copyTo(dest: string | BucketFile): Promise<BucketFile>;
+  /** Moves this file (copy + delete) to a path or a file in any bucket.
+   * Resolves to the destination file. */
+  moveTo(dest: string | BucketFile): Promise<BucketFile>;
   /**
-   * Renames the file within its current directory.
-   * Throws if `name` contains a `/`, use `moveTo()` to change directories.
+   * Renames the file within its current directory, resolving to the renamed
+   * file. Throws if `name` contains a `/`, use `moveTo()` to change directories.
    */
-  rename(name: string): Promise<void>;
-  /** Deletes the file. Aliases: `unlink()`, `delete()` */
-  remove(): Promise<void>;
+  rename(name: string): Promise<BucketFile>;
+  /** Deletes the file, resolving to it. Aliases: `unlink()`, `delete()` */
+  remove(): Promise<BucketFile>;
   /** Alias of `remove()` (Bun `S3File.unlink()`) */
-  unlink(): Promise<void>;
+  unlink(): Promise<BucketFile>;
 
   /**
    * A read-only view of a byte range of this file, like `Blob.slice()`:
@@ -139,6 +143,12 @@ export interface Bucket {
   count(filter?: RegExp): Promise<number>;
   /** Returns a file handle for the given path (does not check existence) */
   file(name: string): BucketFile;
+  /**
+   * Writes the content under a random file name, resolving to the new file.
+   * The extension comes from `options.type`, or from a name the content
+   * carries of its own (a `File`, or a file from any bucket).
+   */
+  create(content: WriteContent, options?: WriteOptions): Promise<BucketFile>;
   /** Returns a folder: a copy of this bucket scoped to the given path prefix */
   folder(path: string): Bucket;
   /** Iterates over all files in the bucket */

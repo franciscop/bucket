@@ -6,7 +6,7 @@ import chunkedWritable, {
   writeChunked,
   type ChunkedTarget,
 } from "../lib/chunkedWritable.ts";
-import { getContentType, resolveContentType } from "../lib/fileTypes.ts";
+import { resolveContentType } from "../lib/fileTypes.ts";
 import { destKey } from "../lib/prefix.ts";
 import metaFromHeaders from "../lib/meta.ts";
 import {
@@ -131,7 +131,8 @@ export class B2File implements BucketFile {
 
     // Detect from the extension like every other provider; fall back to B2's
     // server-side auto-detection ("b2/x-auto") only for unknown extensions.
-    const type = options.type ?? getContentType(this.path) ?? "b2/x-auto";
+    const type =
+      resolveContentType(this.path, undefined, options) ?? "b2/x-auto";
     const headers: Record<string, string | number> = {
       Authorization: auth.authorizationToken,
       "X-Bz-File-Name": this.path,
@@ -166,7 +167,8 @@ export class B2File implements BucketFile {
       single: (data) => this.#put(data, options),
       start: async () => {
         const bucket = await this.#bucket.info();
-        const type = options.type ?? getContentType(this.path) ?? "b2/x-auto";
+        const type =
+          resolveContentType(this.path, undefined, options) ?? "b2/x-auto";
         const fileInfo: Record<string, string> = {};
         if (options.cacheControl)
           fileInfo["b2-cache-control"] = options.cacheControl;
@@ -237,7 +239,12 @@ export class B2File implements BucketFile {
     };
   }
 
-  async write(content: WriteContent, options?: WriteOptions): Promise<void> {
+  async write(content: WriteContent, options?: WriteOptions): Promise<B2File> {
+    await this.#write(content, options);
+    return this;
+  }
+
+  async #write(content: WriteContent, options?: WriteOptions): Promise<void> {
     if (typeof content === "string")
       return writeChunked(this.#target(options), Buffer.from(content));
     if (content instanceof Buffer || content instanceof Uint8Array)
@@ -265,23 +272,22 @@ export class B2File implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(dest: string | BucketFile): Promise<void> {
-    if (typeof dest !== "string") {
-      await dest.write(this);
-      return;
-    }
-    await new B2File(
+  async copyTo(dest: string | BucketFile): Promise<BucketFile> {
+    if (typeof dest !== "string") return dest.write(this);
+    const dst = new B2File(
       destKey(this.#bucket.PREFIX, dest, this.name),
       this.#bucket,
-    ).write(this);
+    );
+    return dst.write(this);
   }
 
-  async moveTo(dest: string | BucketFile): Promise<void> {
-    await this.copyTo(dest);
+  async moveTo(dest: string | BucketFile): Promise<BucketFile> {
+    const moved = await this.copyTo(dest);
     await this.remove();
+    return moved;
   }
 
-  async rename(name: string): Promise<void> {
+  async rename(name: string): Promise<BucketFile> {
     if (!name || name === "." || name === "..")
       throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
@@ -289,10 +295,10 @@ export class B2File implements BucketFile {
     const prefix = this.#bucket.PREFIX;
     const rel = prefix ? this.path.slice(prefix.length + 1) : this.path;
     const dir = rel.split("/").slice(0, -1).join("/");
-    await this.moveTo(dir ? dir + "/" + name : name);
+    return this.moveTo(dir ? dir + "/" + name : name);
   }
 
-  async remove(): Promise<void> {
+  async remove(): Promise<B2File> {
     const bucket = await this.#bucket.info();
     // B2 keeps one version per write, so a single delete can leave older
     // versions behind. List every version of this exact file in one call,
@@ -331,10 +337,11 @@ export class B2File implements BucketFile {
           }),
       ),
     );
+    return this;
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
-  unlink(): Promise<void> {
+  unlink(): Promise<B2File> {
     return this.remove();
   }
 
