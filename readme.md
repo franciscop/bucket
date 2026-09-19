@@ -46,10 +46,10 @@ AWS_URL=
 AWS_BUCKET=
 ```
 
-Finally, you can import and initializze the library:
+Finally, you can import and initialize the library:
 
 ```ts
-import S3 from "bucket/S3";
+import S3 from "bucket/s3";
 
 // Read the variables automatically
 const bucket = S3("bucket-name");
