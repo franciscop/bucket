@@ -411,7 +411,14 @@ export class AzureFile implements BucketFile {
   }
 
   async remove(): Promise<AzureFile> {
-    const res = await this.#request("DELETE");
+    // "include" deletes the blob together with its snapshots; without it a
+    // blob that has any snapshot refuses to delete at all (409). Versions are
+    // untouched either way: this deletes the blob, never a `versionid`.
+    const res = await this.#request("DELETE", {
+      "x-ms-delete-snapshots": "include",
+    });
+    // Already gone is success: removing a path twice is a no-op
+    if (res.status === 404) return this;
     if (!res.ok && res.status !== 202)
       throw new BucketError(`Azure DELETE error: ${res.status}`, {
         provider: "Azure",

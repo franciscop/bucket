@@ -203,7 +203,10 @@ export class FSFile implements BucketFile {
   }
 
   async remove(): Promise<FSFile> {
-    await fsp.unlink(this.#abs);
+    await fsp.unlink(this.#abs).catch((err: NodeJS.ErrnoException) => {
+      // Already gone is success: removing a path twice is a no-op
+      if (err.code !== "ENOENT") fsError(err);
+    });
     return this;
   }
 

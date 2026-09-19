@@ -221,6 +221,8 @@ export class S3File implements BucketFile {
 
   async remove(): Promise<S3File> {
     const res = await this.#ctx.doRequest("DELETE", this.path);
+    // Already gone is success: removing a path twice is a no-op
+    if (res.status === 404) return this;
     if (!res.ok && res.status !== 204)
       throw new BucketError(`S3 DELETE error: ${res.status}`, {
         provider: "S3",

@@ -283,6 +283,8 @@ export class B2File implements BucketFile {
 
   async moveTo(dest: string | BucketFile): Promise<BucketFile> {
     const moved = await this.copyTo(dest);
+    // Hides the source like any remove(), keeping its versions: a move must
+    // never destroy history that removing the same file would have kept.
     await this.remove();
     return moved;
   }
@@ -300,43 +302,19 @@ export class B2File implements BucketFile {
 
   async remove(): Promise<B2File> {
     const bucket = await this.#bucket.info();
-    // B2 keeps one version per write, so a single delete can leave older
-    // versions behind. List every version of this exact file in one call,
-    // then delete them all in parallel (instead of re-listing after each
-    // delete, which made bulk removes O(n) round-trips and time out).
-    const res = await this.#bucket.fetch(
-      this.#bucket.apiBase + "b2_list_file_versions",
-      {
+    // Hide, never delete: B2 is always versioned, and deleting the newest
+    // version would both destroy it and uncover the one before it. Hiding
+    // stops the path resolving and keeps the history for lifecycle rules.
+    await this.#bucket
+      .fetch(this.#bucket.apiBase + "b2_hide_file", {
         method: "POST",
-        body: JSON.stringify({
-          bucketId: bucket.id,
-          startFileName: this.path,
-          prefix: this.path,
-          maxFileCount: 1000,
-        }),
+        body: JSON.stringify({ bucketId: bucket.id, fileName: this.path }),
         headers: { "Content-Type": "application/json" },
-      },
-    );
-    const { files } = (await res.json()) as {
-      files: { fileId: string; fileName: string }[];
-    };
-    const versions = files.filter((f) => f.fileName === this.path);
-
-    const deleteUrl = this.#bucket.apiBase + "b2_delete_file_version";
-    await Promise.all(
-      versions.map((v) =>
-        this.#bucket
-          .fetch(deleteUrl, {
-            method: "POST",
-            body: JSON.stringify({ fileId: v.fileId, fileName: v.fileName }),
-            headers: { "Content-Type": "application/json" },
-          })
-          .catch((e: Error) => {
-            // Tolerate a concurrent delete of the same version
-            if (!e.message.includes("file_not_present")) throw e;
-          }),
-      ),
-    );
+      })
+      .catch((e: Error) => {
+        // Already hidden, or never there: a no-op, and no second hide marker
+        if (!/file_not_present|no_such_file/.test(e.message)) throw e;
+      });
     return this;
   }
 

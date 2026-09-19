@@ -108,7 +108,7 @@ Every bucket instance has the same methods:
 - [`.list(filter?)`](#list): return the list of all files in the bucket.
 - [`.scan(filter?)`](#scan): async generator that lazily yields files (streams pages).
 - [`.count(filter?)`](#count): return the Number of items in the bucket.
-- [`.remove(filter?)`](#remove): delete all files matching the filter, returning them.
+- [`.remove(filter)`](#remove): delete all files matching the filter, returning them.
 - [`.folder(path)`](#folder): a Bucket scoped to a path prefix (see below).
 - [`.file(path)`](#file): creates a BucketFile instance for the given path.
 - [`.create(body, options?)`](#create): writes the body under a random file name.
@@ -210,16 +210,34 @@ console.log(`There are ${images} images`);
 Deletes every file matching the filter, returning the deleted files:
 
 ```js
-await bucket.remove();
 await bucket.remove(/\.tmp$/);
+await bucket.remove(/./); // empties the bucket
 ```
 
-With no filter it empties the bucket (or the folder, when called on one). On S3 and R2 the deletion is batched into as few requests as possible.
+The filter is required and must be a `RegExp`. Anything else, including no
+argument at all and a plain string, throws a `BucketError` with code
+`"INVALID_FILTER"` before a single request is made. This is deliberate: an
+`undefined` variable can never silently become "delete everything", and strings
+stay free to mean something narrower later.
+
+Scope it to a folder instead of writing the prefix into the pattern:
 
 ```js
-const deleted = await bucket.folder("cache").remove(); // everything under cache/
+const deleted = await bucket.folder("cache").remove(/./); // everything under cache/
 console.log(`removed ${deleted.length} files`);
 ```
+
+On S3 and R2 the deletion is batched into as few requests as possible.
+
+Removing is about the path, not the bytes. Afterwards the path stops resolving
+everywhere: `.exists()` is `false`, reads throw `NOT_FOUND`, `.info()` is
+`null`, and it is gone from `.list()`, `.scan()` and `.count()`. Removing the
+same path twice is a no-op, not an error.
+
+On a versioned bucket the earlier versions are kept, so removal is reversible
+and keeps costing storage until a lifecycle rule expires them. Backblaze B2 is
+always versioned: `.remove()` hides the file rather than deleting a version,
+which stops the path resolving without uncovering the version before it.
 
 #### Related methods
 
@@ -355,7 +373,7 @@ URL availability per provider:
 | **B2**    |      ✅       |      ✅       |      ❌       |
 | **FS**    |      ❌       |      ❌       |      ❌       |
 
-- ✅: returns a URL. For `publicUrl()` it only answers if the bucket or object is publicly readable; R2 additionally needs the [`publicUrl` config option](#cloudflare-r2) (`null` without it), and GCS/Azure signing needs key credentials (`null` with anonymous GCS or Azure managed identity).
+- ✅: returns a URL. For `publicUrl()` it only answers if the bucket or object is publicly readable; R2 additionally needs the [`publicUrl` config option](#cloudflare-r2) (`null` without it). Signing needs a key: GCS returns `null` without a [service-account private key](#google-cloud-storage), Azure without an account key (managed identity).
 - ❌: always returns `null`: B2 uploads require auth headers so a standalone upload URL cannot exist (use `.write()` instead), and the local filesystem has no URLs of any kind.
 
 ### file.info()
@@ -589,6 +607,8 @@ const avatar = await bucket.file("tmp/upload.jpg").moveTo("photos/avatar.jpg");
 avatar.path; // "photos/avatar.jpg"
 ```
 
+A move is a copy followed by a [`remove()`](#fileremove) of the source, so on a versioned bucket it leaves the source path's history behind exactly as a plain remove would. The bytes live at the new path and the old path stops resolving, but its earlier versions stay until a lifecycle rule expires them. On the filesystem it is a single atomic rename instead, with nothing left behind.
+
 #### Related methods
 
 - [`.copyTo(path)`](#filecopytopath): same, keeping the original.
@@ -617,11 +637,20 @@ const gone = await bucket.file("temp.txt").remove();
 gone.path; // "temp.txt", useful for logging what was deleted
 ```
 
+It takes no arguments. Afterwards the path stops resolving: `.exists()` is
+`false`, reads throw `NOT_FOUND`, and `.info()` is `null`. Removing a file that
+is already gone is a no-op, not an error.
+
+On a versioned bucket the earlier versions are kept, so removal is reversible
+and keeps costing storage until a lifecycle rule expires them. Backblaze B2 is
+always versioned: `.remove()` hides the file rather than deleting a version,
+which stops the path resolving without uncovering the version before it.
+
 Alias: `.unlink()`, matching Bun's `S3File`.
 
 #### Related methods
 
-- [`bucket.remove(filter?)`](#remove): delete many files at once.
+- [`bucket.remove(filter)`](#remove): delete many files at once.
 
 ### file.stream()
 
@@ -739,7 +768,7 @@ await file.signedUrl({ expires: 3600 }); // seconds
 await file.signedUrl({ expires: "15min" }); // or a duration string
 ```
 
-The URL is cryptographically signed with your credentials and grants anyone holding it read access until it expires, so a private object can be shared without opening the bucket. Returns `null` when the credentials cannot sign (GCS without a service-account key, Azure with managed identity) and always on the local filesystem.
+The URL is cryptographically signed with your credentials and grants anyone holding it read access until it expires, so a private object can be shared without opening the bucket. Returns `null` when the credentials cannot sign: on GCS without a [service-account private key](#google-cloud-storage), on Azure when authenticating with managed identity instead of an account key, and always on the local filesystem.
 
 ```js
 const url = await bucket.file("invoice.pdf").signedUrl({ expires: "15min" });
@@ -897,6 +926,8 @@ Credentials are resolved automatically, in order:
 | service email | `GCS_CLIENT_EMAIL`               |
 | private key   | `GCS_PRIVATE_KEY`                |
 | credentials   | `GOOGLE_APPLICATION_CREDENTIALS` |
+
+Signing uses the private key directly, so `signedUrl()` and `uploadUrl()` return `null` under the metadata server. The user credentials written by `gcloud auth application-default login` carry no private key either and cannot sign at all, so point `GOOGLE_APPLICATION_CREDENTIALS` at a service-account JSON file when you need signed URLs.
 
 Pass `{ url, anonymous }` (or set `GCS_URL` / `GCS_ANONYMOUS`) to point at an emulator such as fake-gcs-server:
 
@@ -1387,9 +1418,9 @@ Everything else is Web standards: request signing uses **WebCrypto** (`crypto.su
 
 Methods throw a `BucketError` (a subclass of `Error`). Alongside the human-readable `message` it carries structured fields you can branch on:
 
-- `code`: a normalized, uppercase string, one of `"NOT_FOUND" | "FORBIDDEN" | "UNAUTHORIZED" | "CONFLICT" | "INVALID_PATH" | "UNKNOWN"`. It means the same thing across every provider, including the filesystem.
+- `code`: a normalized, uppercase string, one of `"NOT_FOUND" | "FORBIDDEN" | "UNAUTHORIZED" | "CONFLICT" | "INVALID_PATH" | "INVALID_FILTER" | "UNKNOWN"`. It means the same thing across every provider, including the filesystem.
 - `status`: the raw HTTP status, when the failure came from an HTTP response (absent for the filesystem).
-- `provider`: which backend produced it (e.g. `"S3"`). Absent for `"INVALID_PATH"`, which is thrown before any provider is involved.
+- `provider`: which backend produced it (e.g. `"S3"`). Absent for `"INVALID_PATH"` and `"INVALID_FILTER"`, which are thrown before any provider is involved.
 
 There is no automatic retry.
 
@@ -1404,6 +1435,24 @@ try {
   }
 }
 ```
+
+### What happens on a versioned bucket?
+
+Removing is about the path, never the history. After `.remove()` the path stops resolving (`.exists()` is `false`, reads throw `NOT_FOUND`, `.info()` is `null`, and it is absent from `.list()`, `.scan()` and `.count()`), but the versions written before it are kept:
+
+| Service | What `.remove()` leaves behind               |
+| ------- | -------------------------------------------- |
+| S3, R2  | A delete marker; earlier versions stay       |
+| GCS     | The generations become noncurrent            |
+| Azure   | The blob and its snapshots go, versions stay |
+| B2      | A hide marker; every version stays           |
+| FS      | Nothing, the file is unlinked                |
+
+So removal is reversible through the provider's own console or API, and the retained versions keep costing storage until a lifecycle rule expires them. Bucket never deletes a version, so it can never destroy data you cannot get back.
+
+The same applies to [`.moveTo()`](#filemovetopath) and [`.rename()`](#filerenamename), which remove the source once the copy lands: a move within a versioned bucket duplicates the bytes rather than relocating them.
+
+Backblaze B2 is always versioned, so it hides instead of deleting even when you never turned versioning on. Deleting its newest version would both destroy that version and uncover the one before it, resurrecting old content at a path you just removed.
 
 ### What are "web streams" vs "node streams"?
 

@@ -118,8 +118,20 @@ try {
     "--timeout",
     "30000",
   ]);
+
+  // Last, and on its own: it enables bucket versioning and leaves it on.
+  const versioning = code
+    ? code
+    : await run("bun", [
+        ...ENV,
+        "test",
+        "test/versioning.test.ts",
+        "--timeout",
+        "30000",
+      ]);
+
   teardown();
-  process.exit(code);
+  process.exit(versioning);
 } catch (err) {
   console.error(err);
   teardown();

@@ -366,10 +366,14 @@ export class GCSFile implements BucketFile {
   }
 
   async remove(): Promise<GCSFile> {
+    // No `generation` parameter: this removes the path, not a specific
+    // generation, so on a versioned bucket the prior ones are kept.
     const res = await fetch(this.#apiUrl(), {
       method: "DELETE",
       headers: await this.#headers(),
     });
+    // Already gone is success: removing a path twice is a no-op
+    if (res.status === 404) return this;
     if (!res.ok && res.status !== 204)
       throw new BucketError(`GCS DELETE error: ${res.status}`, {
         provider: "GCS",

@@ -938,40 +938,65 @@ describe("B2 bucket.remove()", () => {
     globalThis.fetch = originalFetch;
   });
 
-  it("deletes all listed files and returns them", async () => {
-    const deleteRequests: string[] = [];
+  it("hides every listed file and returns them", async () => {
+    const hidden: string[] = [];
     const bucket = await makeBucket((url, init) => {
       if ((url as string).includes("b2_list_file_names")) {
         return Promise.resolve(makeResponse(JSON.stringify(B2_LIST_RESPONSE)));
       }
-      if ((url as string).includes("b2_list_file_versions")) {
-        // remove() asks for every version of one exact file
-        const { prefix } = JSON.parse((init?.body as string) ?? "{}") as {
-          prefix: string;
+      if ((url as string).includes("b2_hide_file")) {
+        const { fileName } = JSON.parse((init?.body as string) ?? "{}") as {
+          fileName: string;
         };
-        return Promise.resolve(
-          makeResponse(
-            JSON.stringify({
-              files: [{ fileName: prefix, fileId: "v-" + prefix }],
-              nextFileName: null,
-            }),
-          ),
-        );
-      }
-      if ((url as string).includes("b2_delete_file_version")) {
-        deleteRequests.push(url as string);
-        return Promise.resolve(
-          makeResponse(
-            JSON.stringify({ fileId: "deleted", fileName: "deleted" }),
-          ),
-        );
+        hidden.push(fileName);
+        return Promise.resolve(makeResponse(JSON.stringify({ fileName })));
       }
       return Promise.resolve(makeResponse(null));
     });
 
-    const deleted = await bucket.remove();
+    const deleted = await bucket.remove(/./);
     expect(deleted.length).toBe(2);
-    expect(deleteRequests.length).toBe(2);
+    expect(hidden.sort()).toEqual(["data/world.json", "hello.txt"]);
+  });
+
+  it("never destroys a version", async () => {
+    // b2_delete_file_version would both drop the newest version and uncover
+    // the one before it, which is the opposite of removing a path.
+    const calls: string[] = [];
+    const bucket = await makeBucket((url) => {
+      const u = url as string;
+      if (u.includes("b2_list_file_names"))
+        return Promise.resolve(makeResponse(JSON.stringify(B2_LIST_RESPONSE)));
+      if (u.includes("b2_")) calls.push(u.split("b2_").pop()!.split("?")[0]);
+      return Promise.resolve(makeResponse("{}"));
+    });
+    await bucket.remove(/./);
+    expect(calls).not.toContain("delete_file_version");
+    expect(calls).not.toContain("list_file_versions");
+  });
+
+  it("hiding an already-hidden path is a no-op, not an error", async () => {
+    let hides = 0;
+    const bucket = await makeBucket((url) => {
+      if ((url as string).includes("b2_hide_file")) {
+        hides++;
+        return Promise.resolve(
+          makeResponse(
+            JSON.stringify({
+              status: 400,
+              code: "file_not_present",
+              message: "not present",
+            }),
+            400,
+            { "content-type": "application/json" },
+          ),
+        );
+      }
+      return Promise.resolve(makeResponse("{}"));
+    });
+    const file = await bucket.file("gone.txt").remove();
+    expect(file.path).toBe("gone.txt");
+    expect(hides).toBe(1); // one attempt, no retry and no second marker
   });
 
   it("returns empty array when nothing to delete", async () => {
@@ -982,7 +1007,7 @@ describe("B2 bucket.remove()", () => {
         );
       return Promise.resolve(makeResponse(null));
     });
-    const deleted = await bucket.remove();
+    const deleted = await bucket.remove(/./);
     expect(deleted).toEqual([]);
   });
 });
@@ -1015,27 +1040,19 @@ describe("B2 file().moveTo()", () => {
         return Promise.resolve(
           makeResponse(JSON.stringify({ fileId: "new-id" })),
         );
-      if ((url as string).includes("b2_list_file_versions"))
+      if ((url as string).includes("b2_hide_file"))
         return Promise.resolve(
-          makeResponse(
-            JSON.stringify({
-              files: [{ fileName: "src.txt", fileId: "src-id" }],
-              nextFileName: null,
-            }),
-          ),
-        );
-      if ((url as string).includes("b2_delete_file_version"))
-        return Promise.resolve(
-          makeResponse(
-            JSON.stringify({ fileId: "src-id", fileName: "src.txt" }),
-          ),
+          makeResponse(JSON.stringify({ fileName: "src.txt" })),
         );
       return Promise.resolve(makeResponse(null));
     });
     await bucket.file("src.txt").moveTo("dst.txt");
     expect(requests.some((r) => r.includes("/upload"))).toBe(true);
+    expect(requests.some((r) => r.includes("b2_hide_file"))).toBe(true);
+    // The source is hidden, never deleted: a move keeps the history that
+    // removing the same file would have kept.
     expect(requests.some((r) => r.includes("b2_delete_file_version"))).toBe(
-      true,
+      false,
     );
   });
 });

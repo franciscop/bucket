@@ -7,6 +7,7 @@ import {
 import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import { randomName } from "../lib/nanoid.ts";
+import { assertFilter, requireFilter } from "../lib/filter.ts";
 import type {
   Bucket,
   BucketInfo,
@@ -199,11 +200,17 @@ class AzureBucket implements Bucket {
     } while (marker);
   }
 
-  async *scan(filter?: RegExp): AsyncGenerator<AzureFile> {
+  scan(filter?: RegExp): AsyncGenerator<AzureFile> {
+    assertFilter(filter);
+    return this.#scan(filter);
+  }
+
+  async *#scan(filter?: RegExp): AsyncGenerator<AzureFile> {
     for await (const page of this.#pages(filter)) yield* page;
   }
 
   async list(filter?: RegExp): Promise<AzureFile[]> {
+    assertFilter(filter);
     const files: AzureFile[] = [];
     for await (const page of this.#pages(filter)) files.push(...page);
     return files;
@@ -235,13 +242,15 @@ class AzureBucket implements Bucket {
     return b;
   }
 
-  async remove(filter?: RegExp): Promise<AzureFile[]> {
+  async remove(filter: RegExp): Promise<AzureFile[]> {
+    requireFilter(filter);
     const files = await this.list(filter);
     await Promise.all(files.map((f) => f.remove()));
     return files;
   }
 
   async count(filter?: RegExp): Promise<number> {
+    assertFilter(filter);
     return (await this.list(filter)).length;
   }
 

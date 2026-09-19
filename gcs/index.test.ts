@@ -590,7 +590,7 @@ describe("GCS bucket.remove()", () => {
       return Promise.resolve(makeResponse(null, 204));
     }) as typeof fetch;
 
-    const deleted = await bucket.remove();
+    const deleted = await bucket.remove(/./);
     expect(deleted.length).toBe(2);
     expect(methods.filter((m) => m === "DELETE").length).toBe(2);
   });

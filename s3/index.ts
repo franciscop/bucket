@@ -5,6 +5,7 @@ import { sha256base64 } from "../lib/webcrypto.ts";
 import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import { randomName } from "../lib/nanoid.ts";
+import { assertFilter, requireFilter } from "../lib/filter.ts";
 import type {
   Bucket,
   BucketInfo,
@@ -247,17 +248,24 @@ class S3Bucket implements Bucket {
     } while (token);
   }
 
-  async *scan(filter?: RegExp): AsyncGenerator<S3File> {
+  scan(filter?: RegExp): AsyncGenerator<S3File> {
+    assertFilter(filter);
+    return this.#scan(filter);
+  }
+
+  async *#scan(filter?: RegExp): AsyncGenerator<S3File> {
     for await (const page of this.#pages(filter)) yield* page;
   }
 
   async list(filter?: RegExp): Promise<S3File[]> {
+    assertFilter(filter);
     const files: S3File[] = [];
     for await (const page of this.#pages(filter)) files.push(...page);
     return files;
   }
 
-  async remove(filter?: RegExp): Promise<S3File[]> {
+  async remove(filter: RegExp): Promise<S3File[]> {
+    requireFilter(filter);
     const files = await this.list(filter);
     if (!files.length) return [];
 
@@ -336,6 +344,7 @@ class S3Bucket implements Bucket {
   }
 
   async count(filter?: RegExp): Promise<number> {
+    assertFilter(filter);
     return (await this.list(filter)).length;
   }
 

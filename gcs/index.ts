@@ -2,6 +2,7 @@ import { getAccessToken, getMetadataToken } from "../lib/signGCS.ts";
 import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import { randomName } from "../lib/nanoid.ts";
+import { assertFilter, requireFilter } from "../lib/filter.ts";
 import type {
   Bucket,
   BucketInfo,
@@ -134,11 +135,17 @@ class GCSBucket implements Bucket {
     } while (pageToken);
   }
 
-  async *scan(filter?: RegExp): AsyncGenerator<GCSFile> {
+  scan(filter?: RegExp): AsyncGenerator<GCSFile> {
+    assertFilter(filter);
+    return this.#scan(filter);
+  }
+
+  async *#scan(filter?: RegExp): AsyncGenerator<GCSFile> {
     for await (const page of this.#pages(filter)) yield* page;
   }
 
   async list(filter?: RegExp): Promise<GCSFile[]> {
+    assertFilter(filter);
     const files: GCSFile[] = [];
     for await (const page of this.#pages(filter)) files.push(...page);
     return files;
@@ -173,13 +180,15 @@ class GCSBucket implements Bucket {
     return b;
   }
 
-  async remove(filter?: RegExp): Promise<GCSFile[]> {
+  async remove(filter: RegExp): Promise<GCSFile[]> {
+    requireFilter(filter);
     const files = await this.list(filter);
     await Promise.all(files.map((f) => f.remove()));
     return files;
   }
 
   async count(filter?: RegExp): Promise<number> {
+    assertFilter(filter);
     return (await this.list(filter)).length;
   }
 

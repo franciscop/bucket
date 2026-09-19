@@ -10,6 +10,7 @@ import type {
 } from "../lib/types.ts";
 import { fileKey, folderKey } from "../lib/prefix.ts";
 import { randomName } from "../lib/nanoid.ts";
+import { assertFilter, requireFilter } from "../lib/filter.ts";
 import assertNotOsPath from "./osPathGuard.ts";
 import { FSFile } from "./File.ts";
 
@@ -41,6 +42,7 @@ class FileSystemBucket implements Bucket {
   }
 
   async list(filter?: RegExp): Promise<FSFile[]> {
+    assertFilter(filter);
     let raw: import("node:fs").Dirent[];
     try {
       raw = await fsp.readdir(this.path, {
@@ -90,17 +92,24 @@ class FileSystemBucket implements Bucket {
     return new FileSystemBucket(this.#root, folderKey(this.PREFIX, path));
   }
 
-  async remove(filter?: RegExp): Promise<FSFile[]> {
+  async remove(filter: RegExp): Promise<FSFile[]> {
+    requireFilter(filter);
     const files = await this.list(filter);
     await Promise.all(files.map((f) => f.remove()));
     return files;
   }
 
   async count(filter?: RegExp): Promise<number> {
+    assertFilter(filter);
     return (await this.list(filter)).length;
   }
 
-  async *scan(filter?: RegExp): AsyncGenerator<FSFile> {
+  scan(filter?: RegExp): AsyncGenerator<FSFile> {
+    assertFilter(filter);
+    return this.#scan(filter);
+  }
+
+  async *#scan(filter?: RegExp): AsyncGenerator<FSFile> {
     // The filesystem has no pagination; readdir already returns everything.
     for (const file of await this.list(filter)) yield file;
   }

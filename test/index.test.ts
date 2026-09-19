@@ -624,6 +624,90 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
       });
     });
 
+    // ── Removal ───────────────────────────────────────────────────────────────
+
+    describe("remove() makes the path stop resolving", () => {
+      it("the file no longer exists", async () => {
+        const file = await bucket.file(testFile()).write("bye");
+        expect(await file.exists()).toBe(true);
+        await file.remove();
+        expect(await file.exists()).toBe(false);
+      });
+
+      it("reads throw NOT_FOUND", async () => {
+        const file = await bucket.file(testFile()).write("bye");
+        await file.remove();
+        for (const read of [
+          () => file.text(),
+          () => file.json(),
+          () => file.bytes(),
+          () => file.arrayBuffer(),
+        ]) {
+          let code: string | undefined;
+          try {
+            await read();
+          } catch (err) {
+            code = (err as { code?: string }).code;
+          }
+          expect(code).toBe("NOT_FOUND");
+        }
+      });
+
+      it("info() is null", async () => {
+        const file = await bucket.file(testFile()).write("bye");
+        await file.remove();
+        expect(await file.info()).toBeNull();
+      });
+
+      it("the path is gone from list(), scan() and count()", async () => {
+        const name = testFile();
+        const file = await bucket.file(name).write("bye");
+        const before = await bucket.count();
+        await file.remove();
+
+        expect((await bucket.list()).map((f) => f.path)).not.toContain(name);
+        expect(await bucket.count()).toBe(before - 1);
+        const scanned: string[] = [];
+        for await (const f of bucket.scan()) scanned.push(f.path);
+        expect(scanned).not.toContain(name);
+      });
+
+      it("removing twice does not throw", async () => {
+        const file = await bucket.file(testFile()).write("bye");
+        await file.remove();
+        await file.remove(); // no second marker, no error
+        expect(await file.exists()).toBe(false);
+      });
+
+      it("removing a path that never existed does not throw", async () => {
+        const file = bucket.file(`never-existed-${testFile()}`);
+        const removed = await file.remove();
+        expect(removed.path).toBe(file.path);
+      });
+
+      it("resolves to the file it removed", async () => {
+        const name = testFile();
+        const file = await bucket.file(name).write("bye");
+        const removed = await file.remove();
+        expect(removed.path).toBe(name);
+      });
+
+      it("a folder's remove() only touches that folder", async () => {
+        const dir = `rm-${Math.floor(Math.random() * 100000)}`;
+        const outside = await bucket.file(testFile()).write("keep");
+        const folder = bucket.folder(dir);
+        await folder.file("a.txt").write("x");
+        await folder.file("deep/b.txt").write("x");
+        expect(await folder.count()).toBe(2);
+
+        const removed = await folder.remove(/./);
+        expect(removed.length).toBe(2);
+        expect(await folder.count()).toBe(0);
+        expect(await outside.exists()).toBe(true);
+        await outside.remove();
+      });
+    });
+
     // ── copy / move / rename ──────────────────────────────────────────────────
 
     describe("copy()", () => {

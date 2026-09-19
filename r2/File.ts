@@ -223,6 +223,8 @@ export class R2File implements BucketFile {
 
   async remove(): Promise<R2File> {
     const res = await this.#ctx.doRequest("DELETE", this.path);
+    // Already gone is success: removing a path twice is a no-op
+    if (res.status === 404) return this;
     if (!res.ok && res.status !== 204)
       throw new BucketError(`R2 DELETE error: ${res.status}`, {
         provider: "R2",

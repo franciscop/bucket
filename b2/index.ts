@@ -6,6 +6,7 @@ import type {
 } from "../lib/types.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import { randomName } from "../lib/nanoid.ts";
+import { assertFilter, requireFilter } from "../lib/filter.ts";
 import BucketError from "../lib/BucketError.ts";
 import { B2File, type B2BucketContext } from "./File.ts";
 
@@ -293,6 +294,7 @@ class BackBlazeInstance implements Bucket {
   }
 
   async count(filter?: RegExp): Promise<number> {
+    assertFilter(filter);
     return (await this.list(filter)).length;
   }
 
@@ -331,17 +333,24 @@ class BackBlazeInstance implements Bucket {
     } while (nextFileName);
   }
 
-  async *scan(filter?: RegExp): AsyncGenerator<B2File> {
+  scan(filter?: RegExp): AsyncGenerator<B2File> {
+    assertFilter(filter);
+    return this.#scan(filter);
+  }
+
+  async *#scan(filter?: RegExp): AsyncGenerator<B2File> {
     for await (const page of this.pages(filter)) yield* page;
   }
 
   async list(filter?: RegExp): Promise<B2File[]> {
+    assertFilter(filter);
     const files: B2File[] = [];
     for await (const page of this.pages(filter)) files.push(...page);
     return files;
   }
 
-  async remove(filter?: RegExp): Promise<B2File[]> {
+  async remove(filter: RegExp): Promise<B2File[]> {
+    requireFilter(filter);
     const files = await this.list(filter);
     await Promise.all(files.map((file) => file.remove()));
     return files;

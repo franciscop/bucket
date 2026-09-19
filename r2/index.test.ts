@@ -375,7 +375,7 @@ describe("R2 bucket.remove()", () => {
       return Promise.resolve(makeResponse(deleted));
     });
 
-    const deleted = await bucket.remove();
+    const deleted = await bucket.remove(/./);
     const deleteReq = requests.find((r) => r.url.includes("delete="));
     expect(deleteReq).toBeDefined();
     expect(deleted.length).toBe(2);
@@ -391,7 +391,7 @@ describe("R2 bucket.remove()", () => {
       return Promise.resolve(makeResponse(deleted));
     });
 
-    const deleted = await bucket.remove();
+    const deleted = await bucket.remove(/./);
     expect(deleted.map((f) => f.path)).toEqual([
       "hello.txt",
       "data/world.json",

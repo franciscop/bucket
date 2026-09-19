@@ -703,7 +703,7 @@ describe("Azure bucket.remove()", () => {
       return Promise.resolve(makeResponse(null, 202));
     });
 
-    const deleted = await bucket.remove();
+    const deleted = await bucket.remove(/./);
     expect(deleted.length).toBe(2);
     expect(methods.filter((m) => m === "DELETE").length).toBe(2);
   });

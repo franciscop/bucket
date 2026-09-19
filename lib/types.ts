@@ -135,10 +135,12 @@ export interface Bucket {
    */
   scan(filter?: RegExp): AsyncGenerator<BucketFile>;
   /**
-   * Deletes all files matching the optional filter.
-   * Returns the deleted file objects.
+   * Deletes every file matching the filter, returning the deleted files.
+   * The filter is required and must be a `RegExp`: use `.remove(/./)` to empty
+   * the bucket, or `.folder(path)` to scope it first. Anything else throws a
+   * `BucketError` with code `"INVALID_FILTER"`.
    */
-  remove(filter?: RegExp): Promise<BucketFile[]>;
+  remove(filter: RegExp): Promise<BucketFile[]>;
   /** Returns the number of files matching the optional filter */
   count(filter?: RegExp): Promise<number>;
   /** Returns a file handle for the given path (does not check existence) */

@@ -5,6 +5,7 @@ import { sha256base64 } from "../lib/webcrypto.ts";
 import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import { randomName } from "../lib/nanoid.ts";
+import { assertFilter, requireFilter } from "../lib/filter.ts";
 import type {
   Bucket,
   BucketInfo,
@@ -161,17 +162,24 @@ class CloudflareR2Bucket implements Bucket {
     } while (token);
   }
 
-  async *scan(filter?: RegExp): AsyncGenerator<R2File> {
+  scan(filter?: RegExp): AsyncGenerator<R2File> {
+    assertFilter(filter);
+    return this.#scan(filter);
+  }
+
+  async *#scan(filter?: RegExp): AsyncGenerator<R2File> {
     for await (const page of this.pages(filter)) yield* page;
   }
 
   async list(filter?: RegExp): Promise<R2File[]> {
+    assertFilter(filter);
     const files: R2File[] = [];
     for await (const page of this.pages(filter)) files.push(...page);
     return files;
   }
 
-  async remove(filter?: RegExp): Promise<R2File[]> {
+  async remove(filter: RegExp): Promise<R2File[]> {
+    requireFilter(filter);
     const files = await this.list(filter);
     if (!files.length) return [];
 
@@ -250,6 +258,7 @@ class CloudflareR2Bucket implements Bucket {
   }
 
   async count(filter?: RegExp): Promise<number> {
+    assertFilter(filter);
     return (await this.list(filter)).length;
   }
 
