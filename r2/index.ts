@@ -6,6 +6,11 @@ import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import { randomName } from "../lib/nanoid.ts";
 import { assertFilter, requireFilter } from "../lib/filter.ts";
+import {
+  throwIfAborted,
+  withAbortFetch,
+  type ReadOptions,
+} from "../lib/abort.ts";
 import type {
   Bucket,
   BucketInfo,
@@ -19,6 +24,7 @@ import { R2File, type R2BucketContext } from "./File.ts";
 const {
   R2_BUCKET: ENV_BUCKET,
   R2_URL: ENV_URL,
+  R2_ACCOUNT_ID: ENV_ACCOUNT,
   R2_ACCESS_KEY_ID: ENV_ID,
   R2_SECRET_ACCESS_KEY: ENV_KEY,
   R2_SESSION_TOKEN: ENV_SESSION_TOKEN,
@@ -31,9 +37,12 @@ export interface R2Config {
   secret?: string;
   region?: string;
   sessionToken?: string;
-  /** Full R2 endpoint URL, including the bucket name at the end:
-   * `https://<account>.r2.cloudflarestorage.com/<bucket>` (falls back to
-   * `R2_URL`). */
+  /** Cloudflare account id, which the endpoint is derived from (falls back
+   * to `R2_ACCOUNT_ID`). This is the normal way to configure R2. */
+  account?: string;
+  /** Endpoint *without* the bucket, for custom endpoints and emulators (falls
+   * back to `R2_URL`). The bucket name is appended as a path segment.
+   * Derived from `account` when unset. */
   url?: string;
   /** Public base for `file.publicUrl()`: the bucket's `r2.dev` or custom
    * domain, e.g. `https://cdn.example.com` (falls back to `R2_PUBLIC_URL`).
@@ -42,17 +51,15 @@ export interface R2Config {
   publicUrl?: string;
 }
 
-function extractBucketName(url: string): string {
-  try {
-    return new URL(url).pathname.replace(/^\//, "").split("/")[0] ?? "";
-  } catch {
-    return "";
-  }
-}
+const endpointFor = (account: string) =>
+  `https://${account}.r2.cloudflarestorage.com`;
 
 class CloudflareR2Bucket implements Bucket {
   readonly type = "R2";
   private url: string;
+  // The configured endpoint, kept apart from `url` (which has the bucket
+  // appended) so folder() can rebuild without appending it twice.
+  #endpoint: string;
   #publicUrl: string;
   #auth: S3Auth;
   private bucketName: string;
@@ -65,19 +72,37 @@ class CloudflareR2Bucket implements Bucket {
       secret = ENV_KEY || "",
       region = ENV_REGION || "auto",
       sessionToken = ENV_SESSION_TOKEN,
+      account = ENV_ACCOUNT || "",
       url = ENV_URL || "",
       publicUrl = ENV_PUBLIC_URL || "",
     }: R2Config = {},
   ) {
-    this.url = url.replace(/\/$/, "");
-    this.#publicUrl = publicUrl.replace(/\/$/, "");
-    // R2's request URL already ends with the bucket path, so the two must agree.
-    const derived = extractBucketName(this.url);
-    if (name && derived && name !== derived)
-      throw new Error(
-        `R2 bucket name "${name}" does not match the bucket in url "${this.url}"`,
+    if (!name) {
+      throw new BucketError(
+        "R2 needs a bucket name, as the first argument or R2_BUCKET.",
+        { code: "INVALID_CONFIG" },
       );
-    this.bucketName = name || derived;
+    }
+    const custom = url.replace(/\/+$/, "");
+    if (account && custom && custom !== endpointFor(account)) {
+      throw new BucketError(
+        `R2 account "${account}" implies the endpoint ${endpointFor(account)}, ` +
+          `which does not match url "${custom}". Pass one or the other.`,
+        { code: "INVALID_CONFIG" },
+      );
+    }
+    if (!account && !custom) {
+      throw new BucketError(
+        "R2 needs an account id (or R2_ACCOUNT_ID) to build its endpoint, " +
+          "or a url for a custom endpoint.",
+        { code: "INVALID_CONFIG" },
+      );
+    }
+    this.#endpoint = custom || endpointFor(account);
+    this.#publicUrl = publicUrl.replace(/\/+$/, "");
+    this.bucketName = name;
+    // The endpoint excludes the bucket; R2 addresses it path-style.
+    this.url = `${this.#endpoint}/${name}`;
     this.#auth = { id, secret, region, sessionToken };
   }
 
@@ -110,7 +135,8 @@ class CloudflareR2Bucket implements Bucket {
     return res;
   }
 
-  async info(): Promise<BucketInfo> {
+  async info(opts?: ReadOptions): Promise<BucketInfo> {
+    throwIfAborted(opts?.signal);
     return {
       type: this.type,
       name: this.bucketName,
@@ -119,7 +145,10 @@ class CloudflareR2Bucket implements Bucket {
     };
   }
 
-  private async *pages(filter?: RegExp): AsyncGenerator<R2File[]> {
+  private async *pages(
+    filter?: RegExp,
+    opts?: ReadOptions,
+  ): AsyncGenerator<R2File[]> {
     let token: string | undefined;
     const s = scope(this.PREFIX, filter);
 
@@ -136,7 +165,7 @@ class CloudflareR2Bucket implements Bucket {
       };
       await cleanAndSignS3(req, this.#auth);
 
-      const res = await fetch(url.toString(), {
+      const res = await withAbortFetch(opts?.signal, url.toString(), {
         method: "GET",
         headers: req.headers,
       });
@@ -162,25 +191,35 @@ class CloudflareR2Bucket implements Bucket {
     } while (token);
   }
 
-  scan(filter?: RegExp): AsyncGenerator<R2File> {
+  scan(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<R2File> {
     assertFilter(filter);
-    return this.#scan(filter);
+    // Eager, like the filter check: an aborted scan must not wait for the
+    // first iteration to reject.
+    throwIfAborted(opts?.signal);
+    return this.#scan(filter, opts);
   }
 
-  async *#scan(filter?: RegExp): AsyncGenerator<R2File> {
-    for await (const page of this.pages(filter)) yield* page;
+  async *#scan(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<R2File> {
+    for await (const page of this.pages(filter, opts)) {
+      for (const file of page) {
+        throwIfAborted(opts?.signal);
+        yield file;
+      }
+    }
   }
 
-  async list(filter?: RegExp): Promise<R2File[]> {
+  async list(filter?: RegExp, opts?: ReadOptions): Promise<R2File[]> {
     assertFilter(filter);
+    throwIfAborted(opts?.signal);
     const files: R2File[] = [];
-    for await (const page of this.pages(filter)) files.push(...page);
+    for await (const page of this.pages(filter, opts)) files.push(...page);
     return files;
   }
 
-  async remove(filter: RegExp): Promise<R2File[]> {
+  async remove(filter: RegExp, opts?: ReadOptions): Promise<R2File[]> {
     requireFilter(filter);
-    const files = await this.list(filter);
+    throwIfAborted(opts?.signal);
+    const files = await this.list(filter, opts);
     if (!files.length) return [];
 
     const deleted: R2File[] = [];
@@ -204,7 +243,7 @@ class CloudflareR2Bucket implements Bucket {
       };
       await cleanAndSignS3(req, this.#auth);
 
-      const res = await fetch(url.toString(), {
+      const res = await withAbortFetch(opts?.signal, url.toString(), {
         method: "POST",
         headers: req.headers,
         body,
@@ -244,12 +283,13 @@ class CloudflareR2Bucket implements Bucket {
   }
 
   async create(content: WriteContent, options?: WriteOptions): Promise<R2File> {
+    throwIfAborted(options?.signal);
     return this.file(randomName(content, options)).write(content, options);
   }
 
   folder(path: string): CloudflareR2Bucket {
     const b = new CloudflareR2Bucket(this.bucketName, {
-      url: this.url,
+      url: this.#endpoint,
       publicUrl: this.#publicUrl,
     });
     b.#auth = this.#auth;
@@ -257,9 +297,9 @@ class CloudflareR2Bucket implements Bucket {
     return b;
   }
 
-  async count(filter?: RegExp): Promise<number> {
+  async count(filter?: RegExp, opts?: ReadOptions): Promise<number> {
     assertFilter(filter);
-    return (await this.list(filter)).length;
+    return (await this.list(filter, opts)).length;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<R2File> {
@@ -275,14 +315,15 @@ class CloudflareR2Bucket implements Bucket {
  * @param config.secret - Secret Access Key (falls back to `R2_SECRET_ACCESS_KEY`)
  * @param config.sessionToken - Session token for temporary credentials (falls back to `R2_SESSION_TOKEN`)
  * @param config.region - Region, default `"auto"` (falls back to `R2_REGION`)
- * @param config.url - Full R2 endpoint URL, including the bucket name at the end:
- *   `https://<account>.r2.cloudflarestorage.com/<bucket>` (falls back to `R2_URL`)
+ * @param config.account - Cloudflare account id the endpoint is derived from (falls back to `R2_ACCOUNT_ID`)
+ * @param config.url - Endpoint without the bucket, for custom endpoints (falls back to `R2_URL`)
+ * @param config.publicUrl - Public origin for `file.publicUrl()` (falls back to `R2_PUBLIC_URL`)
  *
  * @example
  * const bucket = CloudflareR2("my-bucket", {
  *   id: "keyId",
  *   secret: "secretKey",
- *   url: "https://abc.r2.cloudflarestorage.com/my-bucket",
+ *   account: "abc123",
  * });
  * await bucket.file("hello.txt").write("hello");
  */

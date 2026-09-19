@@ -1,4 +1,5 @@
 import FileSystem from "../fs/index.ts";
+import Memory from "../memory/index.ts";
 import BackBlaze from "../b2/index.ts";
 import S3 from "../s3/index.ts";
 import GCS from "../gcs/index.ts";
@@ -16,6 +17,10 @@ const buckets: Record<string, BucketEntry> = {};
 
 buckets["FileSystem"] = {
   bucket: FileSystem("./fs/test/"),
+};
+
+buckets["Memory"] = {
+  bucket: Memory(),
 };
 
 // ── Real buckets: they hit the network or an emulator, so they are opt-in. ───
@@ -42,7 +47,7 @@ if (process.env.EXPENSIVE === "true") {
   if (
     process.env.GCS_BUCKET &&
     (process.env.GCS_CLIENT_EMAIL ||
-      process.env.GCS_CREDENTIALS ||
+      process.env.GOOGLE_APPLICATION_CREDENTIALS ||
       process.env.GCS_URL) // emulator (fake-gcs-server, anonymous)
   ) {
     buckets["GCS"] = { bucket: GCS() };
@@ -57,7 +62,8 @@ if (process.env.EXPENSIVE === "true") {
   }
 
   if (
-    process.env.R2_URL &&
+    process.env.R2_BUCKET &&
+    (process.env.R2_URL || process.env.R2_ACCOUNT_ID) &&
     process.env.R2_ACCESS_KEY_ID &&
     process.env.R2_SECRET_ACCESS_KEY
   ) {

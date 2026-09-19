@@ -8,6 +8,11 @@ import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import { randomName } from "../lib/nanoid.ts";
 import { assertFilter, requireFilter } from "../lib/filter.ts";
+import {
+  throwIfAborted,
+  withAbortFetch,
+  type ReadOptions,
+} from "../lib/abort.ts";
 import type {
   Bucket,
   BucketInfo,
@@ -21,6 +26,7 @@ const {
   AZURE_CONTAINER: ENV_CONTAINER,
   AZURE_KEY: ENV_KEY,
   AZURE_URL: ENV_URL,
+  AZURE_PUBLIC_URL: ENV_PUBLIC_URL,
   AZURE_CONNECTION_STRING: ENV_CONNECTION_STRING,
 } = process.env;
 
@@ -36,6 +42,9 @@ export interface AzureConfig {
   /** Full Azure connection string (falls back to `AZURE_CONNECTION_STRING`).
    * When present, its account, key, and BlobEndpoint are used. */
   connectionString?: string;
+  /** Public origin the container is served from, e.g. a Front Door domain
+   * (falls back to `AZURE_PUBLIC_URL`). Used by `file.publicUrl()`. */
+  publicUrl?: string;
 }
 
 // The account in a blob URL is the subdomain (`<account>.blob.core.windows.net`)
@@ -77,6 +86,7 @@ class AzureBucket implements Bucket {
   #account: string;
   #container: string;
   #url: string;
+  #publicUrl: string;
   #auth: AzureFileAuth;
   #tokenCache: { token: string; expiry: number } | null = null;
   PREFIX = "";
@@ -86,9 +96,11 @@ class AzureBucket implements Bucket {
     container: string = ENV_CONTAINER || "",
     key: string = ENV_KEY || "",
     url: string = ENV_URL || "",
+    publicUrl: string = ENV_PUBLIC_URL || "",
   ) {
     this.#account = account;
     this.#container = container;
+    this.#publicUrl = publicUrl.replace(/\/+$/, "");
     // Default to the public cloud host; an explicit url (emulator, custom
     // or sovereign cloud) overrides it and already includes the account path.
     this.#url =
@@ -129,7 +141,8 @@ class AzureBucket implements Bucket {
     return this.#tokenCache.token;
   }
 
-  async info(): Promise<BucketInfo> {
+  async info(opts?: ReadOptions): Promise<BucketInfo> {
+    throwIfAborted(opts?.signal);
     return {
       type: this.type,
       name: this.#container,
@@ -138,7 +151,10 @@ class AzureBucket implements Bucket {
     };
   }
 
-  async *#pages(filter?: RegExp): AsyncGenerator<AzureFile[]> {
+  async *#pages(
+    filter?: RegExp,
+    opts?: ReadOptions,
+  ): AsyncGenerator<AzureFile[]> {
     let marker: string | undefined;
     const s = scope(this.PREFIX, filter);
 
@@ -171,7 +187,7 @@ class AzureBucket implements Bucket {
         };
       }
 
-      const res = await fetch(url, { headers });
+      const res = await withAbortFetch(opts?.signal, url, { headers });
       if (!res.ok)
         throw new BucketError(`Azure list error: ${res.status}`, {
           provider: "Azure",
@@ -191,6 +207,7 @@ class AzureBucket implements Bucket {
             this.#auth,
             this.#url,
             this.PREFIX,
+            this.#publicUrl,
           ),
         );
       }
@@ -200,19 +217,28 @@ class AzureBucket implements Bucket {
     } while (marker);
   }
 
-  scan(filter?: RegExp): AsyncGenerator<AzureFile> {
+  scan(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<AzureFile> {
     assertFilter(filter);
-    return this.#scan(filter);
+    // Eager, like the filter check: an aborted scan must not wait for the
+    // first iteration to reject.
+    throwIfAborted(opts?.signal);
+    return this.#scan(filter, opts);
   }
 
-  async *#scan(filter?: RegExp): AsyncGenerator<AzureFile> {
-    for await (const page of this.#pages(filter)) yield* page;
+  async *#scan(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<AzureFile> {
+    for await (const page of this.#pages(filter, opts)) {
+      for (const file of page) {
+        throwIfAborted(opts?.signal);
+        yield file;
+      }
+    }
   }
 
-  async list(filter?: RegExp): Promise<AzureFile[]> {
+  async list(filter?: RegExp, opts?: ReadOptions): Promise<AzureFile[]> {
     assertFilter(filter);
+    throwIfAborted(opts?.signal);
     const files: AzureFile[] = [];
-    for await (const page of this.#pages(filter)) files.push(...page);
+    for await (const page of this.#pages(filter, opts)) files.push(...page);
     return files;
   }
 
@@ -225,6 +251,7 @@ class AzureBucket implements Bucket {
       this.#auth,
       this.#url,
       this.PREFIX,
+      this.#publicUrl,
     );
   }
 
@@ -232,26 +259,34 @@ class AzureBucket implements Bucket {
     content: WriteContent,
     options?: WriteOptions,
   ): Promise<AzureFile> {
+    throwIfAborted(options?.signal);
     return this.file(randomName(content, options)).write(content, options);
   }
 
   folder(path: string): AzureBucket {
-    const b = new AzureBucket(this.#account, this.#container, "", this.#url);
+    const b = new AzureBucket(
+      this.#account,
+      this.#container,
+      "",
+      this.#url,
+      this.#publicUrl,
+    );
     b.#auth = this.#auth;
     b.PREFIX = folderKey(this.PREFIX, path);
     return b;
   }
 
-  async remove(filter: RegExp): Promise<AzureFile[]> {
+  async remove(filter: RegExp, opts?: ReadOptions): Promise<AzureFile[]> {
     requireFilter(filter);
-    const files = await this.list(filter);
-    await Promise.all(files.map((f) => f.remove()));
+    throwIfAborted(opts?.signal);
+    const files = await this.list(filter, opts);
+    await Promise.all(files.map((f) => f.remove(opts)));
     return files;
   }
 
-  async count(filter?: RegExp): Promise<number> {
+  async count(filter?: RegExp, opts?: ReadOptions): Promise<number> {
     assertFilter(filter);
-    return (await this.list(filter)).length;
+    return (await this.list(filter, opts)).length;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<AzureFile> {
@@ -303,9 +338,16 @@ export default function Azure(
       container,
       parsed.key,
       config.url || parsed.url,
+      config.publicUrl,
     );
   }
-  return new AzureBucket(config.account, container, config.key, config.url);
+  return new AzureBucket(
+    config.account,
+    container,
+    config.key,
+    config.url,
+    config.publicUrl,
+  );
 }
 
 export type {

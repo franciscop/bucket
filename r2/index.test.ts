@@ -5,7 +5,8 @@ import CloudflareR2 from "./index.ts";
 
 // All tests use mocked fetch, no real credentials needed.
 
-const TEST_URL = "https://test-account.r2.cloudflarestorage.com/test-bucket";
+const TEST_ACCOUNT = "test-account";
+const TEST_URL = "https://test-account.r2.cloudflarestorage.com";
 const TEST_NAME = "test-bucket";
 const TEST_CONFIG = {
   id: "test-id",
@@ -51,26 +52,77 @@ describe("R2 bucket.info()", () => {
     expect(info.id).toBe("test-id");
     expect(info.name).toBe("test-bucket");
     expect(info.type).toBe("R2");
-    expect(info.url).toBe(TEST_URL);
+    expect(info.url).toBe(`${TEST_URL}/${TEST_NAME}`);
   });
 });
 
-describe("R2 name/url validation", () => {
-  it("accepts a url whose bucket matches the name", () => {
-    const bucket = CloudflareR2(TEST_NAME, TEST_CONFIG);
+describe("R2 endpoint config", () => {
+  // Explicit empty strings: these assert the config logic, not whatever
+  // R2_ACCOUNT_ID / R2_URL happen to be in the ambient environment.
+  const creds = {
+    id: "test-id",
+    secret: "test-secret",
+    region: "auto",
+    account: "",
+    url: "",
+  };
+
+  it("derives the endpoint from the account id", async () => {
+    const bucket = CloudflareR2(TEST_NAME, { ...creds, account: TEST_ACCOUNT });
+    const info = await bucket.info();
+    expect(info.url).toBe(`${TEST_URL}/${TEST_NAME}`);
+  });
+
+  it("appends the bucket to an explicit endpoint", async () => {
+    const bucket = CloudflareR2(TEST_NAME, {
+      ...creds,
+      url: "http://127.0.0.1:9000",
+    });
+    const info = await bucket.info();
+    expect(info.url).toBe("http://127.0.0.1:9000/test-bucket");
+  });
+
+  it("accepts an account and a url that agree", () => {
+    const bucket = CloudflareR2(TEST_NAME, {
+      ...creds,
+      account: TEST_ACCOUNT,
+      url: TEST_URL,
+    });
     expect(bucket.type).toBe("R2");
   });
 
-  it("throws when the url bucket differs from the name", () => {
-    expect(() => CloudflareR2("other-bucket", TEST_CONFIG)).toThrow(
-      "does not match the bucket in url",
-    );
+  it("throws when the account and the url disagree", () => {
+    let code: string | undefined;
+    try {
+      CloudflareR2(TEST_NAME, {
+        ...creds,
+        account: TEST_ACCOUNT,
+        url: "https://other.r2.cloudflarestorage.com",
+      });
+    } catch (err) {
+      code = (err as { code?: string }).code;
+    }
+    expect(code).toBe("INVALID_CONFIG");
   });
 
-  it("derives the name from the url when only a url is given", async () => {
-    const bucket = CloudflareR2(undefined, { ...TEST_CONFIG, url: TEST_URL });
-    const info = await bucket.info();
-    expect(info.name).toBe("test-bucket");
+  it("throws at construction when neither is given", () => {
+    let code: string | undefined;
+    try {
+      CloudflareR2(TEST_NAME, creds);
+    } catch (err) {
+      code = (err as { code?: string }).code;
+    }
+    expect(code).toBe("INVALID_CONFIG");
+  });
+
+  it("throws at construction without a bucket name", () => {
+    let code: string | undefined;
+    try {
+      CloudflareR2("", { ...creds, account: TEST_ACCOUNT });
+    } catch (err) {
+      code = (err as { code?: string }).code;
+    }
+    expect(code).toBe("INVALID_CONFIG");
   });
 });
 

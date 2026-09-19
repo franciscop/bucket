@@ -12,6 +12,12 @@ import {
 } from "../lib/signGCS.ts";
 import { resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
+import { publicUrlFrom } from "../lib/publicUrl.ts";
+import {
+  throwIfAborted,
+  withAbortFetch,
+  type ReadOptions,
+} from "../lib/abort.ts";
 import { destKey } from "../lib/prefix.ts";
 import {
   composeRange,
@@ -46,6 +52,7 @@ export class GCSFile implements BucketFile {
   #authPromise: Promise<GCSAuth>;
   #url: string;
   #anonymous: boolean;
+  #publicUrl: string;
   // Folder prefix of the bucket that created this file; copyTo()/moveTo()
   // destinations and rename() resolve against it.
   #prefix: string;
@@ -58,6 +65,7 @@ export class GCSFile implements BucketFile {
     url: string = "https://storage.googleapis.com",
     anonymous: boolean = false,
     prefix: string = "",
+    publicUrl: string = "",
   ) {
     this.path = path.startsWith("/") ? path.slice(1) : path;
     this.name = this.path.split("/").pop() || this.path;
@@ -66,6 +74,7 @@ export class GCSFile implements BucketFile {
     this.#url = url;
     this.#anonymous = anonymous;
     this.#prefix = prefix;
+    this.#publicUrl = publicUrl;
   }
 
   slice(start: number, end?: number): GCSFile {
@@ -83,11 +92,12 @@ export class GCSFile implements BucketFile {
 
   // A range-aware, status-checked media GET used by every reader. An empty
   // range resolves to an empty body without hitting the network.
-  async #get(): Promise<Response> {
+  async #get(opts?: ReadOptions): Promise<Response> {
+    throwIfAborted(opts?.signal);
     if (this.#range && isEmptyRange(this.#range))
       return new Response(new Uint8Array(0));
     const rh = this.#range && rangeHeader(this.#range);
-    const res = await fetch(this.#mediaUrl(), {
+    const res = await withAbortFetch(opts?.signal, this.#mediaUrl(), {
       headers: await this.#headers(rh ? { Range: rh } : {}),
     });
     if (!res.ok)
@@ -116,8 +126,11 @@ export class GCSFile implements BucketFile {
     return { Authorization: `Bearer ${token}`, ...extra };
   }
 
-  async info(): Promise<FileInfo | null> {
-    const res = await fetch(this.#apiUrl(), { headers: await this.#headers() });
+  async info(opts?: ReadOptions): Promise<FileInfo | null> {
+    throwIfAborted(opts?.signal);
+    const res = await withAbortFetch(opts?.signal, this.#apiUrl(), {
+      headers: await this.#headers(),
+    });
     if (res.status === 404) return null;
     if (!res.ok)
       throw new BucketError(`GCS info error: ${res.status}`, {
@@ -134,28 +147,29 @@ export class GCSFile implements BucketFile {
     };
   }
 
-  async exists(): Promise<boolean> {
-    return (await this.info()) !== null;
+  async exists(opts?: ReadOptions): Promise<boolean> {
+    throwIfAborted(opts?.signal);
+    return (await this.info(opts)) !== null;
   }
 
-  async text(): Promise<string> {
-    return (await this.#get()).text();
+  async text(opts?: ReadOptions): Promise<string> {
+    return (await this.#get(opts)).text();
   }
 
-  async json(): Promise<unknown> {
-    return (await this.#get()).json();
+  async json(opts?: ReadOptions): Promise<unknown> {
+    return (await this.#get(opts)).json();
   }
 
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    return (await this.#get()).arrayBuffer();
+  async arrayBuffer(opts?: ReadOptions): Promise<ArrayBuffer> {
+    return (await this.#get(opts)).arrayBuffer();
   }
 
-  async blob(): Promise<Blob> {
-    return (await this.#get()).blob();
+  async blob(opts?: ReadOptions): Promise<Blob> {
+    return (await this.#get(opts)).blob();
   }
 
-  async bytes(): Promise<Uint8Array> {
-    return new Uint8Array(await this.arrayBuffer());
+  async bytes(opts?: ReadOptions): Promise<Uint8Array> {
+    return new Uint8Array(await this.arrayBuffer(opts));
   }
 
   async #put(data: string | Buffer, options: WriteOptions = {}): Promise<void> {
@@ -189,7 +203,7 @@ export class GCSFile implements BucketFile {
       const body = Buffer.concat([prefix, dataBuffer, suffix]);
 
       const url = `${this.#url}/upload/storage/v1/b/${this.#bucket}/o?uploadType=multipart`;
-      const res = await fetch(url, {
+      const res = await withAbortFetch(options.signal, url, {
         method: "POST",
         headers: await this.#headers({
           "Content-Type": `multipart/related; boundary=${boundary}`,
@@ -205,7 +219,7 @@ export class GCSFile implements BucketFile {
       const url = `${this.#url}/upload/storage/v1/b/${this.#bucket}/o?uploadType=media&name=${encodeURIComponent(this.path)}`;
       const extra: Record<string, string> = {};
       if (type) extra["Content-Type"] = type;
-      const res = await fetch(url, {
+      const res = await withAbortFetch(options.signal, url, {
         method: "POST",
         headers: await this.#headers(extra),
         body: data as BodyInit,
@@ -243,7 +257,7 @@ export class GCSFile implements BucketFile {
             ]),
           );
         const url = `${this.#url}/upload/storage/v1/b/${this.#bucket}/o?uploadType=resumable&name=${encodeURIComponent(this.path)}`;
-        const res = await fetch(url, {
+        const res = await withAbortFetch(options.signal, url, {
           method: "POST",
           headers: await this.#headers({ "Content-Type": "application/json" }),
           body: JSON.stringify(metaObj),
@@ -265,7 +279,7 @@ export class GCSFile implements BucketFile {
         const from = ctx.offset;
         const to = ctx.offset + data.length - 1;
         const total = isLast ? String(ctx.offset + data.length) : "*";
-        const res = await fetch(ctx.uri, {
+        const res = await withAbortFetch(options.signal, ctx.uri, {
           method: "PUT",
           headers: { "Content-Range": `bytes ${from}-${to}/${total}` },
           body: data as unknown as BodyInit,
@@ -282,12 +296,15 @@ export class GCSFile implements BucketFile {
       },
       finish: async () => {},
       abort: async (ctx) => {
+        // No signal: this cleans up an already-aborted upload, so it has to
+        // run or the session is left open.
         await fetch(ctx.uri, { method: "DELETE" }).catch(() => {});
       },
     };
   }
 
   async write(content: WriteContent, options?: WriteOptions): Promise<GCSFile> {
+    throwIfAborted(options?.signal);
     await this.#write(content, options);
     return this;
   }
@@ -332,11 +349,15 @@ export class GCSFile implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(dest: string | BucketFile): Promise<BucketFile> {
-    if (typeof dest !== "string") return dest.write(this);
+  async copyTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
+    throwIfAborted(opts?.signal);
+    if (typeof dest !== "string") return dest.write(this, opts);
     const dst = destKey(this.#prefix, dest, this.name);
     const url = `${this.#url}/storage/v1/b/${this.#bucket}/o/${encodeURIComponent(this.path)}/copyTo/b/${this.#bucket}/o/${encodeURIComponent(dst)}`;
-    const res = await fetch(url, {
+    const res = await withAbortFetch(opts?.signal, url, {
       method: "POST",
       headers: await this.#headers(),
     });
@@ -348,13 +369,16 @@ export class GCSFile implements BucketFile {
     return this.#at(dst);
   }
 
-  async moveTo(dest: string | BucketFile): Promise<BucketFile> {
-    const moved = await this.copyTo(dest);
-    await this.remove();
+  async moveTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
+    const moved = await this.copyTo(dest, opts);
+    await this.remove(opts);
     return moved;
   }
 
-  async rename(name: string): Promise<BucketFile> {
+  async rename(name: string, opts?: ReadOptions): Promise<BucketFile> {
     if (!name || name === "." || name === "..")
       throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
@@ -362,13 +386,14 @@ export class GCSFile implements BucketFile {
     const prefix = this.#prefix;
     const rel = prefix ? this.path.slice(prefix.length + 1) : this.path;
     const dir = rel.split("/").slice(0, -1).join("/");
-    return this.moveTo(dir ? dir + "/" + name : name);
+    return this.moveTo(dir ? dir + "/" + name : name, opts);
   }
 
-  async remove(): Promise<GCSFile> {
+  async remove(opts?: ReadOptions): Promise<GCSFile> {
+    throwIfAborted(opts?.signal);
     // No `generation` parameter: this removes the path, not a specific
     // generation, so on a versioned bucket the prior ones are kept.
-    const res = await fetch(this.#apiUrl(), {
+    const res = await withAbortFetch(opts?.signal, this.#apiUrl(), {
       method: "DELETE",
       headers: await this.#headers(),
     });
@@ -383,12 +408,12 @@ export class GCSFile implements BucketFile {
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
-  unlink(): Promise<GCSFile> {
-    return this.remove();
+  unlink(opts?: ReadOptions): Promise<GCSFile> {
+    return this.remove(opts);
   }
 
-  stream(): ReadableStream {
-    return promiseToReadable(async () => (await this.#get()).body!);
+  stream(opts?: ReadOptions): ReadableStream {
+    return promiseToReadable(async () => (await this.#get(opts)).body!);
   }
 
   nodeReadable(): NodeJS.ReadableStream {
@@ -408,7 +433,10 @@ export class GCSFile implements BucketFile {
   }
 
   async publicUrl(): Promise<string> {
-    return `${this.#url}/${this.#bucket}/${this.path}`;
+    const base = this.#publicUrl;
+    return base
+      ? publicUrlFrom(base, this.path)
+      : publicUrlFrom(`${this.#url}/${this.#bucket}`, this.path);
   }
 
   async signedUrl(opts: { expires: number | string }): Promise<string | null> {

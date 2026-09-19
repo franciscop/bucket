@@ -7,6 +7,7 @@ import CloudflareR2 from "./r2/index.ts";
 import GCS from "./gcs/index.ts";
 import Azure from "./azure/index.ts";
 import BackBlaze from "./b2/index.ts";
+import Memory from "./memory/index.ts";
 
 // Every provider under its service name; prefer the subpath imports
 // ("bucket/s3", "bucket/fs", ...) when bundle size matters, since this
@@ -18,6 +19,7 @@ export default {
   GCS,
   Azure,
   B2: BackBlaze,
+  Memory,
 };
 
 export { default as FileSystem } from "./fs/index.ts";
@@ -26,6 +28,7 @@ export { default as CloudflareR2 } from "./r2/index.ts";
 export { default as S3 } from "./s3/index.ts";
 export { default as GCS } from "./gcs/index.ts";
 export { default as Azure } from "./azure/index.ts";
+export { default as Memory } from "./memory/index.ts";
 export { default as BucketError } from "./lib/BucketError.ts";
 
 export type { BucketErrorCode } from "./lib/BucketError.ts";

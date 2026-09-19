@@ -119,19 +119,21 @@ try {
     "30000",
   ]);
 
-  // Last, and on its own: it enables bucket versioning and leaves it on.
-  const versioning = code
+  // Session tokens first: they only need the bucket to exist. Versioning goes
+  // last and on its own, since it turns versioning on and leaves it on.
+  const extra = code
     ? code
     : await run("bun", [
         ...ENV,
         "test",
+        "test/sessionToken.test.ts",
         "test/versioning.test.ts",
         "--timeout",
         "30000",
       ]);
 
   teardown();
-  process.exit(versioning);
+  process.exit(extra);
 } catch (err) {
   console.error(err);
   teardown();

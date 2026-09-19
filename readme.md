@@ -40,10 +40,12 @@ Then decide which bucket you're going to use, and grab its credentials. Put them
 ```sh
 AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
+AWS_BUCKET=
 # Optional
 AWS_REGION=
-AWS_URL=
-AWS_BUCKET=
+AWS_SESSION_TOKEN=
+AWS_ENDPOINT_URL=
+AWS_PUBLIC_URL=
 ```
 
 Finally, you can import and initialize the library:
@@ -100,6 +102,7 @@ import bucket from "bucket";
 
 const aws = bucket.S3("my-bucket", { id, secret });
 const local = bucket.FS("./uploads");
+const fake = bucket.Memory(); // for tests
 ```
 
 Every bucket instance has the same methods:
@@ -364,17 +367,18 @@ The file handle, returned by [`bucket.file()`](#file) and as every item of [`lis
 
 URL availability per provider:
 
-|           | `publicUrl()` | `signedUrl()` | `uploadUrl()` |
-| --------- | :-----------: | :-----------: | :-----------: |
-| **S3**    |      ✅       |      ✅       |      ✅       |
-| **R2**    |      ✅       |      ✅       |      ✅       |
-| **GCS**   |      ✅       |      ✅       |      ✅       |
-| **Azure** |      ✅       |      ✅       |      ✅       |
-| **B2**    |      ✅       |      ✅       |      ❌       |
-| **FS**    |      ❌       |      ❌       |      ❌       |
+|            | `publicUrl()` | `signedUrl()` | `uploadUrl()` |
+| ---------- | :-----------: | :-----------: | :-----------: |
+| **S3**     |      ✅       |      ✅       |      ✅       |
+| **R2**     |      ✅       |      ✅       |      ✅       |
+| **GCS**    |      ✅       |      ✅       |      ✅       |
+| **Azure**  |      ✅       |      ✅       |      ✅       |
+| **B2**     |      ✅       |      ✅       |      ❌       |
+| **FS**     |      ❌       |      ❌       |      ❌       |
+| **Memory** |      ❌       |      ❌       |      ❌       |
 
-- ✅: returns a URL. For `publicUrl()` it only answers if the bucket or object is publicly readable; R2 additionally needs the [`publicUrl` config option](#cloudflare-r2) (`null` without it). Signing needs a key: GCS returns `null` without a [service-account private key](#google-cloud-storage), Azure without an account key (managed identity).
-- ❌: always returns `null`: B2 uploads require auth headers so a standalone upload URL cannot exist (use `.write()` instead), and the local filesystem has no URLs of any kind.
+- ✅: returns a URL. For `publicUrl()` it only answers if the bucket or object is publicly readable, unless you set the [`publicUrl` config option](#filepublicurl), which every provider accepts; R2 and the filesystem return `null` without it. Signing needs a key: GCS returns `null` without a [service-account private key](#google-cloud-storage), Azure without an account key (managed identity).
+- ❌: always returns `null`: B2 uploads require auth headers so a standalone upload URL cannot exist (use `.write()` instead), and neither the local filesystem nor the in-memory bucket has URLs of any kind.
 
 ### file.info()
 
@@ -747,7 +751,21 @@ await bucket.file("logo.png").publicUrl();
 // "https://my-bucket.s3.us-east-1.amazonaws.com/logo.png" or null
 ```
 
-The URL is the file's canonical address; whether it actually answers depends on the bucket or object being publicly readable. It is `null` when the provider has no public URL: always on the local filesystem, and on R2 unless the bucket's public domain is set with the [`publicUrl` config option](#cloudflare-r2) (R2's storage endpoint rejects unsigned requests). See the availability table at the top of this chapter for a per-provider summary.
+Every provider takes a `publicUrl` config option: the origin the bucket is served from. Set it and `publicUrl()` returns `${publicUrl}/${file.path}`, which is how you put a CDN in front of a bucket (CloudFront over S3, Front Door over Azure, nginx over a local directory) and how dev and production return working URLs from the same code:
+
+```js
+const bucket = dev
+  ? FileSystem("./public", { publicUrl: "http://localhost:3000/static" })
+  : S3("my-bucket", { publicUrl: "https://cdn.example.com" });
+
+await bucket.file("logo.png").publicUrl();
+// dev:  "http://localhost:3000/static/logo.png"
+// prod: "https://cdn.example.com/logo.png"
+```
+
+It is a declaration of where the bucket is served, not a promise that the URL resolves: the library does not serve the files, and a CDN pointed at the wrong bucket produces a wrong URL just as a local directory nobody is serving does.
+
+Without it you get the provider's canonical address, which only answers if the bucket or object is publicly readable, and `null` where there is no such address: the local filesystem, and R2 (whose storage endpoint rejects unsigned requests). See the availability table at the top of this chapter for a per-provider summary.
 
 ```js
 // Serve a public URL when available, falling back to a temporary signed one:
@@ -822,11 +840,47 @@ const bucket = FileSystem("./my-folder");
 
 The path is resolved relative to the current working directory. No credentials needed.
 
+It takes one option, `publicUrl` (or `FS_PUBLIC_URL`): the origin whatever serves the directory is reachable at, so `file.publicUrl()` returns a working URL in development instead of `null`.
+
+```js
+FileSystem("./public", { publicUrl: "http://localhost:3000/static" });
+```
+
 Paths are bucket-relative, exactly like the remote providers: a leading `/` means the bucket root (the folder above), never the filesystem root, and `file.path` is the path within the bucket. The real location on disk is `join(root, file.path)`. Nothing ever resolves outside the root folder; escapes throw a `BucketError` with code `"INVALID_PATH"`. The check is lexical: a symlink inside the folder that points outside is not caught.
 
 As a safety net, passing the bucket's own OS path back in throws instead of silently nesting: `FileSystem("/data").file("/data/a.png")` is almost always a mistake for `file("a.png")`, so it throws `INVALID_PATH` with the suggested fix rather than creating `/data/data/a.png`.
 
 Streaming writes go to a temporary `.tmp-` sibling and are renamed into place on completion, so a file is never observable half-written; `list()` skips these temp entries.
+
+### Memory
+
+An in-memory bucket backed by a `Map`, for tests: fast, no disk, nothing to clean up, and isolated per instance.
+
+```js
+import Memory from "bucket/memory";
+
+const bucket = Memory();
+await bucket.file("hello.txt").write("hello");
+```
+
+It is for tests only. It is not a cache, not a scratch bucket, and not for production: the data lives in one process's heap, dies with it, and is never shared. Two `Memory()` calls are two separate buckets, which is what lets tests run in parallel without colliding.
+
+It is also the one provider that ignores nothing a write is given. `type`, `metadata`, `cacheControl` and `disposition` all round-trip through `info()`, where the filesystem quietly drops them, so it is the provider to develop against if you use metadata:
+
+```js
+const file = await bucket.file("report.txt").write("a,b", {
+  type: "text/csv",
+  metadata: { owner: "ana" },
+});
+
+(await file.info()).type; // "text/csv", not "text/plain"
+```
+
+Everything else matches the remote providers exactly: folders and path resolution, the error codes, `AbortSignal` support, both stream flavours, and `publicUrl` (which returns `null` unless you set the option, since nothing serves these bytes). `signedUrl()` and `uploadUrl()` are always `null`: there is no endpoint to sign for. Nothing is versioned, so `remove()` deletes.
+
+| Option      | Env var             |
+| ----------- | ------------------- |
+| `publicUrl` | `MEMORY_PUBLIC_URL` |
 
 ### Backblaze B2
 
@@ -848,6 +902,7 @@ Environment variable fallbacks:
 | bucket name | `B2_BUCKET`             |
 | `id`        | `B2_APPLICATION_KEY_ID` |
 | `secret`    | `B2_APPLICATION_KEY`    |
+| `publicUrl` | `B2_PUBLIC_URL`         |
 
 ### AWS S3
 
@@ -858,21 +913,32 @@ const bucket = S3("my-bucket-name", {
   id: "...", // Access Key ID
   secret: "...", // Secret Access Key
   region: "us-east-1", // defaults to us-east-1
-  url: "...", // optional: override the endpoint URL
+  url: "...", // optional: endpoint, without the bucket
 });
 ```
 
 Environment variable fallbacks:
 
-| Option      | Env var                 |
-| ----------- | ----------------------- |
-| bucket name | `AWS_BUCKET`            |
-| `id`        | `AWS_ACCESS_KEY_ID`     |
-| `secret`    | `AWS_SECRET_ACCESS_KEY` |
-| `region`    | `AWS_REGION`            |
-| `url`       | `AWS_URL`               |
+| Option         | Env var                 |
+| -------------- | ----------------------- |
+| bucket name    | `AWS_BUCKET`            |
+| `id`           | `AWS_ACCESS_KEY_ID`     |
+| `secret`       | `AWS_SECRET_ACCESS_KEY` |
+| `region`       | `AWS_REGION`            |
+| `sessionToken` | `AWS_SESSION_TOKEN`     |
+| `url`          | `AWS_ENDPOINT_URL`      |
+| `publicUrl`    | `AWS_PUBLIC_URL`        |
 
-The `url` option lets you point at any S3-compatible service (MinIO, DigitalOcean Spaces, etc.).
+`sessionToken` is the third part of a temporary STS credential; on Lambda, ECS and EC2 the whole trio is picked up from the environment automatically.
+
+The `url` option is the endpoint **without** the bucket, which lets you point at any S3-compatible service:
+
+```js
+S3("my-bucket", { url: "http://127.0.0.1:9000" });
+// requests go to http://127.0.0.1:9000/my-bucket/<key>
+```
+
+With no `url`, requests use AWS's virtual-hosted endpoint, `https://my-bucket.s3.<region>.amazonaws.com`. With one, the bucket is appended as a path segment, which is what MinIO, DigitalOcean Spaces and Ceph expect. Leave it unset for real AWS: S3 has deprecated path-style addressing.
 
 ### Cloudflare R2
 
@@ -882,11 +948,11 @@ import R2 from "bucket/r2";
 const bucket = R2("my-bucket", {
   id: "...", // Access Key ID
   secret: "...", // Secret Access Key
-  url: "https://<account>.r2.cloudflarestorage.com/my-bucket",
+  account: "...", // Cloudflare account id
 });
 ```
 
-The `url` is the full R2 endpoint URL, including the bucket name at the end; it must match the bucket `name` passed as the first argument.
+The endpoint is derived from `account`: `https://<account>.r2.cloudflarestorage.com/my-bucket`. Pass `url` instead for a custom endpoint or an emulator, without the bucket name, which gets appended. Giving both is fine if they agree; if they disagree, or if neither is set, the constructor throws a `BucketError` with code `"INVALID_CONFIG"`.
 
 R2's storage endpoint is never publicly readable, so `file.publicUrl()` returns `null` unless you set `publicUrl` to the bucket's public domain (the `r2.dev` subdomain or a custom domain configured in Cloudflare):
 
@@ -898,13 +964,16 @@ await bucket.file("logo.png").publicUrl();
 
 Environment variable fallbacks:
 
-| Option      | Env var                |
-| ----------- | ---------------------- |
-| bucket name | `R2_BUCKET`            |
-| `url`       | `R2_URL`               |
-| `id`        | `R2_ACCESS_KEY_ID`     |
-| `secret`    | `R2_SECRET_ACCESS_KEY` |
-| `publicUrl` | `R2_PUBLIC_URL`        |
+| Option         | Env var                |
+| -------------- | ---------------------- |
+| bucket name    | `R2_BUCKET`            |
+| `account`      | `R2_ACCOUNT_ID`        |
+| `id`           | `R2_ACCESS_KEY_ID`     |
+| `secret`       | `R2_SECRET_ACCESS_KEY` |
+| `region`       | `R2_REGION`            |
+| `sessionToken` | `R2_SESSION_TOKEN`     |
+| `url`          | `R2_URL`               |
+| `publicUrl`    | `R2_PUBLIC_URL`        |
 
 ### Google Cloud Storage
 
@@ -926,6 +995,7 @@ Credentials are resolved automatically, in order:
 | service email | `GCS_CLIENT_EMAIL`               |
 | private key   | `GCS_PRIVATE_KEY`                |
 | credentials   | `GOOGLE_APPLICATION_CREDENTIALS` |
+| `publicUrl`   | `GCS_PUBLIC_URL`                 |
 
 Signing uses the private key directly, so `signedUrl()` and `uploadUrl()` return `null` under the metadata server. The user credentials written by `gcloud auth application-default login` carry no private key either and cannot sign at all, so point `GOOGLE_APPLICATION_CREDENTIALS` at a service-account JSON file when you need signed URLs.
 
@@ -969,6 +1039,7 @@ const bucket = Azure("my-container", { account: "my-account" });
 | `key`              | `AZURE_KEY`               |
 | `url`              | `AZURE_URL`               |
 | `connectionString` | `AZURE_CONNECTION_STRING` |
+| `publicUrl`        | `AZURE_PUBLIC_URL`        |
 
 The `url` option points at the Azurite emulator or a custom/sovereign cloud, e.g. `http://127.0.0.1:10000/devstoreaccount1`.
 
@@ -1209,6 +1280,7 @@ Under ~8 MiB the body goes out as a single request, exactly as it always did. Pa
 | Azure      | Blocks (`Put Block`, `Put Block List`)                |
 | GCS        | Resumable upload session                              |
 | Filesystem | Streamed to disk, nothing to chunk                    |
+| Memory     | Held as one buffer, nothing to chunk                  |
 
 Memory stays at roughly one chunk no matter how big the file is, so this streams a file far larger than the machine's RAM:
 
@@ -1418,9 +1490,9 @@ Everything else is Web standards: request signing uses **WebCrypto** (`crypto.su
 
 Methods throw a `BucketError` (a subclass of `Error`). Alongside the human-readable `message` it carries structured fields you can branch on:
 
-- `code`: a normalized, uppercase string, one of `"NOT_FOUND" | "FORBIDDEN" | "UNAUTHORIZED" | "CONFLICT" | "INVALID_PATH" | "INVALID_FILTER" | "UNKNOWN"`. It means the same thing across every provider, including the filesystem.
+- `code`: a normalized, uppercase string, one of `"NOT_FOUND" | "FORBIDDEN" | "UNAUTHORIZED" | "CONFLICT" | "INVALID_PATH" | "INVALID_FILTER" | "INVALID_CONFIG" | "ABORTED" | "UNKNOWN"`. It means the same thing across every provider, including the filesystem.
 - `status`: the raw HTTP status, when the failure came from an HTTP response (absent for the filesystem).
-- `provider`: which backend produced it (e.g. `"S3"`). Absent for `"INVALID_PATH"` and `"INVALID_FILTER"`, which are thrown before any provider is involved.
+- `provider`: which backend produced it (e.g. `"S3"`). Absent for `"INVALID_PATH"`, `"INVALID_FILTER"`, `"INVALID_CONFIG"` and `"ABORTED"`, which are thrown before any provider is involved. `"INVALID_CONFIG"` is thrown by the constructor, so an unusable bucket fails where you build it rather than on its first request.
 
 There is no automatic retry.
 
@@ -1453,6 +1525,33 @@ So removal is reversible through the provider's own console or API, and the reta
 The same applies to [`.moveTo()`](#filemovetopath) and [`.rename()`](#filerenamename), which remove the source once the copy lands: a move within a versioned bucket duplicates the bytes rather than relocating them.
 
 Backblaze B2 is always versioned, so it hides instead of deleting even when you never turned versioning on. Deleting its newest version would both destroy that version and uncover the one before it, resurrecting old content at a path you just removed.
+
+### Can I cancel an operation?
+
+Yes. Every method that does I/O takes an `AbortSignal`, and an aborted operation rejects rather than resolving:
+
+```js
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 100);
+
+const text = await bucket.file("big.csv").text({ signal: controller.signal });
+```
+
+Readers take it as `{ signal }`, writes through the existing options object (`write(content, { signal })`), and the bucket methods after the filter (`list(filter, { signal })`, `remove(/./, { signal })`). `scan()` rejects when you call it rather than on the first iteration, and stops a loop already running.
+
+An aborted operation never half-applies: nothing is written, nothing is deleted, and an in-flight multipart upload is cancelled rather than left open and billed.
+
+The error suits both idioms. It is a `BucketError` with `code: "ABORTED"`, and its `name` mirrors the signal's own reason, so a timeout stays distinguishable from a cancel:
+
+```js
+try {
+  await bucket.file("big.csv").text({ signal: AbortSignal.timeout(5000) });
+} catch (err) {
+  err.code; // "ABORTED", the same across every provider
+  err.name; // "TimeoutError" here, "AbortError" for controller.abort()
+  err.cause; // the signal's own reason
+}
+```
 
 ### What are "web streams" vs "node streams"?
 

@@ -16,13 +16,13 @@ import type { S3Auth, S3Request } from "../lib/types.ts";
 import S3 from "../s3/index.ts";
 import GCS from "../gcs/index.ts";
 
-const S3_URL = process.env.AWS_URL ?? "";
+const S3_URL = `${process.env.AWS_ENDPOINT_URL ?? ""}/${process.env.AWS_BUCKET ?? ""}`;
 const GCS_URL = process.env.GCS_URL ?? "";
 const GCS_BUCKET = process.env.GCS_BUCKET ?? "";
 
 // Both are emulator-only: real S3/GCS buckets would keep the versions (and the
 // bill) around long after the run.
-const onS3 = S3_URL.includes("127.0.0.1");
+const onS3 = (process.env.AWS_ENDPOINT_URL ?? "").includes("127.0.0.1");
 const onGCS = GCS_URL.includes("127.0.0.1");
 
 const auth: S3Auth = {
@@ -55,9 +55,12 @@ const codeOf = async (fn: () => unknown) => {
 };
 
 describe.skipIf(!onS3)("S3 remove() on a versioned bucket", () => {
-  const bucket = S3();
+  // Built in beforeAll, not here: skipIf still evaluates the describe body, and
+  // constructing a bucket with no config throws INVALID_CONFIG.
+  let bucket: ReturnType<typeof S3>;
 
   beforeAll(async () => {
+    bucket = S3();
     await rawS3(
       "PUT",
       "?versioning",
@@ -121,9 +124,10 @@ describe.skipIf(!onS3)("S3 remove() on a versioned bucket", () => {
 
 describe.skipIf(!onGCS)("GCS remove() on a versioned bucket", () => {
   const api = `${GCS_URL}/storage/v1/b/${GCS_BUCKET}`;
-  const bucket = GCS();
+  let bucket: ReturnType<typeof GCS>;
 
   beforeAll(async () => {
+    bucket = GCS();
     await fetch(api, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },

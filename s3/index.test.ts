@@ -63,37 +63,49 @@ describe("S3 bucket info", () => {
     expect(info.url).toBe(`https://${TEST_BUCKET}.s3.us-east-1.amazonaws.com`);
   });
 
-  it("respects a custom endpoint", async () => {
+  it("appends the bucket to a custom endpoint", async () => {
     const bucket = S3(TEST_BUCKET, {
       ...TEST_CONFIG,
       url: "https://custom.endpoint.com",
     });
     const info = await bucket.info();
-    expect(info.url).toBe("https://custom.endpoint.com");
+    expect(info.url).toBe("https://custom.endpoint.com/test-bucket");
   });
 });
 
-describe("S3 name/url validation", () => {
-  it("accepts a path-style url whose bucket matches the name", () => {
-    const bucket = S3(TEST_BUCKET, {
-      ...TEST_CONFIG,
-      url: `http://127.0.0.1:9000/${TEST_BUCKET}`,
-    });
-    expect(bucket.type).toBe("S3");
+describe("S3 endpoint config", () => {
+  it("uses the virtual-hosted AWS endpoint with no url", async () => {
+    const bucket = S3(TEST_BUCKET, TEST_CONFIG);
+    const info = await bucket.info();
+    expect(info.url).toBe("https://test-bucket.s3.us-east-1.amazonaws.com");
   });
 
-  it("throws when the path-style url bucket differs from the name", () => {
-    expect(() =>
-      S3(TEST_BUCKET, { ...TEST_CONFIG, url: "http://127.0.0.1:9000/other" }),
-    ).toThrow('does not match the bucket in url "http://127.0.0.1:9000/other"');
-  });
-
-  it("ignores a virtual-hosted url (bucket in the subdomain is ambiguous)", () => {
+  it("goes path-style with an explicit endpoint", async () => {
     const bucket = S3(TEST_BUCKET, {
       ...TEST_CONFIG,
-      url: "https://custom.endpoint.com",
+      url: "http://127.0.0.1:9000",
     });
-    expect(bucket.type).toBe("S3");
+    const info = await bucket.info();
+    expect(info.url).toBe("http://127.0.0.1:9000/test-bucket");
+  });
+
+  it("normalizes a trailing slash on the endpoint", async () => {
+    const bucket = S3(TEST_BUCKET, {
+      ...TEST_CONFIG,
+      url: "http://127.0.0.1:9000/",
+    });
+    const info = await bucket.info();
+    expect(info.url).toBe("http://127.0.0.1:9000/test-bucket");
+  });
+
+  it("throws at construction without a bucket name", () => {
+    let code: string | undefined;
+    try {
+      S3("", TEST_CONFIG);
+    } catch (err) {
+      code = (err as { code?: string }).code;
+    }
+    expect(code).toBe("INVALID_CONFIG");
   });
 });
 

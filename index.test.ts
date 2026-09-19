@@ -19,12 +19,13 @@ describe("default export namespace", () => {
     expect(bucket.B2).toBe(BackBlaze);
   });
 
-  it("has exactly the six services", () => {
+  it("has exactly the seven services", () => {
     expect(Object.keys(bucket).sort()).toEqual([
       "Azure",
       "B2",
       "FS",
       "GCS",
+      "Memory",
       "R2",
       "S3",
     ]);

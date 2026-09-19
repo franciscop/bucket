@@ -6,6 +6,7 @@ import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import { randomName } from "../lib/nanoid.ts";
 import { assertFilter, requireFilter } from "../lib/filter.ts";
+import { throwIfAborted, withAbort, type ReadOptions } from "../lib/abort.ts";
 import type {
   Bucket,
   BucketInfo,
@@ -22,15 +23,22 @@ const {
   AWS_SECRET_ACCESS_KEY: ENV_KEY,
   AWS_SESSION_TOKEN: ENV_SESSION_TOKEN,
   AWS_REGION: ENV_REGION,
-  AWS_URL: ENV_URL,
+  AWS_ENDPOINT_URL: ENV_ENDPOINT,
+  AWS_PUBLIC_URL: ENV_PUBLIC_URL,
 } = process.env;
 
 export interface S3Config {
   id?: string;
   secret?: string;
   region?: string;
-  url?: string;
   sessionToken?: string;
+  /** Endpoint *without* the bucket, e.g. `http://127.0.0.1:9000` for MinIO
+   * (falls back to `AWS_ENDPOINT_URL`). The bucket name is appended as a path
+   * segment. Unset, the virtual-hosted AWS endpoint is used instead. */
+  url?: string;
+  /** Public origin the bucket is served from, e.g. a CloudFront domain (falls
+   * back to `AWS_PUBLIC_URL`). Used by `file.publicUrl()`. */
+  publicUrl?: string;
 }
 
 // ── Instance metadata (EC2 / ECS / Lambda) ────────────────────────────────────
@@ -110,17 +118,6 @@ function toCache(region: string, data: InstanceCredResponse): CachedAuth {
 
 // ── XML helpers ───────────────────────────────────────────────────────────────
 
-// The bucket in a path-style endpoint (MinIO, LocalStack, `s3.amazonaws.com/<bucket>`)
-// is the first path segment. Virtual-hosted URLs put it in the subdomain, but S3
-// bucket names may contain dots so that is ambiguous; only path-style is checked.
-function pathStyleBucket(url: string): string {
-  try {
-    return new URL(url).pathname.replace(/^\/+|\/+$/g, "").split("/")[0] ?? "";
-  } catch {
-    return "";
-  }
-}
-
 // ── S3Bucket ──────────────────────────────────────────────────────────────────
 
 class S3Bucket implements Bucket {
@@ -128,6 +125,10 @@ class S3Bucket implements Bucket {
   private bucketName: string;
   private region: string;
   private url: string;
+  // The configured endpoint, kept apart from `url` (which has the bucket
+  // appended) so folder() can rebuild without appending it twice.
+  #endpoint: string;
+  #publicUrl: string;
   #auth: S3Auth | null;
   #cachedAuth: CachedAuth | null = null;
   PREFIX = "";
@@ -139,22 +140,25 @@ class S3Bucket implements Bucket {
       secret = ENV_KEY || "",
       region = ENV_REGION || "us-east-1",
       url,
+      publicUrl = ENV_PUBLIC_URL || "",
       sessionToken = ENV_SESSION_TOKEN,
     }: S3Config = {},
   ) {
+    if (!bucketName) {
+      throw new BucketError(
+        "S3 needs a bucket name, as the first argument or AWS_BUCKET.",
+        { code: "INVALID_CONFIG" },
+      );
+    }
     this.bucketName = bucketName;
     this.region = region;
-    const custom = url || ENV_URL;
-    this.url = custom || `https://${bucketName}.s3.${region}.amazonaws.com`;
-    // A path-style custom endpoint embeds the bucket, so make sure it agrees
-    // with the name (the default endpoint is built from the name, so it can't).
-    if (custom && bucketName) {
-      const derived = pathStyleBucket(custom);
-      if (derived && derived !== bucketName)
-        throw new Error(
-          `S3 bucket name "${bucketName}" does not match the bucket in url "${custom}"`,
-        );
-    }
+    this.#endpoint = (url ?? ENV_ENDPOINT ?? "").replace(/\/+$/, "");
+    this.#publicUrl = publicUrl.replace(/\/+$/, "");
+    // A custom endpoint is path-style (MinIO, Spaces, Ceph): append the bucket.
+    // Without one, AWS's virtual-hosted endpoint puts it in the subdomain.
+    this.url = this.#endpoint
+      ? `${this.#endpoint}/${bucketName}`
+      : `https://${bucketName}.s3.${region}.amazonaws.com`;
     this.#auth = id && secret ? { id, secret, region, sessionToken } : null;
   }
 
@@ -176,7 +180,11 @@ class S3Bucket implements Bucket {
   private async doRequest(
     method: string,
     path: string,
-    options: { body?: string | Buffer; headers?: Record<string, string> } = {},
+    options: {
+      body?: string | Buffer;
+      headers?: Record<string, string>;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<Response> {
     const url = this.makeUrl(path);
     const auth = await this.#getAuth();
@@ -187,14 +195,20 @@ class S3Bucket implements Bucket {
       body: options.body,
     };
     await cleanAndSignS3(req, auth);
-    return fetch(url, {
-      method: method.toUpperCase(),
-      headers: req.headers,
-      body: options.body as BodyInit | undefined,
-    });
+    // The one place every request funnels through, so an abort becomes a
+    // BucketError here rather than in each caller.
+    return withAbort(options.signal, () =>
+      fetch(url, {
+        method: method.toUpperCase(),
+        headers: req.headers,
+        body: options.body as BodyInit | undefined,
+        signal: options.signal,
+      }),
+    );
   }
 
-  async info(): Promise<BucketInfo> {
+  async info(opts?: ReadOptions): Promise<BucketInfo> {
+    throwIfAborted(opts?.signal);
     const auth = await this.#getAuth();
     return {
       type: this.type,
@@ -204,11 +218,12 @@ class S3Bucket implements Bucket {
     };
   }
 
-  async *#pages(filter?: RegExp): AsyncGenerator<S3File[]> {
+  async *#pages(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<S3File[]> {
     let token: string | undefined;
     const s = scope(this.PREFIX, filter);
 
     do {
+      throwIfAborted(opts?.signal);
       const url = new URL(this.makeUrl(""));
       url.searchParams.set("list-type", "2");
       if (s.query) url.searchParams.set("prefix", s.query);
@@ -225,6 +240,7 @@ class S3Bucket implements Bucket {
       const res = await fetch(url.toString(), {
         method: "GET",
         headers: req.headers,
+        signal: opts?.signal,
       });
       if (!res.ok)
         throw new BucketError(`S3 list error: ${res.status}`, {
@@ -248,25 +264,35 @@ class S3Bucket implements Bucket {
     } while (token);
   }
 
-  scan(filter?: RegExp): AsyncGenerator<S3File> {
+  scan(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<S3File> {
     assertFilter(filter);
-    return this.#scan(filter);
+    // Eager, like the filter check: an aborted scan must not wait for the
+    // first iteration to reject.
+    throwIfAborted(opts?.signal);
+    return this.#scan(filter, opts);
   }
 
-  async *#scan(filter?: RegExp): AsyncGenerator<S3File> {
-    for await (const page of this.#pages(filter)) yield* page;
+  async *#scan(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<S3File> {
+    for await (const page of this.#pages(filter, opts)) {
+      for (const file of page) {
+        throwIfAborted(opts?.signal);
+        yield file;
+      }
+    }
   }
 
-  async list(filter?: RegExp): Promise<S3File[]> {
+  async list(filter?: RegExp, opts?: ReadOptions): Promise<S3File[]> {
     assertFilter(filter);
+    throwIfAborted(opts?.signal);
     const files: S3File[] = [];
-    for await (const page of this.#pages(filter)) files.push(...page);
+    for await (const page of this.#pages(filter, opts)) files.push(...page);
     return files;
   }
 
-  async remove(filter: RegExp): Promise<S3File[]> {
+  async remove(filter: RegExp, opts?: ReadOptions): Promise<S3File[]> {
     requireFilter(filter);
-    const files = await this.list(filter);
+    throwIfAborted(opts?.signal);
+    const files = await this.list(filter, opts);
     if (!files.length) return [];
 
     const deleted: S3File[] = [];
@@ -295,6 +321,7 @@ class S3Bucket implements Bucket {
         method: "POST",
         headers: req.headers,
         body,
+        signal: opts?.signal,
       });
       if (!res.ok)
         throw new BucketError(
@@ -319,6 +346,7 @@ class S3Bucket implements Bucket {
       getAuth: () => this.#getAuth(),
       bucketName: this.bucketName,
       url: this.url,
+      publicUrl: this.#publicUrl,
       prefix: this.PREFIX,
     };
     return new S3File(path, ctx);
@@ -330,22 +358,25 @@ class S3Bucket implements Bucket {
   }
 
   async create(content: WriteContent, options?: WriteOptions): Promise<S3File> {
+    throwIfAborted(options?.signal);
+    throwIfAborted(options?.signal);
     return this.file(randomName(content, options)).write(content, options);
   }
 
   folder(path: string): S3Bucket {
     const b = new S3Bucket(this.bucketName, {
       region: this.region,
-      url: this.url,
+      url: this.#endpoint,
+      publicUrl: this.#publicUrl,
     });
     b.#auth = this.#auth;
     b.PREFIX = folderKey(this.PREFIX, path);
     return b;
   }
 
-  async count(filter?: RegExp): Promise<number> {
+  async count(filter?: RegExp, opts?: ReadOptions): Promise<number> {
     assertFilter(filter);
-    return (await this.list(filter)).length;
+    return (await this.list(filter, opts)).length;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<S3File> {
@@ -361,7 +392,8 @@ class S3Bucket implements Bucket {
  * @param config.secret - Secret Access Key (falls back to `AWS_SECRET_ACCESS_KEY`)
  * @param config.sessionToken - Session token for temporary credentials (falls back to `AWS_SESSION_TOKEN`)
  * @param config.region - AWS region, default `"us-east-1"` (falls back to `AWS_REGION`)
- * @param config.url - Custom url URL (falls back to `AWS_URL`)
+ * @param config.url - Endpoint without the bucket, which gets appended (falls back to `AWS_ENDPOINT_URL`)
+ * @param config.publicUrl - Public origin for `file.publicUrl()` (falls back to `AWS_PUBLIC_URL`)
  *
  * When `id` and `secret` are not provided, credentials are resolved automatically
  * from the environment: ECS/Lambda container credentials or EC2 instance metadata.

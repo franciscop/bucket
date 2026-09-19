@@ -165,6 +165,29 @@ describe("B2 token refresh", () => {
     return { counts, expire: (token: string) => dead.add(token) };
   }
 
+  it("does not re-authorize when the caller aborted", async () => {
+    // An abort rejects rather than returning 401, so the retry must not fire:
+    // re-authorizing for a request nobody is waiting for is a wasted trip.
+    const m = mockExpiry();
+    const bucket = BackBlaze("test-bucket", CREDS);
+    await bucket.list();
+    expect(m.counts.auths).toBe(1);
+
+    const controller = new AbortController();
+    controller.abort();
+    let code: string | undefined;
+    let name: string | undefined;
+    try {
+      await bucket.list(undefined, { signal: controller.signal });
+    } catch (err) {
+      code = (err as { code?: string }).code;
+      name = (err as Error).name;
+    }
+    expect(code).toBe("ABORTED");
+    expect(name).toBe("AbortError");
+    expect(m.counts.auths).toBe(1); // no refresh triggered by the abort
+  });
+
   it("re-authorizes and retries, so the caller sees no error", async () => {
     const m = mockExpiry();
     const bucket = BackBlaze("test-bucket", CREDS);
@@ -800,6 +823,26 @@ describe("B2 file().publicUrl()", () => {
     const bucket = await makeBucket();
     expect(await bucket.file("hello.txt").publicUrl()).toBe(
       "https://f001.backblazeb2.com/file/test-bucket/hello.txt",
+    );
+  });
+
+  it("uses a configured publicUrl instead of the download base", async () => {
+    mockFetch(withAuthMock());
+    const bucket = BackBlaze("test-bucket", {
+      id: "test-id",
+      secret: "test-key",
+      publicUrl: "https://cdn.example.com/",
+    });
+    await bucket.info();
+    expect(await bucket.file("a b&c.txt").publicUrl()).toBe(
+      "https://cdn.example.com/a%20b%26c.txt",
+    );
+  });
+
+  it("encodes the path in the download base too", async () => {
+    const bucket = await makeBucket();
+    expect(await bucket.file("a b&c.txt").publicUrl()).toBe(
+      "https://f001.backblazeb2.com/file/test-bucket/a%20b%26c.txt",
     );
   });
 

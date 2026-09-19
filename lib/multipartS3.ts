@@ -4,6 +4,7 @@
 
 import cleanAndSignS3 from "./cleanAndSignS3.ts";
 import BucketError from "./BucketError.ts";
+import { withAbortFetch } from "./abort.ts";
 import { escapeXml, extractTags, getTag } from "./xml.ts";
 import type { ChunkedTarget } from "./chunkedWritable.ts";
 import type { S3Auth, S3Request } from "./types.ts";
@@ -19,6 +20,9 @@ export interface S3MultipartOptions {
    * on the create call; S3 applies them to the assembled object. */
   headers: Record<string, string>;
   single: (data: Buffer) => Promise<void>;
+  /** Cancels the upload. Never passed to abort(), which has to clean up
+   * precisely because the signal already fired. */
+  signal?: AbortSignal;
 }
 
 async function request(
@@ -27,6 +31,7 @@ async function request(
   query: Record<string, string>,
   body?: Buffer | string,
   headers: Record<string, string> = {},
+  signal: AbortSignal | undefined = o.signal,
 ): Promise<Response> {
   const url = new URL(o.makeUrl(o.path));
   for (const [key, value] of Object.entries(query))
@@ -38,7 +43,7 @@ async function request(
     body,
   };
   await cleanAndSignS3(req, await o.getAuth());
-  const res = await fetch(url.toString(), {
+  const res = await withAbortFetch(signal, url.toString(), {
     method,
     headers: req.headers,
     body: body as BodyInit | undefined,
@@ -111,7 +116,9 @@ export default function multipartS3(
     },
 
     async abort(uploadId) {
-      await request(o, "DELETE", { uploadId });
+      // No signal: this is the cleanup for an already-aborted upload, so it
+      // has to run or the parts stay open and billed.
+      await request(o, "DELETE", { uploadId }, undefined, {}, undefined);
     },
   };
 }

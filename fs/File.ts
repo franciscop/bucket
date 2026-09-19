@@ -8,6 +8,8 @@ import { WritableStream } from "node:stream/web";
 import { getContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
 import { destKey } from "../lib/prefix.ts";
+import { publicUrlFrom } from "../lib/publicUrl.ts";
+import { throwIfAborted, withAbort, type ReadOptions } from "../lib/abort.ts";
 import assertNotOsPath from "./osPathGuard.ts";
 import {
   composeRange,
@@ -45,14 +47,16 @@ export class FSFile implements BucketFile {
   path: string;
   #root: string;
   #prefix: string;
+  #publicUrl: string;
   #abs: string;
   #range: ByteRange | null = null;
 
-  constructor(key: string, root: string, prefix: string) {
+  constructor(key: string, root: string, prefix: string, publicUrl = "") {
     this.name = key.split("/").pop()!;
     this.path = key;
     this.#root = root;
     this.#prefix = prefix;
+    this.#publicUrl = publicUrl;
     this.#abs = join(root, key);
   }
 
@@ -62,7 +66,8 @@ export class FSFile implements BucketFile {
     return f;
   }
 
-  async info(): Promise<FileInfo | null> {
+  async info(opts?: ReadOptions): Promise<FileInfo | null> {
+    throwIfAborted(opts?.signal);
     let stat: { size: number; mtime: Date };
     try {
       stat = await fsp.stat(this.#abs);
@@ -78,15 +83,21 @@ export class FSFile implements BucketFile {
     };
   }
 
-  async exists(): Promise<boolean> {
+  async exists(opts?: ReadOptions): Promise<boolean> {
+    throwIfAborted(opts?.signal);
     return fsp
       .access(this.#abs, fsp.constants.F_OK)
       .then(() => true)
       .catch(() => false);
   }
 
-  async #read() {
-    if (!this.#range) return fsp.readFile(this.#abs).catch(fsError);
+  async #read(signal?: AbortSignal) {
+    throwIfAborted(signal);
+    if (!this.#range)
+      return withAbort(signal, () => fsp.readFile(this.#abs, { signal })).catch(
+        (err) =>
+          err instanceof BucketError ? Promise.reject(err) : fsError(err),
+      );
     if (isEmptyRange(this.#range)) return Buffer.alloc(0);
     const { start, end } = this.#range;
     const fh = await fsp.open(this.#abs).catch(fsError);
@@ -103,50 +114,59 @@ export class FSFile implements BucketFile {
     }
   }
 
-  async text(): Promise<string> {
-    return (await this.#read()).toString("utf-8");
+  async text(opts?: ReadOptions): Promise<string> {
+    return (await this.#read(opts?.signal)).toString("utf-8");
   }
 
-  async json(): Promise<unknown> {
-    return JSON.parse((await this.#read()).toString("utf-8"));
+  async json(opts?: ReadOptions): Promise<unknown> {
+    return JSON.parse((await this.#read(opts?.signal)).toString("utf-8"));
   }
 
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    const buf = await this.#read();
+  async arrayBuffer(opts?: ReadOptions): Promise<ArrayBuffer> {
+    const buf = await this.#read(opts?.signal);
     return buf.buffer.slice(
       buf.byteOffset,
       buf.byteOffset + buf.byteLength,
     ) as ArrayBuffer;
   }
 
-  async blob(): Promise<Blob> {
+  async blob(opts?: ReadOptions): Promise<Blob> {
     // Carry a content-type (from the extension) so the Blob round-trips through
     // FormData / Response with the right type, like the remote providers do.
     const type = getContentType(this.path);
-    return new Blob([await this.#read()], type ? { type } : {});
+    return new Blob([await this.#read(opts?.signal)], type ? { type } : {});
   }
 
-  async bytes(): Promise<Uint8Array> {
-    return new Uint8Array(await this.arrayBuffer());
+  async bytes(opts?: ReadOptions): Promise<Uint8Array> {
+    return new Uint8Array(await this.arrayBuffer(opts));
   }
 
   async write(content: WriteContent, options?: WriteOptions): Promise<FSFile> {
-    await this.#write(content, options);
+    await withAbort(options?.signal, () => this.#write(content, options));
     return this;
   }
 
-  async #write(content: WriteContent, _options?: WriteOptions): Promise<void> {
+  async #write(content: WriteContent, options?: WriteOptions): Promise<void> {
+    const signal = options?.signal;
+    // An aborted write leaves nothing behind: fsp.writeFile with a signal
+    // removes the partial file itself.
     if (typeof content === "string") {
       await fsp.mkdir(dirname(this.#abs), { recursive: true });
-      return fsp.writeFile(this.#abs, content);
+      return fsp.writeFile(this.#abs, content, { signal });
     }
     if (content instanceof Buffer || content instanceof Uint8Array) {
       await fsp.mkdir(dirname(this.#abs), { recursive: true });
-      return fsp.writeFile(this.#abs, content);
+      return fsp.writeFile(this.#abs, content, { signal });
     }
     if (content instanceof Blob) {
       await fsp.mkdir(dirname(this.#abs), { recursive: true });
-      return fsp.writeFile(this.#abs, Buffer.from(await content.arrayBuffer()));
+      return fsp.writeFile(
+        this.#abs,
+        Buffer.from(await content.arrayBuffer()),
+        {
+          signal,
+        },
+      );
     }
     // A BucketFile from this or any other provider: stream it across
     if (
@@ -166,8 +186,12 @@ export class FSFile implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(dest: string | BucketFile): Promise<BucketFile> {
-    if (typeof dest !== "string") return dest.write(this);
+  async copyTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
+    throwIfAborted(opts?.signal);
+    if (typeof dest !== "string") return dest.write(this, opts);
     assertNotOsPath(this.#root, dest);
     const key = destKey(this.#prefix, dest, this.name);
     const dst = join(this.#root, key);
@@ -176,10 +200,14 @@ export class FSFile implements BucketFile {
     return new FSFile(key, this.#root, this.#prefix);
   }
 
-  async moveTo(dest: string | BucketFile): Promise<BucketFile> {
+  async moveTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
+    throwIfAborted(opts?.signal);
     if (typeof dest !== "string") {
-      const moved = await dest.write(this);
-      await this.remove();
+      const moved = await dest.write(this, opts);
+      await this.remove(opts);
       return moved;
     }
     assertNotOsPath(this.#root, dest);
@@ -190,7 +218,7 @@ export class FSFile implements BucketFile {
     return new FSFile(key, this.#root, this.#prefix);
   }
 
-  async rename(name: string): Promise<BucketFile> {
+  async rename(name: string, opts?: ReadOptions): Promise<BucketFile> {
     if (!name || name === "." || name === "..")
       throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
@@ -199,10 +227,11 @@ export class FSFile implements BucketFile {
       ? this.path.slice(this.#prefix.length + 1)
       : this.path;
     const dir = rel.split("/").slice(0, -1).join("/");
-    return this.moveTo(dir ? dir + "/" + name : name);
+    return this.moveTo(dir ? dir + "/" + name : name, opts);
   }
 
-  async remove(): Promise<FSFile> {
+  async remove(opts?: ReadOptions): Promise<FSFile> {
+    throwIfAborted(opts?.signal);
     await fsp.unlink(this.#abs).catch((err: NodeJS.ErrnoException) => {
       // Already gone is success: removing a path twice is a no-op
       if (err.code !== "ENOENT") fsError(err);
@@ -211,12 +240,13 @@ export class FSFile implements BucketFile {
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
-  unlink(): Promise<FSFile> {
-    return this.remove();
+  unlink(opts?: ReadOptions): Promise<FSFile> {
+    return this.remove(opts);
   }
 
-  async publicUrl(): Promise<null> {
-    return null;
+  async publicUrl(): Promise<string | null> {
+    // Nothing canonical to fall back on: the library does not serve the files.
+    return this.#publicUrl ? publicUrlFrom(this.#publicUrl, this.path) : null;
   }
 
   async signedUrl(_opts: { expires: number | string }): Promise<null> {
@@ -227,17 +257,19 @@ export class FSFile implements BucketFile {
     return null;
   }
 
-  stream(): ReadableStream {
-    return Readable.toWeb(this.nodeReadable()) as unknown as ReadableStream;
+  stream(opts?: ReadOptions): ReadableStream {
+    return Readable.toWeb(this.nodeReadable(opts)) as unknown as ReadableStream;
   }
 
-  nodeReadable(): NodeJS.ReadableStream {
-    if (!this.#range) return createReadStream(this.#abs);
+  nodeReadable(opts?: ReadOptions): NodeJS.ReadableStream {
+    const signal = opts?.signal;
+    if (!this.#range) return createReadStream(this.#abs, { signal });
     if (isEmptyRange(this.#range)) return Readable.from([]);
     const { start, end } = this.#range;
     // Node's `end` is inclusive; our range end is exclusive.
     return createReadStream(this.#abs, {
       start,
+      signal,
       ...(end !== undefined ? { end: end - 1 } : {}),
     });
   }

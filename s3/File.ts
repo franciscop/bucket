@@ -7,6 +7,8 @@ import multipartS3 from "../lib/multipartS3.ts";
 import { resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
 import { destKey } from "../lib/prefix.ts";
+import { publicUrlFrom } from "../lib/publicUrl.ts";
+import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
 import metaFromHeaders from "../lib/meta.ts";
 import {
   composeRange,
@@ -28,11 +30,16 @@ export interface S3BucketContext {
   doRequest: (
     method: string,
     path: string,
-    options?: { body?: string | Buffer; headers?: Record<string, string> },
+    options?: {
+      body?: string | Buffer;
+      headers?: Record<string, string>;
+      signal?: AbortSignal;
+    },
   ) => Promise<Response>;
   getAuth: () => Promise<S3Auth>;
   bucketName: string;
   url: string;
+  publicUrl: string;
   // Folder prefix of the bucket that created this file; copyTo()/moveTo()
   // destinations and rename() resolve against it.
   prefix: string;
@@ -58,13 +65,17 @@ export class S3File implements BucketFile {
 
   // A range-aware, status-checked GET used by every reader. An empty range
   // resolves to an empty body without hitting the network.
-  async #get(): Promise<Response> {
+  async #get(opts?: ReadOptions): Promise<Response> {
+    throwIfAborted(opts?.signal);
     if (this.#range && isEmptyRange(this.#range))
       return new Response(new Uint8Array(0));
     const headers: Record<string, string> = {};
     const rh = this.#range && rangeHeader(this.#range);
     if (rh) headers.Range = rh;
-    const res = await this.#ctx.doRequest("GET", this.path, { headers });
+    const res = await this.#ctx.doRequest("GET", this.path, {
+      headers,
+      signal: opts?.signal,
+    });
     if (!res.ok)
       throw new BucketError(`S3 GET error: ${res.status}`, {
         provider: "S3",
@@ -73,8 +84,11 @@ export class S3File implements BucketFile {
     return res;
   }
 
-  async info(): Promise<FileInfo | null> {
-    const res = await this.#ctx.doRequest("HEAD", this.path);
+  async info(opts?: ReadOptions): Promise<FileInfo | null> {
+    throwIfAborted(opts?.signal);
+    const res = await this.#ctx.doRequest("HEAD", this.path, {
+      signal: opts?.signal,
+    });
     if (res.status === 404) return null;
     if (!res.ok)
       throw new BucketError(`S3 HEAD error: ${res.status}`, {
@@ -93,28 +107,28 @@ export class S3File implements BucketFile {
     };
   }
 
-  async exists(): Promise<boolean> {
-    return (await this.info()) !== null;
+  async exists(opts?: ReadOptions): Promise<boolean> {
+    return (await this.info(opts)) !== null;
   }
 
-  async text(): Promise<string> {
-    return (await this.#get()).text();
+  async text(opts?: ReadOptions): Promise<string> {
+    return (await this.#get(opts)).text();
   }
 
-  async json(): Promise<unknown> {
-    return (await this.#get()).json();
+  async json(opts?: ReadOptions): Promise<unknown> {
+    return (await this.#get(opts)).json();
   }
 
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    return (await this.#get()).arrayBuffer();
+  async arrayBuffer(opts?: ReadOptions): Promise<ArrayBuffer> {
+    return (await this.#get(opts)).arrayBuffer();
   }
 
-  async blob(): Promise<Blob> {
-    return (await this.#get()).blob();
+  async blob(opts?: ReadOptions): Promise<Blob> {
+    return (await this.#get(opts)).blob();
   }
 
-  async bytes(): Promise<Uint8Array> {
-    return new Uint8Array(await this.arrayBuffer());
+  async bytes(opts?: ReadOptions): Promise<Uint8Array> {
+    return new Uint8Array(await this.arrayBuffer(opts));
   }
 
   #putHeaders(options: WriteOptions = {}): Record<string, string> {
@@ -136,6 +150,7 @@ export class S3File implements BucketFile {
     const res = await this.#ctx.doRequest("PUT", this.path, {
       body: data,
       headers: this.#putHeaders(options),
+      signal: options.signal,
     });
     if (!res.ok)
       throw new BucketError(`S3 PUT error: ${res.status}`, {
@@ -152,10 +167,12 @@ export class S3File implements BucketFile {
       getAuth: this.#ctx.getAuth,
       headers: this.#putHeaders(options),
       single: (data) => this.#put(data, options),
+      signal: options?.signal,
     });
   }
 
   async write(content: WriteContent, options?: WriteOptions): Promise<S3File> {
+    throwIfAborted(options?.signal);
     await this.#write(content, options);
     return this;
   }
@@ -188,11 +205,16 @@ export class S3File implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(dest: string | BucketFile): Promise<BucketFile> {
-    if (typeof dest !== "string") return dest.write(this);
+  async copyTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
+    throwIfAborted(opts?.signal);
+    if (typeof dest !== "string") return dest.write(this, opts);
     const dst = destKey(this.#ctx.prefix, dest, this.name);
     const res = await this.#ctx.doRequest("PUT", dst, {
       headers: { "x-amz-copy-source": `/${this.#ctx.bucketName}/${this.path}` },
+      signal: opts?.signal,
     });
     if (!res.ok)
       throw new BucketError(`S3 COPY error: ${res.status}`, {
@@ -202,13 +224,16 @@ export class S3File implements BucketFile {
     return new S3File(dst, this.#ctx);
   }
 
-  async moveTo(dest: string | BucketFile): Promise<BucketFile> {
-    const moved = await this.copyTo(dest);
-    await this.remove();
+  async moveTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
+    const moved = await this.copyTo(dest, opts);
+    await this.remove(opts);
     return moved;
   }
 
-  async rename(name: string): Promise<BucketFile> {
+  async rename(name: string, opts?: ReadOptions): Promise<BucketFile> {
     if (!name || name === "." || name === "..")
       throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
@@ -216,11 +241,14 @@ export class S3File implements BucketFile {
     const prefix = this.#ctx.prefix;
     const rel = prefix ? this.path.slice(prefix.length + 1) : this.path;
     const dir = rel.split("/").slice(0, -1).join("/");
-    return this.moveTo(dir ? dir + "/" + name : name);
+    return this.moveTo(dir ? dir + "/" + name : name, opts);
   }
 
-  async remove(): Promise<S3File> {
-    const res = await this.#ctx.doRequest("DELETE", this.path);
+  async remove(opts?: ReadOptions): Promise<S3File> {
+    throwIfAborted(opts?.signal);
+    const res = await this.#ctx.doRequest("DELETE", this.path, {
+      signal: opts?.signal,
+    });
     // Already gone is success: removing a path twice is a no-op
     if (res.status === 404) return this;
     if (!res.ok && res.status !== 204)
@@ -232,12 +260,12 @@ export class S3File implements BucketFile {
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
-  unlink(): Promise<S3File> {
-    return this.remove();
+  unlink(opts?: ReadOptions): Promise<S3File> {
+    return this.remove(opts);
   }
 
-  stream(): ReadableStream {
-    return promiseToReadable(async () => (await this.#get()).body!);
+  stream(opts?: ReadOptions): ReadableStream {
+    return promiseToReadable(async () => (await this.#get(opts)).body!);
   }
 
   nodeReadable(): NodeJS.ReadableStream {
@@ -257,7 +285,10 @@ export class S3File implements BucketFile {
   }
 
   async publicUrl(): Promise<string> {
-    return this.#ctx.makeUrl(this.path);
+    const base = this.#ctx.publicUrl;
+    return base
+      ? publicUrlFrom(base, this.path)
+      : publicUrlFrom(this.#ctx.url, this.path);
   }
 
   async signedUrl(opts: { expires: number | string }): Promise<string> {

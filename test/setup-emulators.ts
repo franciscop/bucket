@@ -49,11 +49,11 @@ async function createBucket(
   );
 }
 
-if (process.env.AWS_URL) {
-  const { protocol, host } = new URL(process.env.AWS_URL);
+if (process.env.AWS_ENDPOINT_URL) {
+  const { protocol, host } = new URL(process.env.AWS_ENDPOINT_URL);
   await waitFor(`${protocol}//${host}/minio/health/live`, "MinIO");
   await createBucket(
-    process.env.AWS_URL,
+    `${process.env.AWS_ENDPOINT_URL}/${process.env.AWS_BUCKET}`,
     process.env.AWS_ACCESS_KEY_ID || "",
     process.env.AWS_SECRET_ACCESS_KEY || "",
     process.env.AWS_REGION || "us-east-1",
@@ -63,7 +63,7 @@ if (process.env.AWS_URL) {
 
 if (process.env.R2_URL) {
   await createBucket(
-    process.env.R2_URL,
+    `${process.env.R2_URL}/${process.env.R2_BUCKET}`,
     process.env.R2_ACCESS_KEY_ID || "",
     process.env.R2_SECRET_ACCESS_KEY || "",
     process.env.R2_REGION || "us-east-1",

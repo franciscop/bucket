@@ -7,6 +7,7 @@ import type {
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import { randomName } from "../lib/nanoid.ts";
 import { assertFilter, requireFilter } from "../lib/filter.ts";
+import { throwIfAborted, withAbort, type ReadOptions } from "../lib/abort.ts";
 import BucketError from "../lib/BucketError.ts";
 import { B2File, type B2BucketContext } from "./File.ts";
 
@@ -16,6 +17,7 @@ const {
   B2_BUCKET: ENV_NAME,
   B2_APPLICATION_KEY_ID: ENV_ID,
   B2_APPLICATION_KEY: ENV_KEY,
+  B2_PUBLIC_URL: ENV_PUBLIC_URL,
 } = process.env;
 
 interface B2FileEntry {
@@ -63,6 +65,9 @@ interface B2Config {
    * clones pass `false` and adopt the parent's resolved auth instead, so a
    * folder never triggers its own network round-trip. */
   eager?: boolean;
+  /** Public origin the bucket is served from, e.g. a CDN in front of B2 (falls
+   * back to `B2_PUBLIC_URL`). Used by `file.publicUrl()`. */
+  publicUrl?: string;
 }
 
 async function authorize(
@@ -181,13 +186,20 @@ class BackBlazeInstance implements Bucket {
   apiBase = "";
   base = "";
   PREFIX = "";
+  #publicUrl: string;
   #session!: B2Session;
   // What B2File needs from its bucket, kept off the public class surface.
   #ctx: B2BucketContext;
 
   constructor(name: string = ENV_NAME || "", config: B2Config = {}) {
-    const { id = ENV_ID || "", secret = ENV_KEY || "", eager = true } = config;
+    const {
+      id = ENV_ID || "",
+      secret = ENV_KEY || "",
+      eager = true,
+      publicUrl = ENV_PUBLIC_URL || "",
+    } = config;
     this.name = name;
+    this.#publicUrl = publicUrl.replace(/\/+$/, "");
     if (eager) this.#adopt(makeSession(id, secret, name));
     const self = this;
     this.#ctx = {
@@ -205,6 +217,9 @@ class BackBlazeInstance implements Bucket {
       },
       get PREFIX() {
         return self.PREFIX;
+      },
+      get publicUrl() {
+        return self.#publicUrl;
       },
     };
   }
@@ -226,7 +241,8 @@ class BackBlazeInstance implements Bucket {
       });
   }
 
-  async info(): Promise<BucketInfo> {
+  async info(opts?: ReadOptions): Promise<BucketInfo> {
+    throwIfAborted(opts?.signal);
     await this.#session.auth;
     return {
       type: this.type,
@@ -237,16 +253,23 @@ class BackBlazeInstance implements Bucket {
   }
 
   async fetch(url: string, options: RequestInit = {}): Promise<Response> {
+    const signal = options.signal ?? undefined;
     const send = (token: string): Promise<Response> =>
-      fetch(url, {
-        ...options,
-        headers: {
-          Authorization: token,
-          ...(options.headers as Record<string, string>),
-        },
-      });
+      withAbort(signal, () =>
+        fetch(url, {
+          ...options,
+          headers: {
+            Authorization: token,
+            ...(options.headers as Record<string, string>),
+          },
+        }),
+      );
 
+    throwIfAborted(signal);
     const stale = this.#session.auth;
+    // An abort rejects here rather than returning a status, so the 401 retry
+    // below never sees it: re-authorizing because the caller cancelled would
+    // be a wasted round trip against a request nobody is waiting for.
     let res = await send((await stale).token);
     // A 401 on a 24h-old token just means it expired: re-authorize once and
     // retry. Skipped when the caller brought its own Authorization (B2 upload
@@ -283,26 +306,33 @@ class BackBlazeInstance implements Bucket {
   }
 
   async create(content: WriteContent, options?: WriteOptions): Promise<B2File> {
+    throwIfAborted(options?.signal);
     return this.file(randomName(content, options)).write(content, options);
   }
 
   folder(path: string): BackBlazeInstance {
-    const b = new BackBlazeInstance(this.name, { eager: false });
+    const b = new BackBlazeInstance(this.name, {
+      eager: false,
+      publicUrl: this.#publicUrl,
+    });
     b.#adopt(this.#session);
     b.PREFIX = folderKey(this.PREFIX, path);
     return b;
   }
 
-  async count(filter?: RegExp): Promise<number> {
+  async count(filter?: RegExp, opts?: ReadOptions): Promise<number> {
     assertFilter(filter);
-    return (await this.list(filter)).length;
+    return (await this.list(filter, opts)).length;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<B2File> {
     yield* this.scan();
   }
 
-  private async *pages(filter?: RegExp): AsyncGenerator<B2File[]> {
+  private async *pages(
+    filter?: RegExp,
+    opts?: ReadOptions,
+  ): AsyncGenerator<B2File[]> {
     await this.#session.auth;
     let nextFileName: string | undefined;
     const s = scope(this.PREFIX, filter);
@@ -316,7 +346,7 @@ class BackBlazeInstance implements Bucket {
       if (nextFileName)
         url += "&startFileName=" + encodeURIComponent(nextFileName);
 
-      const res = await this.fetch(url);
+      const res = await this.fetch(url, { signal: opts?.signal });
       const data = (await res.json()) as {
         files: B2FileEntry[];
         nextFileName?: string;
@@ -333,26 +363,36 @@ class BackBlazeInstance implements Bucket {
     } while (nextFileName);
   }
 
-  scan(filter?: RegExp): AsyncGenerator<B2File> {
+  scan(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<B2File> {
     assertFilter(filter);
-    return this.#scan(filter);
+    // Eager, like the filter check: an aborted scan must not wait for the
+    // first iteration to reject.
+    throwIfAborted(opts?.signal);
+    return this.#scan(filter, opts);
   }
 
-  async *#scan(filter?: RegExp): AsyncGenerator<B2File> {
-    for await (const page of this.pages(filter)) yield* page;
+  async *#scan(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<B2File> {
+    for await (const page of this.pages(filter, opts)) {
+      for (const file of page) {
+        throwIfAborted(opts?.signal);
+        yield file;
+      }
+    }
   }
 
-  async list(filter?: RegExp): Promise<B2File[]> {
+  async list(filter?: RegExp, opts?: ReadOptions): Promise<B2File[]> {
     assertFilter(filter);
+    throwIfAborted(opts?.signal);
     const files: B2File[] = [];
-    for await (const page of this.pages(filter)) files.push(...page);
+    for await (const page of this.pages(filter, opts)) files.push(...page);
     return files;
   }
 
-  async remove(filter: RegExp): Promise<B2File[]> {
+  async remove(filter: RegExp, opts?: ReadOptions): Promise<B2File[]> {
     requireFilter(filter);
-    const files = await this.list(filter);
-    await Promise.all(files.map((file) => file.remove()));
+    throwIfAborted(opts?.signal);
+    const files = await this.list(filter, opts);
+    await Promise.all(files.map((file) => file.remove(opts)));
     return files;
   }
 }
@@ -363,6 +403,7 @@ class BackBlazeInstance implements Bucket {
  * @param name - Bucket name (falls back to `B2_BUCKET` env var)
  * @param opts.id - Application Key ID (falls back to `B2_APPLICATION_KEY_ID`)
  * @param opts.secret - Application Key (falls back to `B2_APPLICATION_KEY`)
+ * @param opts.publicUrl - Public origin for `file.publicUrl()` (falls back to `B2_PUBLIC_URL`)
  *
  * @example
  * const bucket = BackBlaze("my-bucket", { id: "keyId", secret: "appKey" });
@@ -370,7 +411,7 @@ class BackBlazeInstance implements Bucket {
  */
 export default function BackBlaze(
   name?: string,
-  opts?: { id?: string; secret?: string },
+  opts?: { id?: string; secret?: string; publicUrl?: string },
 ): BackBlazeInstance {
   return new BackBlazeInstance(name, opts);
 }

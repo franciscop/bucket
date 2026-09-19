@@ -9,6 +9,9 @@ import chunkedWritable, {
 import { resolveContentType } from "../lib/fileTypes.ts";
 import { destKey } from "../lib/prefix.ts";
 import metaFromHeaders from "../lib/meta.ts";
+import { publicUrlFrom } from "../lib/publicUrl.ts";
+import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
+import BucketError from "../lib/BucketError.ts";
 import {
   composeRange,
   isEmptyRange,
@@ -35,6 +38,8 @@ export interface B2BucketContext {
   /** Part size for chunked uploads, resolved from the account's auth. */
   partSize(): Promise<number>;
   apiBase: string;
+  /** Public origin for publicUrl(); "" falls back to B2's download URL. */
+  publicUrl: string;
   // Folder prefix of the bucket that created this file; copyTo()/moveTo()
   // destinations and rename() resolve against it.
   PREFIX: string;
@@ -61,16 +66,21 @@ export class B2File implements BucketFile {
   // A range-aware download used by every reader. `bucket.fetch` throws on any
   // non-2xx (a range GET returns 206). An empty range resolves to an empty
   // body without hitting the network.
-  async #get(): Promise<Response> {
+  async #get(opts?: ReadOptions): Promise<Response> {
+    throwIfAborted(opts?.signal);
     if (this.#range && isEmptyRange(this.#range))
       return new Response(new Uint8Array(0));
     const bucket = await this.#bucket.info();
     const url = bucket.url + "file/" + bucket.name + "/" + this.path;
     const rh = this.#range && rangeHeader(this.#range);
-    return this.#bucket.fetch(url, rh ? { headers: { Range: rh } } : {});
+    return this.#bucket.fetch(url, {
+      ...(rh ? { headers: { Range: rh } } : {}),
+      signal: opts?.signal,
+    });
   }
 
-  async info(): Promise<FileInfo | null> {
+  async info(opts?: ReadOptions): Promise<FileInfo | null> {
+    throwIfAborted(opts?.signal);
     // B2 has no metadata-by-name endpoint, but a HEAD on the download-by-name
     // URL returns it in headers. `bucket.fetch` throws on any non-2xx, so a
     // missing file (404) surfaces as a throw; per the documented contract
@@ -79,7 +89,10 @@ export class B2File implements BucketFile {
     const url = bucket.url + "file/" + bucket.name + "/" + this.path;
     let res: Response;
     try {
-      res = await this.#bucket.fetch(url, { method: "HEAD" });
+      res = await this.#bucket.fetch(url, {
+        method: "HEAD",
+        signal: opts?.signal,
+      });
     } catch {
       return null;
     }
@@ -98,35 +111,38 @@ export class B2File implements BucketFile {
     };
   }
 
-  async text(): Promise<string> {
-    return (await this.#get()).text();
+  async text(opts?: ReadOptions): Promise<string> {
+    return (await this.#get(opts)).text();
   }
 
-  async json(): Promise<unknown> {
-    return (await this.#get()).json();
+  async json(opts?: ReadOptions): Promise<unknown> {
+    return (await this.#get(opts)).json();
   }
 
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    return (await this.#get()).arrayBuffer();
+  async arrayBuffer(opts?: ReadOptions): Promise<ArrayBuffer> {
+    return (await this.#get(opts)).arrayBuffer();
   }
 
-  async blob(): Promise<Blob> {
-    return (await this.#get()).blob();
+  async blob(opts?: ReadOptions): Promise<Blob> {
+    return (await this.#get(opts)).blob();
   }
 
-  async bytes(): Promise<Uint8Array> {
-    return new Uint8Array(await this.arrayBuffer());
+  async bytes(opts?: ReadOptions): Promise<Uint8Array> {
+    return new Uint8Array(await this.arrayBuffer(opts));
   }
 
-  async exists(): Promise<boolean> {
-    return (await this.info()) !== null;
+  async exists(opts?: ReadOptions): Promise<boolean> {
+    // An abort is an error, not "does not exist": it must not be swallowed
+    // by info()'s never-throw contract.
+    throwIfAborted(opts?.signal);
+    return (await this.info(opts)) !== null;
   }
 
   async #put(data: string | Buffer, options: WriteOptions = {}): Promise<void> {
     const bucket = await this.#bucket.info();
     const url =
       this.#bucket.apiBase + "b2_get_upload_url?bucketId=" + bucket.id;
-    const res = await this.#bucket.fetch(url);
+    const res = await this.#bucket.fetch(url, { signal: options.signal });
     const auth = (await res.json()) as B2UploadAuth;
 
     // Detect from the extension like every other provider; fall back to B2's
@@ -153,6 +169,7 @@ export class B2File implements BucketFile {
       body: data as BodyInit,
       method: "POST",
       headers: headers as Record<string, string>,
+      signal: options.signal,
     });
     await res2.json();
   }
@@ -190,6 +207,7 @@ export class B2File implements BucketFile {
               contentType: type,
               fileInfo,
             }),
+            signal: options.signal,
           },
         );
         const { fileId } = (await res.json()) as { fileId: string };
@@ -198,6 +216,7 @@ export class B2File implements BucketFile {
       part: async (ctx, n, data) => {
         const urlRes = await this.#bucket.fetch(
           this.#bucket.apiBase + "b2_get_upload_part_url?fileId=" + ctx.fileId,
+          { signal: options.signal },
         );
         const auth = (await urlRes.json()) as B2UploadAuth;
         const sha1 = await sha1hex(data);
@@ -210,6 +229,7 @@ export class B2File implements BucketFile {
             "Content-Length": String(data.length),
             "X-Bz-Content-Sha1": sha1,
           },
+          signal: options.signal,
         });
         await res.json();
         return sha1;
@@ -221,11 +241,14 @@ export class B2File implements BucketFile {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ fileId: ctx.fileId, partSha1Array: parts }),
+            signal: options.signal,
           },
         );
         await res.json();
       },
       abort: async (ctx) => {
+        // No signal: this cancels an already-aborted upload, so it has to run
+        // or the parts stay open and billed.
         const res = await this.#bucket.fetch(
           this.#bucket.apiBase + "b2_cancel_large_file",
           {
@@ -240,6 +263,7 @@ export class B2File implements BucketFile {
   }
 
   async write(content: WriteContent, options?: WriteOptions): Promise<B2File> {
+    throwIfAborted(options?.signal);
     await this.#write(content, options);
     return this;
   }
@@ -272,24 +296,31 @@ export class B2File implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(dest: string | BucketFile): Promise<BucketFile> {
-    if (typeof dest !== "string") return dest.write(this);
+  async copyTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
+    throwIfAborted(opts?.signal);
+    if (typeof dest !== "string") return dest.write(this, opts);
     const dst = new B2File(
       destKey(this.#bucket.PREFIX, dest, this.name),
       this.#bucket,
     );
-    return dst.write(this);
+    return dst.write(this, opts);
   }
 
-  async moveTo(dest: string | BucketFile): Promise<BucketFile> {
-    const moved = await this.copyTo(dest);
+  async moveTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
+    const moved = await this.copyTo(dest, opts);
     // Hides the source like any remove(), keeping its versions: a move must
     // never destroy history that removing the same file would have kept.
-    await this.remove();
+    await this.remove(opts);
     return moved;
   }
 
-  async rename(name: string): Promise<BucketFile> {
+  async rename(name: string, opts?: ReadOptions): Promise<BucketFile> {
     if (!name || name === "." || name === "..")
       throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
@@ -297,10 +328,11 @@ export class B2File implements BucketFile {
     const prefix = this.#bucket.PREFIX;
     const rel = prefix ? this.path.slice(prefix.length + 1) : this.path;
     const dir = rel.split("/").slice(0, -1).join("/");
-    return this.moveTo(dir ? dir + "/" + name : name);
+    return this.moveTo(dir ? dir + "/" + name : name, opts);
   }
 
-  async remove(): Promise<B2File> {
+  async remove(opts?: ReadOptions): Promise<B2File> {
+    throwIfAborted(opts?.signal);
     const bucket = await this.#bucket.info();
     // Hide, never delete: B2 is always versioned, and deleting the newest
     // version would both destroy it and uncover the one before it. Hiding
@@ -310,8 +342,11 @@ export class B2File implements BucketFile {
         method: "POST",
         body: JSON.stringify({ bucketId: bucket.id, fileName: this.path }),
         headers: { "Content-Type": "application/json" },
+        signal: opts?.signal,
       })
       .catch((e: Error) => {
+        // An abort is a real failure, not an already-hidden no-op
+        if (e instanceof BucketError && e.code === "ABORTED") throw e;
         // Already hidden, or never there: a no-op, and no second hide marker
         if (!/file_not_present|no_such_file/.test(e.message)) throw e;
       });
@@ -319,13 +354,13 @@ export class B2File implements BucketFile {
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
-  unlink(): Promise<B2File> {
-    return this.remove();
+  unlink(opts?: ReadOptions): Promise<B2File> {
+    return this.remove(opts);
   }
 
-  stream(): ReadableStream {
+  stream(opts?: ReadOptions): ReadableStream {
     return promiseToReadable(
-      async () => (await this.#get()).body as unknown as ReadableStream,
+      async () => (await this.#get(opts)).body as unknown as ReadableStream,
     );
   }
 
@@ -346,10 +381,12 @@ export class B2File implements BucketFile {
   }
 
   async publicUrl(): Promise<string> {
+    const base = this.#bucket.publicUrl;
+    if (base) return publicUrlFrom(base, this.path);
     // The download base is only known once the bucket has authenticated;
     // info() resolves that auth, so the URL is always available here.
     const bucket = await this.#bucket.info();
-    return `${bucket.url}file/${bucket.name}/${this.path}`;
+    return publicUrlFrom(`${bucket.url}file/${bucket.name}`, this.path);
   }
 
   async signedUrl(opts: { expires: number | string }): Promise<string> {

@@ -12,6 +12,11 @@ export interface FileInfo {
   version: string | null;
   /** Custom metadata (lowercase keys); empty when none or unsupported */
   metadata: Record<string, string>;
+  /** Cache-Control the file was written with, when the provider reports it */
+  cacheControl?: string;
+  /** Content-Disposition the file was written with, when the provider
+   * reports it */
+  disposition?: string;
 }
 
 /** Metadata returned by `bucket.info()`. Every provider returns the same shape. */
@@ -37,7 +42,10 @@ export type WriteContent =
   | NodeJS.ReadableStream;
 
 /** Options for `file.write()`, `file.writable()`, and `file.nodeWritable()` */
-export interface WriteOptions {
+export type { ReadOptions } from "./abort.ts";
+import type { ReadOptions } from "./abort.ts";
+
+export interface WriteOptions extends ReadOptions {
   /** MIME type (`"image/png"`) or extension (`"png"`, `".png"`),
    * auto-detected from the file extension if omitted */
   type?: string;
@@ -58,20 +66,20 @@ export interface BucketFile {
 
   /** Returns the file's metadata (size, type, modified, version, custom
    * metadata), or `null` when the file does not exist */
-  info(): Promise<FileInfo | null>;
+  info(opts?: ReadOptions): Promise<FileInfo | null>;
   /** Returns `true` if the file exists */
-  exists(): Promise<boolean>;
+  exists(opts?: ReadOptions): Promise<boolean>;
 
   /** Downloads and returns the file content as a string */
-  text(): Promise<string>;
+  text(opts?: ReadOptions): Promise<string>;
   /** Downloads and parses the file content as JSON */
-  json(): Promise<unknown>;
+  json(opts?: ReadOptions): Promise<unknown>;
   /** Downloads and returns the file content as an `ArrayBuffer` */
-  arrayBuffer(): Promise<ArrayBuffer>;
+  arrayBuffer(opts?: ReadOptions): Promise<ArrayBuffer>;
   /** Downloads and returns the file content as a `Blob` */
-  blob(): Promise<Blob>;
+  blob(opts?: ReadOptions): Promise<Blob>;
   /** Downloads and returns the file content as a `Uint8Array` */
-  bytes(): Promise<Uint8Array>;
+  bytes(opts?: ReadOptions): Promise<Uint8Array>;
 
   /** Writes content to the file, replacing any existing content.
    * Resolves to this same file. */
@@ -79,19 +87,19 @@ export interface BucketFile {
 
   /** Copies this file to a path (same bucket) or a file in any bucket.
    * Resolves to the destination file. */
-  copyTo(dest: string | BucketFile): Promise<BucketFile>;
+  copyTo(dest: string | BucketFile, opts?: ReadOptions): Promise<BucketFile>;
   /** Moves this file (copy + delete) to a path or a file in any bucket.
    * Resolves to the destination file. */
-  moveTo(dest: string | BucketFile): Promise<BucketFile>;
+  moveTo(dest: string | BucketFile, opts?: ReadOptions): Promise<BucketFile>;
   /**
    * Renames the file within its current directory, resolving to the renamed
    * file. Throws if `name` contains a `/`, use `moveTo()` to change directories.
    */
-  rename(name: string): Promise<BucketFile>;
+  rename(name: string, opts?: ReadOptions): Promise<BucketFile>;
   /** Deletes the file, resolving to it. Aliases: `unlink()`, `delete()` */
-  remove(): Promise<BucketFile>;
+  remove(opts?: ReadOptions): Promise<BucketFile>;
   /** Alias of `remove()` (Bun `S3File.unlink()`) */
-  unlink(): Promise<BucketFile>;
+  unlink(opts?: ReadOptions): Promise<BucketFile>;
 
   /**
    * A read-only view of a byte range of this file, like `Blob.slice()`:
@@ -126,23 +134,23 @@ export interface Bucket {
   type?: string;
 
   /** Returns metadata about the bucket */
-  info(): Promise<BucketInfo>;
+  info(opts?: ReadOptions): Promise<BucketInfo>;
   /** Lists all files in the bucket, optionally filtered by a `RegExp`. */
-  list(filter?: RegExp): Promise<BucketFile[]>;
+  list(filter?: RegExp, opts?: ReadOptions): Promise<BucketFile[]>;
   /**
    * Lazily iterates files, streaming provider pages as they arrive (bounded
    * memory, supports early `break`). Optionally filtered by a `RegExp`.
    */
-  scan(filter?: RegExp): AsyncGenerator<BucketFile>;
+  scan(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<BucketFile>;
   /**
    * Deletes every file matching the filter, returning the deleted files.
    * The filter is required and must be a `RegExp`: use `.remove(/./)` to empty
    * the bucket, or `.folder(path)` to scope it first. Anything else throws a
    * `BucketError` with code `"INVALID_FILTER"`.
    */
-  remove(filter: RegExp): Promise<BucketFile[]>;
+  remove(filter: RegExp, opts?: ReadOptions): Promise<BucketFile[]>;
   /** Returns the number of files matching the optional filter */
-  count(filter?: RegExp): Promise<number>;
+  count(filter?: RegExp, opts?: ReadOptions): Promise<number>;
   /** Returns a file handle for the given path (does not check existence) */
   file(name: string): BucketFile;
   /**

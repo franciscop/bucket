@@ -3,6 +3,11 @@ import BucketError from "../lib/BucketError.ts";
 import { fileKey, scope, folderKey } from "../lib/prefix.ts";
 import { randomName } from "../lib/nanoid.ts";
 import { assertFilter, requireFilter } from "../lib/filter.ts";
+import {
+  throwIfAborted,
+  withAbortFetch,
+  type ReadOptions,
+} from "../lib/abort.ts";
 import type {
   Bucket,
   BucketInfo,
@@ -11,7 +16,11 @@ import type {
 } from "../lib/types.ts";
 import { GCSFile, type GCSAuth, type GCSObjectMeta } from "./File.ts";
 
-const { GCS_BUCKET: ENV_BUCKET, GCS_URL: ENV_URL } = process.env;
+const {
+  GCS_BUCKET: ENV_BUCKET,
+  GCS_URL: ENV_URL,
+  GCS_PUBLIC_URL: ENV_PUBLIC_URL,
+} = process.env;
 
 export interface GCSConfig {
   /** Override the API host (falls back to `GCS_URL`). Use for the
@@ -20,6 +29,9 @@ export interface GCSConfig {
   /** Skip authentication entirely, required by emulators that don't verify
    * tokens (falls back to `GCS_ANONYMOUS=true`). */
   anonymous?: boolean;
+  /** Public origin the bucket is served from, e.g. a CDN domain (falls back
+   * to `GCS_PUBLIC_URL`). Used by `file.publicUrl()`. */
+  publicUrl?: string;
 }
 
 async function loadAuth(): Promise<GCSAuth> {
@@ -52,6 +64,7 @@ class GCSBucket implements Bucket {
   #bucket: string;
   #url: string;
   #anonymous: boolean;
+  #publicUrl: string;
   #auth: Promise<GCSAuth>;
   #cachedToken: string | null = null;
   #tokenExpiry = 0;
@@ -65,6 +78,10 @@ class GCSBucket implements Bucket {
       "https://storage.googleapis.com"
     ).replace(/\/$/, "");
     this.#anonymous = config.anonymous ?? process.env.GCS_ANONYMOUS === "true";
+    this.#publicUrl = (config.publicUrl ?? ENV_PUBLIC_URL ?? "").replace(
+      /\/+$/,
+      "",
+    );
     this.#auth = loadAuth();
   }
 
@@ -81,7 +98,8 @@ class GCSBucket implements Bucket {
     return this.#cachedToken!;
   }
 
-  async info(): Promise<BucketInfo> {
+  async info(opts?: ReadOptions): Promise<BucketInfo> {
+    throwIfAborted(opts?.signal);
     return {
       type: this.type,
       name: this.#bucket,
@@ -90,7 +108,10 @@ class GCSBucket implements Bucket {
     };
   }
 
-  async *#pages(filter?: RegExp): AsyncGenerator<GCSFile[]> {
+  async *#pages(
+    filter?: RegExp,
+    opts?: ReadOptions,
+  ): AsyncGenerator<GCSFile[]> {
     let pageToken: string | undefined;
     const s = scope(this.PREFIX, filter);
 
@@ -100,7 +121,8 @@ class GCSBucket implements Bucket {
       if (pageToken) params.set("pageToken", pageToken);
 
       const token = await this.accessToken();
-      const res = await fetch(
+      const res = await withAbortFetch(
+        opts?.signal,
         `${this.#url}/storage/v1/b/${this.#bucket}/o?${params}`,
         { headers: token ? { Authorization: `Bearer ${token}` } : {} },
       );
@@ -126,6 +148,7 @@ class GCSBucket implements Bucket {
             this.#url,
             this.#anonymous,
             this.PREFIX,
+            this.#publicUrl,
           ),
         );
       }
@@ -135,19 +158,28 @@ class GCSBucket implements Bucket {
     } while (pageToken);
   }
 
-  scan(filter?: RegExp): AsyncGenerator<GCSFile> {
+  scan(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<GCSFile> {
     assertFilter(filter);
-    return this.#scan(filter);
+    // Eager, like the filter check: an aborted scan must not wait for the
+    // first iteration to reject.
+    throwIfAborted(opts?.signal);
+    return this.#scan(filter, opts);
   }
 
-  async *#scan(filter?: RegExp): AsyncGenerator<GCSFile> {
-    for await (const page of this.#pages(filter)) yield* page;
+  async *#scan(filter?: RegExp, opts?: ReadOptions): AsyncGenerator<GCSFile> {
+    for await (const page of this.#pages(filter, opts)) {
+      for (const file of page) {
+        throwIfAborted(opts?.signal);
+        yield file;
+      }
+    }
   }
 
-  async list(filter?: RegExp): Promise<GCSFile[]> {
+  async list(filter?: RegExp, opts?: ReadOptions): Promise<GCSFile[]> {
     assertFilter(filter);
+    throwIfAborted(opts?.signal);
     const files: GCSFile[] = [];
-    for await (const page of this.#pages(filter)) files.push(...page);
+    for await (const page of this.#pages(filter, opts)) files.push(...page);
     return files;
   }
 
@@ -160,6 +192,7 @@ class GCSBucket implements Bucket {
       this.#url,
       this.#anonymous,
       this.PREFIX,
+      this.#publicUrl,
     );
   }
 
@@ -167,6 +200,7 @@ class GCSBucket implements Bucket {
     content: WriteContent,
     options?: WriteOptions,
   ): Promise<GCSFile> {
+    throwIfAborted(options?.signal);
     return this.file(randomName(content, options)).write(content, options);
   }
 
@@ -174,22 +208,24 @@ class GCSBucket implements Bucket {
     const b = new GCSBucket(this.#bucket, {
       url: this.#url,
       anonymous: this.#anonymous,
+      publicUrl: this.#publicUrl,
     });
     b.#auth = this.#auth;
     b.PREFIX = folderKey(this.PREFIX, path);
     return b;
   }
 
-  async remove(filter: RegExp): Promise<GCSFile[]> {
+  async remove(filter: RegExp, opts?: ReadOptions): Promise<GCSFile[]> {
     requireFilter(filter);
-    const files = await this.list(filter);
-    await Promise.all(files.map((f) => f.remove()));
+    throwIfAborted(opts?.signal);
+    const files = await this.list(filter, opts);
+    await Promise.all(files.map((f) => f.remove(opts)));
     return files;
   }
 
-  async count(filter?: RegExp): Promise<number> {
+  async count(filter?: RegExp, opts?: ReadOptions): Promise<number> {
     assertFilter(filter);
-    return (await this.list(filter)).length;
+    return (await this.list(filter, opts)).length;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<GCSFile> {

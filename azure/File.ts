@@ -12,6 +12,12 @@ import chunkedWritable, {
 } from "../lib/chunkedWritable.ts";
 import { resolveContentType } from "../lib/fileTypes.ts";
 import BucketError from "../lib/BucketError.ts";
+import { publicUrlFrom } from "../lib/publicUrl.ts";
+import {
+  throwIfAborted,
+  withAbortFetch,
+  type ReadOptions,
+} from "../lib/abort.ts";
 import { destKey } from "../lib/prefix.ts";
 import metaFromHeaders from "../lib/meta.ts";
 import {
@@ -48,6 +54,7 @@ export class AzureFile implements BucketFile {
   #container: string;
   #url: string;
   #auth: AzureFileAuth;
+  #publicUrl: string;
   // Folder prefix of the bucket that created this file; copyTo()/moveTo()
   // destinations and rename() resolve against it.
   #prefix: string;
@@ -60,6 +67,7 @@ export class AzureFile implements BucketFile {
     auth: AzureFileAuth,
     url: string = `https://${account}.blob.core.windows.net`,
     prefix: string = "",
+    publicUrl: string = "",
   ) {
     this.path = path.startsWith("/") ? path.slice(1) : path;
     this.name = this.path.split("/").pop() || this.path;
@@ -68,6 +76,7 @@ export class AzureFile implements BucketFile {
     this.#url = url;
     this.#auth = auth;
     this.#prefix = prefix;
+    this.#publicUrl = publicUrl;
   }
 
   slice(start: number, end?: number): AzureFile {
@@ -87,11 +96,17 @@ export class AzureFile implements BucketFile {
   // StringToSign has no slot for a standard `Range` header, but it does sign
   // every `x-ms-*` header, so we use `x-ms-range`. An empty range resolves to
   // an empty body without hitting the network.
-  async #get(): Promise<Response> {
+  async #get(opts?: ReadOptions): Promise<Response> {
+    throwIfAborted(opts?.signal);
     if (this.#range && isEmptyRange(this.#range))
       return new Response(new Uint8Array(0));
     const rh = this.#range && rangeHeader(this.#range);
-    const res = await this.#request("GET", rh ? { "x-ms-range": rh } : {});
+    const res = await this.#request(
+      "GET",
+      rh ? { "x-ms-range": rh } : {},
+      undefined,
+      opts?.signal,
+    );
     if (!res.ok)
       throw new BucketError(`Azure GET error: ${res.status}`, {
         provider: "Azure",
@@ -108,6 +123,7 @@ export class AzureFile implements BucketFile {
     method: string,
     extraHeaders: Record<string, string> = {},
     body?: string | Buffer,
+    signal?: AbortSignal,
   ): Promise<Response> {
     const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${encodePath(this.path)}`;
     const allExtra = {
@@ -122,7 +138,7 @@ export class AzureFile implements BucketFile {
         account: this.#account,
         key: this.#auth.key,
       });
-      return fetch(this.#baseUrl(), {
+      return withAbortFetch(signal, this.#baseUrl(), {
         method,
         headers,
         body: body as BodyInit | undefined,
@@ -130,7 +146,7 @@ export class AzureFile implements BucketFile {
     }
 
     const token = await this.#auth.getToken();
-    return fetch(this.#baseUrl(), {
+    return withAbortFetch(signal, this.#baseUrl(), {
       method,
       headers: {
         ...allExtra,
@@ -142,8 +158,9 @@ export class AzureFile implements BucketFile {
     });
   }
 
-  async info(): Promise<FileInfo | null> {
-    const res = await this.#request("HEAD");
+  async info(opts?: ReadOptions): Promise<FileInfo | null> {
+    throwIfAborted(opts?.signal);
+    const res = await this.#request("HEAD", {}, undefined, opts?.signal);
     if (res.status === 404) return null;
     if (!res.ok)
       throw new BucketError(`Azure HEAD error: ${res.status}`, {
@@ -162,28 +179,29 @@ export class AzureFile implements BucketFile {
     };
   }
 
-  async exists(): Promise<boolean> {
-    return (await this.info()) !== null;
+  async exists(opts?: ReadOptions): Promise<boolean> {
+    throwIfAborted(opts?.signal);
+    return (await this.info(opts)) !== null;
   }
 
-  async text(): Promise<string> {
-    return (await this.#get()).text();
+  async text(opts?: ReadOptions): Promise<string> {
+    return (await this.#get(opts)).text();
   }
 
-  async json(): Promise<unknown> {
-    return (await this.#get()).json();
+  async json(opts?: ReadOptions): Promise<unknown> {
+    return (await this.#get(opts)).json();
   }
 
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    return (await this.#get()).arrayBuffer();
+  async arrayBuffer(opts?: ReadOptions): Promise<ArrayBuffer> {
+    return (await this.#get(opts)).arrayBuffer();
   }
 
-  async blob(): Promise<Blob> {
-    return (await this.#get()).blob();
+  async blob(opts?: ReadOptions): Promise<Blob> {
+    return (await this.#get(opts)).blob();
   }
 
-  async bytes(): Promise<Uint8Array> {
-    return new Uint8Array(await this.arrayBuffer());
+  async bytes(opts?: ReadOptions): Promise<Uint8Array> {
+    return new Uint8Array(await this.arrayBuffer(opts));
   }
 
   #blobHeaders(options: WriteOptions = {}): Record<string, string> {
@@ -207,7 +225,7 @@ export class AzureFile implements BucketFile {
       "x-ms-blob-type": "BlockBlob",
       ...this.#blobHeaders(options),
     };
-    const res = await this.#request("PUT", extraHeaders, data);
+    const res = await this.#request("PUT", extraHeaders, data, options.signal);
     if (!res.ok)
       throw new BucketError(`Azure PUT error: ${res.status}`, {
         provider: "Azure",
@@ -222,6 +240,7 @@ export class AzureFile implements BucketFile {
     params: Record<string, string>,
     extraHeaders: Record<string, string> = {},
     body?: Buffer | string,
+    signal?: AbortSignal,
   ): Promise<Response> {
     const blobPath = `${accountPathPrefix(this.#url)}/${this.#container}/${encodePath(this.path)}`;
     const query = new URLSearchParams(params).toString();
@@ -241,7 +260,7 @@ export class AzureFile implements BucketFile {
         { account: this.#account, key: this.#auth.key },
         params,
       );
-      return fetch(url, {
+      return withAbortFetch(signal, url, {
         method,
         headers,
         body: body as BodyInit | undefined,
@@ -249,7 +268,7 @@ export class AzureFile implements BucketFile {
     }
 
     const token = await this.#auth.getToken();
-    return fetch(url, {
+    return withAbortFetch(signal, url, {
       method,
       headers: {
         ...allExtra,
@@ -279,6 +298,7 @@ export class AzureFile implements BucketFile {
           { comp: "block", blockid: id },
           {},
           data,
+          options.signal,
         );
         if (!res.ok)
           throw new BucketError(`Azure block error: ${res.status}`, {
@@ -299,6 +319,7 @@ export class AzureFile implements BucketFile {
           { comp: "blocklist" },
           this.#blobHeaders(options),
           body,
+          options.signal,
         );
         if (!res.ok)
           throw new BucketError(`Azure block commit error: ${res.status}`, {
@@ -315,6 +336,7 @@ export class AzureFile implements BucketFile {
     content: WriteContent,
     options?: WriteOptions,
   ): Promise<AzureFile> {
+    throwIfAborted(options?.signal);
     await this.#write(content, options);
     return this;
   }
@@ -347,8 +369,12 @@ export class AzureFile implements BucketFile {
     throw new Error("Invalid content type");
   }
 
-  async copyTo(dest: string | BucketFile): Promise<BucketFile> {
-    if (typeof dest !== "string") return dest.write(this);
+  async copyTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
+    throwIfAborted(opts?.signal);
+    if (typeof dest !== "string") return dest.write(this, opts);
     const src = this.#baseUrl();
     const dst = new AzureFile(
       destKey(this.#prefix, dest, this.name),
@@ -367,7 +393,10 @@ export class AzureFile implements BucketFile {
         { "x-ms-copy-source": src },
         { account: this.#account, key: this.#auth.key },
       );
-      const res = await fetch(dst.#baseUrl(), { method: "PUT", headers });
+      const res = await withAbortFetch(opts?.signal, dst.#baseUrl(), {
+        method: "PUT",
+        headers,
+      });
       if (!res.ok)
         throw new BucketError(`Azure COPY error: ${res.status}`, {
           provider: "Azure",
@@ -375,7 +404,7 @@ export class AzureFile implements BucketFile {
         });
     } else {
       const token = await this.#auth.getToken();
-      const res = await fetch(dst.#baseUrl(), {
+      const res = await withAbortFetch(opts?.signal, dst.#baseUrl(), {
         method: "PUT",
         headers: {
           "x-ms-copy-source": src,
@@ -393,13 +422,16 @@ export class AzureFile implements BucketFile {
     return dst;
   }
 
-  async moveTo(dest: string | BucketFile): Promise<BucketFile> {
-    const moved = await this.copyTo(dest);
-    await this.remove();
+  async moveTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
+    const moved = await this.copyTo(dest, opts);
+    await this.remove(opts);
     return moved;
   }
 
-  async rename(name: string): Promise<BucketFile> {
+  async rename(name: string, opts?: ReadOptions): Promise<BucketFile> {
     if (!name || name === "." || name === "..")
       throw new Error(`rename() needs a file name, got "${name}"`);
     if (name.includes("/"))
@@ -407,16 +439,20 @@ export class AzureFile implements BucketFile {
     const prefix = this.#prefix;
     const rel = prefix ? this.path.slice(prefix.length + 1) : this.path;
     const dir = rel.split("/").slice(0, -1).join("/");
-    return this.moveTo(dir ? dir + "/" + name : name);
+    return this.moveTo(dir ? dir + "/" + name : name, opts);
   }
 
-  async remove(): Promise<AzureFile> {
+  async remove(opts?: ReadOptions): Promise<AzureFile> {
+    throwIfAborted(opts?.signal);
     // "include" deletes the blob together with its snapshots; without it a
     // blob that has any snapshot refuses to delete at all (409). Versions are
     // untouched either way: this deletes the blob, never a `versionid`.
-    const res = await this.#request("DELETE", {
-      "x-ms-delete-snapshots": "include",
-    });
+    const res = await this.#request(
+      "DELETE",
+      { "x-ms-delete-snapshots": "include" },
+      undefined,
+      opts?.signal,
+    );
     // Already gone is success: removing a path twice is a no-op
     if (res.status === 404) return this;
     if (!res.ok && res.status !== 202)
@@ -428,12 +464,12 @@ export class AzureFile implements BucketFile {
   }
 
   // Bun-style aliases, so muscle memory from Bun's S3File carries over
-  unlink(): Promise<AzureFile> {
-    return this.remove();
+  unlink(opts?: ReadOptions): Promise<AzureFile> {
+    return this.remove(opts);
   }
 
-  stream(): ReadableStream {
-    return promiseToReadable(async () => (await this.#get()).body!);
+  stream(opts?: ReadOptions): ReadableStream {
+    return promiseToReadable(async () => (await this.#get(opts)).body!);
   }
 
   nodeReadable(): NodeJS.ReadableStream {
@@ -453,7 +489,8 @@ export class AzureFile implements BucketFile {
   }
 
   async publicUrl(): Promise<string> {
-    return this.#baseUrl();
+    const base = this.#publicUrl;
+    return base ? publicUrlFrom(base, this.path) : this.#baseUrl();
   }
 
   async signedUrl(opts: { expires: number | string }): Promise<string | null> {

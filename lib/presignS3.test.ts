@@ -31,6 +31,7 @@ function reference(
   method: "GET" | "PUT",
   expires: number,
   region: string,
+  sessionToken?: string,
 ): string | null {
   const RequestSigner = (aws4 as unknown as { RequestSigner: any })
     .RequestSigner;
@@ -44,7 +45,7 @@ function reference(
       signQuery: true,
       headers: {},
     },
-    { accessKeyId: auth.id, secretAccessKey: auth.secret },
+    { accessKeyId: auth.id, secretAccessKey: auth.secret, sessionToken },
   );
   signer.datetime = DATE;
   const signed = signer.sign() as { path: string };
@@ -104,6 +105,21 @@ describe("presignS3 vs aws4 (presigned URL oracle)", () => {
     );
     expect(sigOf(ours)).toBe(
       reference(h, "/bucket/key.txt", "GET", 3600, auth.region),
+    );
+  });
+
+  it("session token is signed, not just appended", async () => {
+    const token = "FQoGZXIvYXdzEEXAMPLEsessionTOKEN==";
+    const withToken: S3Auth = { ...auth, sessionToken: token };
+    const ours = await presignS3(url("file.txt"), "GET", withToken, 3600);
+
+    expect(new URL(ours).searchParams.get("X-Amz-Security-Token")).toBe(token);
+    // A different signature than the token-less URL: it is part of the
+    // canonical query string, so it cannot be bolted on afterwards.
+    const without = await presignS3(url("file.txt"), "GET", auth, 3600);
+    expect(sigOf(ours)).not.toBe(sigOf(without));
+    expect(sigOf(ours)).toBe(
+      reference(host, "/file.txt", "GET", 3600, auth.region, token),
     );
   });
 
