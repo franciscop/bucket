@@ -23,6 +23,8 @@ jobs:
         run: bun install
       - name: Lint
         run: bun run lint
+      - name: Typecheck
+        run: bun run typecheck
       - name: Test
         run: bun test --timeout 30000
         env:

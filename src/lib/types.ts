@@ -109,10 +109,12 @@ export interface BucketFile {
    */
   slice(start: number, end?: number): BucketFile;
 
-  /** Returns a web `ReadableStream` of the file content */
-  stream(): ReadableStream;
+  /** Returns a web `ReadableStream` of the file content. Both readers are
+   * synchronous and fetch lazily, so a signal has to be given up front here
+   * rather than awaited on. */
+  stream(opts?: ReadOptions): ReadableStream;
   /** Returns a Node.js `ReadableStream` of the file content */
-  nodeReadable(): NodeJS.ReadableStream;
+  nodeReadable(opts?: ReadOptions): NodeJS.ReadableStream;
   /** Returns a web `WritableStream` that writes to this file */
   writable(options?: WriteOptions): WritableStream;
   /** Returns a Node.js `WritableStream` that writes to this file */
@@ -130,8 +132,9 @@ export interface BucketFile {
 
 /** A bucket (or container) that holds files */
 export interface Bucket {
-  /** Provider type (e.g. "S3", "GCS", "AZURE") */
-  type?: string;
+  /** Provider type: "S3", "R2", "GCS", "AZURE", "BACKBLAZE", "FILESYSTEM"
+   * or "MEMORY". Always set, and always equal to `info().type`. */
+  type: string;
 
   /** Returns metadata about the bucket */
   info(opts?: ReadOptions): Promise<BucketInfo>;

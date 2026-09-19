@@ -11,7 +11,8 @@
   "scripts": {
     "start": "bun test --watch",
     "lint": "prettier --check .",
-    "test": "npm run lint && bun test --timeout 30000",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run lint && npm run typecheck && bun test --timeout 30000",
     "build": "tsup src/index.ts src/s3/index.ts src/b2/index.ts src/r2/index.ts src/fs/index.ts src/gcs/index.ts src/azure/index.ts src/memory/index.ts --format esm --dts --out-dir dist --target node20 --clean",
     "prepare": "npm run build",
     "emulators:setup": "bun --env-file=.env.emulators test/setup-emulators.ts",
