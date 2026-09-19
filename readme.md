@@ -956,6 +956,8 @@ A `BucketFile` is a **lazy remote handle, not a `Blob`**. It exposes the same re
 
 ### Serve over HTTP
 
+`file.stream()` is a web `ReadableStream`, which is exactly what `Response` accepts, so bytes reach the client without the server ever holding the file:
+
 ```js
 // Bun.serve, Next.js, Hono, or any fetch handler
 export default {
@@ -967,7 +969,36 @@ export default {
 };
 ```
 
+Hardcoding the type only works when you already know it. [`info()`](#fileinfo) returns the real one along with the size, and doubles as the existence check:
+
+```js
+async fetch(req) {
+  const file = bucket.file(new URL(req.url).pathname.slice(1));
+  const info = await file.info();
+  if (!info) return new Response("Not found", { status: 404 });
+
+  return new Response(file.stream(), {
+    headers: {
+      "content-type": info.type ?? "application/octet-stream",
+      "content-length": String(info.size),
+      "last-modified": info.modified.toUTCString(),
+    },
+  });
+}
+```
+
+That costs one extra round trip to the provider, so skip it when the type is known and a missing file can simply throw. To answer `Range` requests (video scrubbing, resumable downloads) serve [`file.slice()`](#fileslice) with a `206` instead.
+
+Proxying spends your server's bandwidth on every byte. When the client can talk to the provider directly, redirect to a [`signedUrl()`](#filesignedurlopts) and let it do the transfer:
+
+```js
+const url = await file.signedUrl({ expires: "15min" });
+return Response.redirect(url, 302);
+```
+
 ### Attach to `FormData`
+
+`FormData` needs a real `Blob`, so materialize the file with `await file.blob()`. Pass `file.name` as the third argument: without it the part carries no usable filename (`blob` on Node, empty on Bun) and servers commonly reject it or store it under the wrong name.
 
 ```js
 const form = new FormData();
@@ -977,7 +1008,13 @@ form.append("avatar", await file.blob(), file.name);
 await fetch("https://api.example.com/upload", { method: "POST", body: form });
 ```
 
+The blob carries the file's content type, so the part arrives as `image/png` rather than as opaque bytes.
+
+This holds the whole file in memory, which is inherent to `FormData`: it needs the total length before it can build the multipart body. For large files send the body as a stream instead, as below.
+
 ### Streaming with fetch()
+
+Passing `file.stream()` as a request body hands a file to another service without buffering it anywhere in between, so size stops mattering:
 
 ```js
 await fetch("https://api.example.com/ingest", {
@@ -986,6 +1023,10 @@ await fetch("https://api.example.com/ingest", {
   duplex: "half", // required when the body is a stream
 });
 ```
+
+`duplex: "half"` is mandatory whenever the body is a stream: `fetch` throws before sending anything without it.
+
+Since the length is not known up front the request is sent chunked, with no `Content-Length`. Most APIs accept that, but some require a length and will reject it; send `await file.blob()` in that case and accept the buffering. Streaming request bodies work on Node, Bun and Deno; in browsers they are Chromium-only and need HTTP/2.
 
 ### Store fetch() file
 
