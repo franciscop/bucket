@@ -8,7 +8,7 @@
 // request, which the library's own S3-only signer does not cover.
 import aws4 from "aws4";
 
-import S3 from "../s3/index.ts";
+import S3 from "../src/s3/index.ts";
 
 const ENDPOINT = process.env.AWS_ENDPOINT_URL ?? "";
 const BUCKET = process.env.AWS_BUCKET ?? "";

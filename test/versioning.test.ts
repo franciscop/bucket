@@ -11,10 +11,10 @@
 //   Azurite          no versioning (PUT returns no x-ms-version-id)
 //   B2               no emulator exists; the hide path is covered by the
 //                    request-level tests in b2/index.test.ts
-import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
-import type { S3Auth, S3Request } from "../lib/types.ts";
-import S3 from "../s3/index.ts";
-import GCS from "../gcs/index.ts";
+import cleanAndSignS3 from "../src/lib/cleanAndSignS3.ts";
+import type { S3Auth, S3Request } from "../src/lib/types.ts";
+import S3 from "../src/s3/index.ts";
+import GCS from "../src/gcs/index.ts";
 
 const S3_URL = `${process.env.AWS_ENDPOINT_URL ?? ""}/${process.env.AWS_BUCKET ?? ""}`;
 const GCS_URL = process.env.GCS_URL ?? "";

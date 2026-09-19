@@ -2,10 +2,10 @@
 // section. Uses the FileSystem provider so it runs everywhere, no credentials.
 // A File is a lazy handle (not a Blob): interop goes through .stream() / .blob().
 
-import FileSystem from "../fs/index.ts";
+import FileSystem from "../src/fs/index.ts";
 import { mkdir, rm } from "node:fs/promises";
 
-const DIR = "./fs/test-interop/";
+const DIR = "./test/scratch/interop/";
 const bucket = FileSystem(DIR);
 const tmp = (ext = "txt"): string =>
   `io${Math.floor(Math.random() * 1e6)}.${ext}`;

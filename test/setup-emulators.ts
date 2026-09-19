@@ -5,8 +5,8 @@
 //
 //   bun --env-file=.env.emulators test/setup-emulators.ts
 
-import cleanAndSignS3 from "../lib/cleanAndSignS3.ts";
-import { signAzure, accountPathPrefix } from "../lib/signAzure.ts";
+import cleanAndSignS3 from "../src/lib/cleanAndSignS3.ts";
+import { signAzure, accountPathPrefix } from "../src/lib/signAzure.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

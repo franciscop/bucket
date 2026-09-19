@@ -57,7 +57,7 @@ EXPENSIVE=true bun test  # also the cloud providers, when credentials are presen
 The test suite has three layers, the first two of which need **no credentials**:
 
 1. **Mocked unit tests** (`*/index.test.ts`): exercise each provider's request/response handling with a stubbed `fetch`.
-2. **Signer oracle tests** (`lib/*.test.ts`): prove the request signing is correct without hitting any service:
+2. **Signer oracle tests** (`src/lib/*.test.ts`): prove the request signing is correct without hitting any service:
    - S3/R2 AWS Signature V4 is cross-checked against [`aws4`](https://www.npmjs.com/package/aws4) (the reference signer): identical signature, byte for byte.
    - GCS V4 signatures are verified cryptographically against the public key.
 3. **Integration tests** (`test/index.test.ts`): the full API against a real backend. FileSystem always runs; the cloud providers (S3, R2, GCS, Azure, B2) are opt-in and run only with `EXPENSIVE=true` set, plus their credentials (or an emulator endpoint). A plain `bun test` stays local and makes no network calls.

@@ -6,8 +6,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import FileSystem from "../fs/index.ts";
-import { assertFilter, requireFilter } from "../lib/filter.ts";
+import FileSystem from "../src/fs/index.ts";
+import { assertFilter, requireFilter } from "../src/lib/filter.ts";
 
 const dirs: string[] = [];
 const freshBucket = () => {

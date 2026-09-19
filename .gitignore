@@ -61,3 +61,6 @@ pids
 .npm
 .node_repl_history
 .yarn-integrity
+
+# TEST SCRATCH (FS buckets the suites write into)
+test/scratch/

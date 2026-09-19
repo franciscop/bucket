@@ -7,12 +7,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import BucketError from "../lib/BucketError.ts";
-import FileSystem from "../fs/index.ts";
-import S3 from "../s3/index.ts";
-import R2 from "../r2/index.ts";
-import GCS from "../gcs/index.ts";
-import Azure from "../azure/index.ts";
+import BucketError from "../src/lib/BucketError.ts";
+import FileSystem from "../src/fs/index.ts";
+import S3 from "../src/s3/index.ts";
+import R2 from "../src/r2/index.ts";
+import GCS from "../src/gcs/index.ts";
+import Azure from "../src/azure/index.ts";
 
 const dirs: string[] = [];
 const freshBucket = () => {

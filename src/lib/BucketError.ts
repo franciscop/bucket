@@ -1,0 +1,62 @@
+// A structured error thrown by every backend. `code` is a normalized, uppercase
+// identifier you can branch on the same way across providers (and the
+// filesystem); `status` is the raw HTTP status when the failure came from an
+// HTTP response. The message stays human-readable and provider-specific.
+// The INVALID_* codes are raised client-side, before any provider is involved:
+// a path that would escape its bucket, a filter that is not a RegExp, a bucket
+// built with an unusable config, and content write() cannot read.
+// ABORTED comes from a caller-supplied AbortSignal; lib/abort.ts builds it and
+// retags `name` with the signal's own reason, so the standard idiom works too.
+
+export type BucketErrorCode =
+  | "NOT_FOUND"
+  | "FORBIDDEN"
+  | "UNAUTHORIZED"
+  | "CONFLICT"
+  | "INVALID_PATH"
+  | "INVALID_FILTER"
+  | "INVALID_CONFIG"
+  | "INVALID_CONTENT"
+  | "ABORTED"
+  | "UNKNOWN";
+
+export interface BucketErrorOptions {
+  /** Provider that produced the error, e.g. "S3", "GCS", "FILESYSTEM".
+   * Absent for errors raised before reaching a provider (the INVALID_* codes
+   * and ABORTED). */
+  provider?: string;
+  /** Raw HTTP status, when the error came from an HTTP response */
+  status?: number;
+  /** Normalized code; derived from `status` when omitted */
+  code?: BucketErrorCode;
+  /** The underlying error or response that caused this */
+  cause?: unknown;
+}
+
+const CODE_BY_STATUS: Record<number, BucketErrorCode> = {
+  401: "UNAUTHORIZED",
+  403: "FORBIDDEN",
+  404: "NOT_FOUND",
+  409: "CONFLICT",
+};
+
+export default class BucketError extends Error {
+  readonly provider?: string;
+  readonly status?: number;
+  readonly code: BucketErrorCode;
+
+  constructor(message: string, options: BucketErrorOptions) {
+    super(
+      message,
+      options.cause === undefined ? undefined : { cause: options.cause },
+    );
+    this.name = "BucketError";
+    this.provider = options.provider;
+    this.status = options.status;
+    this.code =
+      options.code ??
+      (options.status === undefined
+        ? "UNKNOWN"
+        : (CODE_BY_STATUS[options.status] ?? "UNKNOWN"));
+  }
+}

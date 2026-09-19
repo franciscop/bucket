@@ -1,11 +1,11 @@
-import FileSystem from "../fs/index.ts";
-import Memory from "../memory/index.ts";
-import BackBlaze from "../b2/index.ts";
-import S3 from "../s3/index.ts";
-import GCS from "../gcs/index.ts";
-import Azure from "../azure/index.ts";
-import CloudflareR2 from "../r2/index.ts";
-import type { Bucket } from "../lib/types.ts";
+import FileSystem from "../src/fs/index.ts";
+import Memory from "../src/memory/index.ts";
+import BackBlaze from "../src/b2/index.ts";
+import S3 from "../src/s3/index.ts";
+import GCS from "../src/gcs/index.ts";
+import Azure from "../src/azure/index.ts";
+import CloudflareR2 from "../src/r2/index.ts";
+import type { Bucket } from "../src/lib/types.ts";
 
 export type BucketEntry = {
   bucket: Bucket;
@@ -16,7 +16,7 @@ const buckets: Record<string, BucketEntry> = {};
 // ── Always available ──────────────────────────────────────────────────────────
 
 buckets["FileSystem"] = {
-  bucket: FileSystem("./fs/test/"),
+  bucket: FileSystem("./test/scratch/fs/"),
 };
 
 buckets["Memory"] = {

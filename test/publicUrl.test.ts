@@ -7,12 +7,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import FileSystem from "../fs/index.ts";
-import S3 from "../s3/index.ts";
-import R2 from "../r2/index.ts";
-import GCS from "../gcs/index.ts";
-import Azure from "../azure/index.ts";
-import { encodePublicPath, publicUrlFrom } from "../lib/publicUrl.ts";
+import FileSystem from "../src/fs/index.ts";
+import S3 from "../src/s3/index.ts";
+import R2 from "../src/r2/index.ts";
+import GCS from "../src/gcs/index.ts";
+import Azure from "../src/azure/index.ts";
+import { encodePublicPath, publicUrlFrom } from "../src/lib/publicUrl.ts";
 
 const CDN = "https://cdn.example.com";
 
@@ -177,7 +177,7 @@ describe("publicUrl falls back to an env var", () => {
     it(`reads ${name}`, async () => {
       const provider = expr.split("(")[0] as keyof typeof dir;
       const script =
-        `import P from "./${dir[provider]}/index.ts";` +
+        `import P from "./src/${dir[provider]}/index.ts";` +
         `const ${provider} = P;` +
         `console.log(await ${expr}.file("a.txt").publicUrl());`;
       // --env-file=/dev/null stops Bun loading the repo's own .env.
