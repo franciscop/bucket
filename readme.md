@@ -536,7 +536,7 @@ await bucket.file("image.jpg").write(data, {
 
 > **Note:** Options are silently ignored by the FileSystem provider.
 
-Uploads use bounded memory: bodies beyond ~8 MiB are sent through the provider's chunked mechanism internally (multipart on S3/R2, large files on B2, blocks on Azure, a resumable session on GCS), while smaller ones go in a single request. A failed or aborted write is cleaned up on the provider and never leaves a partial object behind.
+Size is not something you have to think about: anything past ~8 MiB is chunked internally, in bounded memory. See [Large file uploads](#large-file-uploads).
 
 It resolves to the file itself, so a write can be the start of a chain:
 
@@ -1159,6 +1159,43 @@ console.log(profile.path); // "uploads/81K2ladhL1tVdNrDvhPLR.png"
 ```
 
 Putting the promise on `file` rather than on a variable outside the handler keeps each upload tied to its own field, so a form with several files works unchanged. Await every one of them: an upload nobody awaits turns a failure into an unhandled rejection.
+
+### Large file uploads
+
+There is nothing to do. Large files are chunked internally using whatever mechanism each provider expects, and streamed straight to disk on the filesystem, so uploading a small file and a huge one is the same call:
+
+```js
+await bucket.file("notes.txt").write("hello"); // a few bytes
+await bucket.file("backup.tar").write(stream); // tens of gigabytes
+```
+
+Under ~8 MiB the body goes out as a single request, exactly as it always did. Past that, the upload switches to the provider's own chunked protocol:
+
+| Provider   | Used internally                                       |
+| ---------- | ----------------------------------------------------- |
+| S3, R2     | Multipart upload (`UploadPart`, `CompleteMultipart…`) |
+| Backblaze  | Large files (`b2_start_large_file`, `b2_upload_part`) |
+| Azure      | Blocks (`Put Block`, `Put Block List`)                |
+| GCS        | Resumable upload session                              |
+| Filesystem | Streamed to disk, nothing to chunk                    |
+
+Memory stays at roughly one chunk no matter how big the file is, so this streams a file far larger than the machine's RAM:
+
+```js
+import { createReadStream } from "node:fs";
+
+await bucket.file("backup.tar").write(createReadStream("./backup.tar"));
+```
+
+The same holds for [`writable()`](#filewritable) and [`nodeWritable()`](#filenodewritable), and for copying between providers, where the bytes are streamed rather than buffered:
+
+```js
+await r2.file("backup.tar").write(s3.file("backup.tar"));
+```
+
+A write that fails or is aborted partway cleans up the chunks it already uploaded, so a broken upload leaves nothing behind: no partial object, and no half-finished multipart session quietly accruing storage charges.
+
+Providers cap how many chunks an upload may have, which sets the ceiling: 10,000 on S3, R2 and Backblaze puts it around 78 GB per file, and Azure's 50,000 blocks around 390 GB. A single request would have stopped at ~5 GB, and at whatever fits in memory.
 
 ### Combine buckets
 
