@@ -66,3 +66,4 @@ pids
 
 # TEST SCRATCH (FS buckets the suites write into)
 test/scratch/
+/fs/
