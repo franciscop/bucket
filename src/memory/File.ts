@@ -1,9 +1,8 @@
 import BucketError from "../lib/BucketError.ts";
-import { destKey } from "../lib/prefix.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
 import { rangeSize } from "../lib/range.ts";
 import { BaseFile, wholeBody, type FileContext } from "../lib/base.ts";
-import type { BucketFile, FileInfo, WriteOptions } from "../lib/types.ts";
+import type { FileInfo, WriteOptions } from "../lib/types.ts";
 
 /** What the Map holds: the bytes plus everything write() was told about them. */
 export interface MemoryEntry {
@@ -76,27 +75,20 @@ export class MemoryFile extends BaseFile<MemoryContext> {
     return wholeBody((data) => this.put(data, options));
   }
 
-  async copyTo(dest: string | BucketFile, opts?: ReadOptions) {
-    throwIfAborted(opts?.signal);
-    if (typeof dest !== "string") return dest.write(this, opts);
+  protected async copy(key: string): Promise<void> {
     const entry = this.#entry();
-    const dst = this.at(destKey(this.ctx.prefix, dest, this.name));
     // A copy of the bytes, not a shared reference: writing to one file must
     // never mutate the other.
-    this.ctx.files.set(dst.path, {
+    this.ctx.files.set(key, {
       ...entry,
       data: Buffer.from(entry.data),
       metadata: { ...entry.metadata },
       modified: new Date(),
     });
-    return dst;
   }
 
-  async remove(opts?: ReadOptions): Promise<this> {
-    throwIfAborted(opts?.signal);
-    // Already gone is success: removing a path twice is a no-op
+  protected async delete(): Promise<void> {
     this.ctx.files.delete(this.path);
-    return this;
   }
 
   // Nothing serves these bytes, so there is no canonical URL to fall back on.

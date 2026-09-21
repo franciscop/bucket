@@ -1,4 +1,4 @@
-import BucketError from "../lib/BucketError.ts";
+import { invalidConfig, origin } from "../lib/config.ts";
 import { scope } from "../lib/prefix.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
 import { BaseBucket } from "../lib/base.ts";
@@ -66,26 +66,15 @@ export default function Memory(
   name = "memory",
   config: MemoryConfig = {},
 ): MemoryBucket {
-  if (!name)
-    throw new BucketError("Memory needs a bucket name.", {
-      code: "INVALID_CONFIG",
-    });
-  return new MemoryBucket({
+  if (!name) invalidConfig("Memory needs a bucket name.");
+  const ctx: MemoryContext = {
     provider: "MEMORY",
     prefix: "",
-    publicUrl: (config.publicUrl ?? ENV_PUBLIC_URL ?? "").replace(/\/+$/, ""),
+    publicUrl: origin(config.publicUrl ?? ENV_PUBLIC_URL),
     // A folder shares this Map; a second Memory() call gets its own, which is
     // what makes instances isolated.
     files: new Map(),
     name,
-  });
+  };
+  return new MemoryBucket(ctx);
 }
-
-export type {
-  Bucket,
-  BucketFile,
-  FileInfo,
-  BucketInfo,
-  WriteContent,
-  WriteOptions,
-} from "../lib/types.ts";

@@ -2,12 +2,12 @@
 // the battle-tested reference signer. No credentials or network needed; both
 // sign the same fully-specified request and the resulting signature must match
 // byte-for-byte. This is what proves the S3 and R2 request signer is correct
-// (they share lib/cleanAndSignS3.ts), which the mocked suites cannot validate.
+// (they share lib/signS3.ts), which the mocked suites cannot validate.
 
 import aws4 from "aws4";
 import { createHash } from "node:crypto";
-import cleanAndSignS3 from "./cleanAndSignS3.ts";
-import type { S3Request, S3Auth } from "./types.ts";
+import signS3 from "./signS3.ts";
+import type { S3Auth } from "./types.ts";
 
 const DATE = "20150830T123600Z";
 const ID = "AKIDEXAMPLE";
@@ -39,13 +39,15 @@ async function ours(c: Case) {
     region: c.region ?? "us-east-1",
     sessionToken: c.sessionToken,
   };
-  const req: S3Request = {
-    url: c.url,
-    method: (c.method ?? "GET").toLowerCase(),
-    headers: { "x-amz-date": DATE, ...(c.headers ?? {}) },
-    body: c.body,
-  };
-  await cleanAndSignS3(req, auth);
+  const req = await signS3(
+    {
+      url: c.url,
+      method: (c.method ?? "GET").toLowerCase(),
+      headers: { "x-amz-date": DATE, ...(c.headers ?? {}) },
+      body: c.body,
+    },
+    auth,
+  );
   return parseAuth(req.headers.Authorization!);
 }
 
@@ -131,7 +133,7 @@ const cases: Case[] = [
   },
 ];
 
-describe("cleanAndSignS3 vs aws4 (SigV4 oracle)", () => {
+describe("signS3 vs aws4 (SigV4 oracle)", () => {
   for (const c of cases) {
     it(`matches the reference signature: ${c.name}`, async () => {
       const a = await ours(c);

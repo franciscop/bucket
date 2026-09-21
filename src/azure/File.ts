@@ -1,13 +1,12 @@
 import { presignAzure } from "../lib/signAzure.ts";
-import { destKey } from "../lib/prefix.ts";
-import metaFromHeaders from "../lib/meta.ts";
+import metaFromHeaders, { metaExtras } from "../lib/meta.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
 import type { Http } from "../lib/http.ts";
 import { rangeHeader, rangeSize } from "../lib/range.ts";
 import { metaHeaders } from "../lib/writeMeta.ts";
 import { BaseFile, expiresIn, type FileContext } from "../lib/base.ts";
 import type { ChunkedTarget } from "../lib/chunkedWritable.ts";
-import type { BucketFile, FileInfo, WriteOptions } from "../lib/types.ts";
+import type { FileInfo, WriteOptions } from "../lib/types.ts";
 
 // Azure signs the canonicalized resource with the path as sent, and the WHATWG
 // URL parser percent-encodes "<" and ">" in URL paths, so encode them up
@@ -44,7 +43,7 @@ export class AzureFile extends BaseFile<AzureContext> {
     // Azure's SharedKey StringToSign has no slot for a standard `Range`
     // header, but it does sign every `x-ms-*` header, so use `x-ms-range`.
     const rh = this.range && rangeHeader(this.range);
-    return this.ctx.http.send("GET", this.#url(), {
+    return this.ctx.http.get(this.#url(), {
       headers: rh ? { "x-ms-range": rh } : {},
       signal: opts?.signal,
       what: "GET",
@@ -53,7 +52,7 @@ export class AzureFile extends BaseFile<AzureContext> {
 
   async info(opts?: ReadOptions): Promise<FileInfo | null> {
     throwIfAborted(opts?.signal);
-    const res = await this.ctx.http.send("HEAD", this.#url(), {
+    const res = await this.ctx.http.head(this.#url(), {
       signal: opts?.signal,
       ok: [404],
       what: "HEAD",
@@ -68,6 +67,10 @@ export class AzureFile extends BaseFile<AzureContext> {
       modified: new Date(res.headers.get("last-modified") ?? Date.now()),
       version: res.headers.get("x-ms-version-id"),
       metadata: metaFromHeaders(res.headers, "x-ms-meta-"),
+      ...metaExtras(
+        res.headers.get("cache-control"),
+        res.headers.get("content-disposition"),
+      ),
     };
   }
 
@@ -81,7 +84,7 @@ export class AzureFile extends BaseFile<AzureContext> {
   }
 
   protected async put(data: Buffer, options: WriteOptions): Promise<void> {
-    await this.ctx.http.send("PUT", this.#url(), {
+    await this.ctx.http.put(this.#url(), {
       headers: { "x-ms-blob-type": "BlockBlob", ...this.#blobHeaders(options) },
       body: data,
       signal: options.signal,
@@ -102,8 +105,7 @@ export class AzureFile extends BaseFile<AzureContext> {
       start: async () => [],
       part: async (ids, n, data) => {
         const id = blockId(n);
-        const res = await this.ctx.http.send(
-          "PUT",
+        const res = await this.ctx.http.put(
           this.#url(this.path, { comp: "block", blockid: id }),
           { body: data, signal: options.signal, what: "block" },
         );
@@ -112,8 +114,7 @@ export class AzureFile extends BaseFile<AzureContext> {
         return id;
       },
       finish: async (ids) => {
-        const res = await this.ctx.http.send(
-          "PUT",
+        const res = await this.ctx.http.put(
           this.#url(this.path, { comp: "blocklist" }),
           {
             headers: this.#blobHeaders(options),
@@ -131,31 +132,24 @@ export class AzureFile extends BaseFile<AzureContext> {
     };
   }
 
-  async copyTo(dest: string | BucketFile, opts?: ReadOptions) {
-    throwIfAborted(opts?.signal);
-    if (typeof dest !== "string") return dest.write(this, opts);
-    const dst = destKey(this.ctx.prefix, dest, this.name);
-    await this.ctx.http.send("PUT", this.#url(dst), {
+  protected async copy(key: string, opts?: ReadOptions): Promise<void> {
+    await this.ctx.http.put(this.#url(key), {
       headers: { "x-ms-copy-source": this.#blobUrl() },
       signal: opts?.signal,
       what: "COPY",
     });
-    return this.at(dst);
   }
 
-  async remove(opts?: ReadOptions): Promise<this> {
-    throwIfAborted(opts?.signal);
+  protected async delete(opts?: ReadOptions): Promise<void> {
     // "include" deletes the blob together with its snapshots; without it a
     // blob that has any snapshot refuses to delete at all (409). Versions are
     // untouched either way: this deletes the blob, never a `versionid`.
-    // Already gone is success: removing a path twice is a no-op.
-    await this.ctx.http.send("DELETE", this.#url(), {
+    await this.ctx.http.delete(this.#url(), {
       headers: { "x-ms-delete-snapshots": "include" },
       signal: opts?.signal,
       ok: [404, 202],
       what: "DELETE",
     });
-    return this;
   }
 
   protected async canonicalUrl() {

@@ -1,5 +1,5 @@
 // From https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types/Common_types
-const fileTypes: Record<string, string> = {
+const mimes: Record<string, string> = {
   aac: "audio/aac",
   abw: "application/x-abiword",
   arc: "application/x-freearc",
@@ -19,6 +19,7 @@ const fileTypes: Record<string, string> = {
   eot: "application/vnd.ms-fontobject",
   epub: "application/epub+zip",
   gz: "application/gzip",
+  heic: "image/heic",
   gif: "image/gif",
   htm: "text/html",
   html: "text/html",
@@ -80,64 +81,4 @@ const fileTypes: Record<string, string> = {
   "7z": "application/x-7z-compressed",
 };
 
-export function getContentType(path: string): string | undefined {
-  const ext = path.split(".").pop()?.toLowerCase();
-  return ext ? fileTypes[ext] : undefined;
-}
-
-// A `type` option is an extension when it is plain alphanumeric ("png",
-// ".png"); anything else is taken as a mime type ("image/png").
-const isExtension = (type: string): boolean => /^\.?[a-zA-Z0-9]+$/.test(type);
-
-const bare = (type: string): string =>
-  type.trim().replace(/^\./, "").toLowerCase();
-
-/** Mime type for a `type` option given as a mime type or an extension. */
-export function toMime(type: string): string | undefined {
-  const value = type.trim();
-  if (!value) return undefined;
-  return isExtension(value) ? fileTypes[bare(value)] : value;
-}
-
-// Several extensions share a mime type; these are the ones worth generating.
-const PREFERRED: Record<string, string> = {
-  "text/html": "html",
-  "image/jpeg": "jpg",
-  "text/javascript": "js",
-  "audio/midi": "mid",
-  "text/plain": "txt",
-  "image/tiff": "tiff",
-};
-
-let extensions: Record<string, string> | null = null;
-
-/** Extension for a `type` option ("image/png", "png" and ".png" all give
- * ".png"), or "" when the mime type maps to no known extension. */
-export function getExtension(type: string): string {
-  const value = type.trim();
-  if (!value) return "";
-  if (isExtension(value)) return "." + bare(value);
-  if (!extensions) {
-    extensions = { ...PREFERRED };
-    for (const [ext, mime] of Object.entries(fileTypes))
-      extensions[mime] ??= ext;
-  }
-  const ext = extensions[value.split(";")[0].trim().toLowerCase()];
-  return ext ? "." + ext : "";
-}
-
-// Content-type for a write: explicit option first, then the destination path's
-// extension, then the type a Blob/File input carries. Undefined if none apply.
-export function resolveContentType(
-  path: string,
-  content: unknown,
-  options?: { type?: string },
-): string | undefined {
-  return (
-    (options?.type ? toMime(options.type) : undefined) ??
-    getContentType(path) ??
-    (content instanceof Blob && content.type ? content.type : undefined)
-  );
-}
-
-export default fileTypes;
+export default mimes;

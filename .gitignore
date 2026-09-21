@@ -6,9 +6,11 @@ package-lock.json
 bun.lock
 
 # BUILD OUTPUTS
-dist/
 build/
 *.js
+# ...except the published artifact, which is committed so anyone can diff what
+# npm serves against what the repo shows.
+!/index.js
 .next/
 out/
 coverage/

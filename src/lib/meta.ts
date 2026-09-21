@@ -16,3 +16,15 @@ export default function metaFromHeaders(
   }
   return meta;
 }
+
+// The cacheControl/disposition half of FileInfo. Both are optional, so an
+// absent value is left off the object rather than set to undefined.
+export function metaExtras(
+  cacheControl?: string | null,
+  disposition?: string | null,
+): { cacheControl?: string; disposition?: string } {
+  return {
+    ...(cacheControl ? { cacheControl } : {}),
+    ...(disposition ? { disposition } : {}),
+  };
+}

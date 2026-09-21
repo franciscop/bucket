@@ -1,13 +1,6 @@
-import type { S3Auth } from "./types.ts";
-import { sha256hex, hmacSha256, toHex } from "./webcrypto.ts";
 import encodeS3Path from "./encodeS3Path.ts";
-
-const plainDate = (): string =>
-  new Date()
-    .toISOString()
-    .replace(/-/g, "")
-    .replace(/:/g, "")
-    .replace(/\.\d+/, "");
+import { basicDate, canonicalRequest, scopeOf, signature } from "./sigv4.ts";
+import type { S3Auth } from "./types.ts";
 
 export async function presignS3(
   url: string,
@@ -16,45 +9,29 @@ export async function presignS3(
   expiresSeconds: number,
 ): Promise<string> {
   const u = new URL(url);
-  const timestamp = plainDate();
-  const datestamp = timestamp.slice(0, 8);
-  const credential = `${auth.id}/${datestamp}/${auth.region}/s3/aws4_request`;
-  const signedHeaders = "host";
-
+  const timestamp = basicDate();
   u.searchParams.set("X-Amz-Algorithm", "AWS4-HMAC-SHA256");
-  u.searchParams.set("X-Amz-Credential", credential);
+  u.searchParams.set(
+    "X-Amz-Credential",
+    `${auth.id}/${scopeOf(timestamp, auth.region)}`,
+  );
   u.searchParams.set("X-Amz-Date", timestamp);
   u.searchParams.set("X-Amz-Expires", String(expiresSeconds));
-  u.searchParams.set("X-Amz-SignedHeaders", signedHeaders);
-  if (auth.sessionToken) {
+  u.searchParams.set("X-Amz-SignedHeaders", "host");
+  if (auth.sessionToken)
     u.searchParams.set("X-Amz-Security-Token", auth.sessionToken);
-  }
   u.searchParams.sort();
 
-  const canonicalPath = encodeS3Path(u.pathname);
-  const canonicalRequest = [
+  const canonical = canonicalRequest(
     method,
-    canonicalPath,
+    encodeS3Path(u.pathname),
     u.searchParams.toString(),
-    `host:${u.host}\n`,
-    signedHeaders,
+    { host: u.host },
     "UNSIGNED-PAYLOAD",
-  ].join("\n");
-
-  const scope = `${datestamp}/${auth.region}/s3/aws4_request`;
-  const stringToSign = [
-    "AWS4-HMAC-SHA256",
-    timestamp,
-    scope,
-    await sha256hex(canonicalRequest),
-  ].join("\n");
-
-  const kDate = await hmacSha256(`AWS4${auth.secret}`, datestamp);
-  const kRegion = await hmacSha256(kDate, auth.region);
-  const kService = await hmacSha256(kRegion, "s3");
-  const kSigning = await hmacSha256(kService, "aws4_request");
-  const signature = toHex(await hmacSha256(kSigning, stringToSign));
-
-  u.searchParams.set("X-Amz-Signature", signature);
+  );
+  u.searchParams.set(
+    "X-Amz-Signature",
+    await signature(auth.secret, timestamp, auth.region, canonical),
+  );
   return u.toString();
 }

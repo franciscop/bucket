@@ -4,6 +4,7 @@ import { basename, join, relative, resolve, sep } from "node:path";
 
 import { scope } from "../lib/prefix.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
+import { origin } from "../lib/config.ts";
 import { BaseBucket } from "../lib/base.ts";
 import type { BucketInfo } from "../lib/types.ts";
 import assertNotOsPath from "./osPathGuard.ts";
@@ -100,19 +101,11 @@ export default function FileSystem(
   path: string,
   config: FSConfig = {},
 ): FileSystemBucket {
-  return new FileSystemBucket({
+  const ctx: FSContext = {
     provider: "FILESYSTEM",
     prefix: "",
-    publicUrl: (config.publicUrl ?? ENV_PUBLIC_URL ?? "").replace(/\/+$/, ""),
+    publicUrl: origin(config.publicUrl ?? ENV_PUBLIC_URL),
     root: resolve(path),
-  });
+  };
+  return new FileSystemBucket(ctx);
 }
-
-export type {
-  Bucket,
-  BucketFile,
-  FileInfo,
-  BucketInfo,
-  WriteContent,
-  WriteOptions,
-} from "../lib/types.ts";

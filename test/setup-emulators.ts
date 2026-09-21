@@ -5,7 +5,7 @@
 //
 //   bun --env-file=.env.emulators test/setup-emulators.ts
 
-import cleanAndSignS3 from "../src/lib/cleanAndSignS3.ts";
+import signS3 from "../src/lib/signS3.ts";
 import { signAzure, accountPathPrefix } from "../src/lib/signAzure.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -37,12 +37,10 @@ async function createBucket(
   region: string,
   label: string,
 ): Promise<void> {
-  const req = {
-    url: endpoint,
-    method: "put",
-    headers: {} as Record<string, string>,
-  };
-  await cleanAndSignS3(req, { id, secret, region });
+  const req = await signS3(
+    { url: endpoint, method: "PUT", headers: {} },
+    { id, secret, region },
+  );
   const res = await fetch(endpoint, { method: "PUT", headers: req.headers });
   console.log(
     `  ${label} bucket → ${res.status}${ok(res.status) ? " (ok)" : " " + (await res.text())}`,

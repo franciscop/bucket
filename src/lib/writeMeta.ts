@@ -1,7 +1,7 @@
 // Every provider is told the same four things on a write (type, cacheControl,
 // disposition, metadata) and each spells them differently on the wire. Resolve
 // them once into a normalized shape, then let each provider name its own keys.
-import { resolveContentType } from "./fileTypes.ts";
+import { resolveContentType } from "./contentType.ts";
 import type { WriteOptions } from "./types.ts";
 
 export interface WriteMeta {

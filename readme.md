@@ -3,27 +3,26 @@
 A small library to talk to any of the popular file storage solutions with a unified API:
 
 ```js
-import BackBlaze from "bucket/b2"; // or /s3, /r2, /fs, etc
+import { S3 } from "bucket"; // or R2, GCS, Azure, B2, FS, Memory
 
-const bucket = BackBlaze("bucket-name", { id, secret });
+const bucket = S3("bucket-name", { id, secret });
 
 const file = bucket.file("demo.txt");
 await file.write("hello world");
 console.log(await file.text());
 ```
 
-It has different engines and they all behave the same. It also has a "filesystem" Bucket, which will treat a local folder as a bucket:
+Every provider behaves the same, so the code above works unchanged against any of them. That includes a "filesystem" bucket treating a local folder as a bucket, and an in-memory one for tests. Because they share an API, a file can be piped straight from one provider into another:
 
 ```js
 // More complex example with streams and pipes
-import FileSystem from "bucket/fs";
-import BackBlaze from "bucket/b2";
+import { FS, S3 } from "bucket";
 
-const fs = FileSystem("./public/");
-const b2 = BackBlaze("mybucketname", { id, secret });
+const local = FS("./public/");
+const aws = S3("mybucketname", { id, secret });
 
-const source = fs.file("local.txt").stream();
-const target = b2.file("newfile.txt").writable();
+const source = local.file("local.txt").stream();
+const target = aws.file("newfile.txt").writable();
 await source.pipeTo(target);
 ```
 
@@ -51,7 +50,7 @@ AWS_PUBLIC_URL=
 Finally, you can import and initialize the library:
 
 ```ts
-import S3 from "bucket/s3";
+import { S3 } from "bucket";
 
 // Read the variables automatically
 const bucket = S3("bucket-name");
@@ -75,7 +74,7 @@ await bucket.file("output.json").write(JSON.stringify(data));
 
 ## Bucket API
 
-Bucket() creates the instance attached to a single bucket; each service exports its own:
+Each service exports a factory that creates a bucket instance attached to a single bucket:
 
 ```js
 S3("my-bucket-name", { id, secret, region });
@@ -85,7 +84,7 @@ S3(); // bucket name and credentials from env vars
 The first argument is always the bucket name; the second is a config object with credentials. All fields fall back to environment variables, so in most setups you can omit them entirely. See [Services](#services) for the env var names and options of each provider.
 
 ```js
-import S3 from "bucket/s3";
+import { S3 } from "bucket";
 
 const bucket = S3("my-bucket-name", {
   id: "access-key-id",
@@ -95,14 +94,25 @@ const bucket = S3("my-bucket-name", {
 await bucket.file("hello.txt").write("hello world");
 ```
 
-The root import exposes every service under its name, which is handy when a project talks to more than one. The subpath imports (`bucket/s3`, `bucket/fs`, ...) stay the slim, tree-shakeable option since the root bundles all providers:
+There is a single entry point, and every provider is a named export from it:
+
+```js
+import { S3, FS, Memory } from "bucket";
+
+const aws = S3("my-bucket", { id, secret });
+const local = FS("./uploads");
+const fake = Memory(); // for tests
+```
+
+The three abbreviated names are also exported spelled out, if you prefer reading them: `FS` is `FileSystem`, `R2` is `CloudflareR2`, and `B2` is `BackBlaze`. They are the same function, so pick whichever reads better.
+
+The default export is the same set as one object, for code that picks a backend at runtime:
 
 ```js
 import bucket from "bucket";
 
-const aws = bucket.S3("my-bucket", { id, secret });
-const local = bucket.FS("./uploads");
-const fake = bucket.Memory(); // for tests
+const engine = process.env.STORAGE ?? "FS";
+const files = bucket[engine]("my-bucket");
 ```
 
 Every bucket instance has the same methods:
@@ -370,15 +380,16 @@ URL availability per provider:
 |            | `publicUrl()` | `signedUrl()` | `uploadUrl()` |
 | ---------- | :-----------: | :-----------: | :-----------: |
 | **S3**     |      ✅       |      ✅       |      ✅       |
-| **R2**     |      ✅       |      ✅       |      ✅       |
 | **GCS**    |      ✅       |      ✅       |      ✅       |
 | **Azure**  |      ✅       |      ✅       |      ✅       |
 | **B2**     |      ✅       |      ✅       |      ❌       |
-| **FS**     |      ❌       |      ❌       |      ❌       |
-| **Memory** |      ❌       |      ❌       |      ❌       |
+| **R2**     |      ⚙️       |      ✅       |      ✅       |
+| **FS**     |      ⚙️       |      ❌       |      ❌       |
+| **Memory** |      ⚙️       |      ❌       |      ❌       |
 
-- ✅: returns a URL. For `publicUrl()` it only answers if the bucket or object is publicly readable, unless you set the [`publicUrl` config option](#filepublicurl), which every provider accepts; R2 and the filesystem return `null` without it. Signing needs a key: GCS returns `null` without a [service-account private key](#google-cloud-storage), Azure without an account key (managed identity).
-- ❌: always returns `null`: B2 uploads require auth headers so a standalone upload URL cannot exist (use `.write()` instead), and neither the local filesystem nor the in-memory bucket has URLs of any kind.
+- ✅: returns the provider's own URL. For `publicUrl()` that URL only answers if the bucket or object is publicly readable. Signing needs a key: GCS returns `null` without a [service-account private key](#google-cloud-storage), Azure without an account key (managed identity).
+- ⚙️: returns a URL only when you set the [`publicUrl` config option](#filepublicurl), and `null` otherwise. These three have no address of their own: R2's storage endpoint rejects unsigned requests, and nothing serves a local directory or an in-memory Map. Setting `publicUrl` works on every provider, not just these.
+- ❌: always returns `null`. B2 uploads require auth headers, so a standalone upload URL cannot exist (use `.write()`), and there is nothing to sign for a local directory or an in-memory Map.
 
 ### file.info()
 
@@ -392,11 +403,15 @@ await bucket.file("photo.jpg").info();
 //   type: "image/jpeg",  // MIME type, null when unknown
 //   modified: Date,      // when the content was last written
 //   version: "...",      // provider version id, or null (see below)
-//   metadata: {}         // custom metadata, lowercase keys
+//   metadata: {},        // custom metadata, lowercase keys
+//   cacheControl: "...", // only when the file was written with one
+//   disposition: "..."   // only when the file was written with one
 // }
 ```
 
-Only a missing file resolves to `null`; other failures, like permissions or network errors, still throw. The `version` field is the provider's version identifier: the fileId on Backblaze, `generation` on GCS, `VersionId` on S3 and Azure when the bucket has versioning enabled, and `null` otherwise (always `null` for the local filesystem). The `metadata` field holds the custom key-value metadata set with `write(..., { metadata })`; keys are normalized to lowercase on both write and read so they round-trip consistently, and the local filesystem has no metadata store, so it always returns `{}`.
+Only a missing file resolves to `null`; other failures, like permissions or network errors, still throw. The `version` field is the provider's version identifier: the fileId on Backblaze, `generation` on GCS, `VersionId` on S3 and Azure when the bucket has versioning enabled, and `null` otherwise (always `null` for the local filesystem). The `metadata` field holds the custom key-value metadata set with `write(..., { metadata })`; keys are normalized to lowercase on both write and read so they round-trip consistently. `cacheControl` and `disposition` report what the file was written with, and are absent when it was written without them.
+
+Everything `write()` accepts round-trips through `info()` on every provider except the local filesystem, which has no metadata store and so reports `metadata: {}`, no `cacheControl` and no `disposition` whatever you wrote.
 
 ```js
 const info = await bucket.file("photo.jpg").info();
@@ -556,7 +571,7 @@ await bucket.file("image.jpg").write(data, {
 });
 ```
 
-> **Note:** Options are silently ignored by the FileSystem provider.
+> **Note:** The filesystem has no metadata store, so it ignores every option here except the content itself. Use the [Memory provider](#memory) when developing against metadata: it is the one provider that ignores nothing.
 
 Size is not something you have to think about: anything past ~8 MiB is chunked internally, in bounded memory. See [Large file uploads](#large-file-uploads).
 
@@ -755,7 +770,7 @@ Every provider takes a `publicUrl` config option: the origin the bucket is serve
 
 ```js
 const bucket = dev
-  ? FileSystem("./public", { publicUrl: "http://localhost:3000/static" })
+  ? FS("./public", { publicUrl: "http://localhost:3000/static" })
   : S3("my-bucket", { publicUrl: "https://cdn.example.com" });
 
 await bucket.file("logo.png").publicUrl();
@@ -786,7 +801,7 @@ await file.signedUrl({ expires: 3600 }); // seconds
 await file.signedUrl({ expires: "15min" }); // or a duration string
 ```
 
-The URL is cryptographically signed with your credentials and grants anyone holding it read access until it expires, so a private object can be shared without opening the bucket. Returns `null` when the credentials cannot sign: on GCS without a [service-account private key](#google-cloud-storage), on Azure when authenticating with managed identity instead of an account key, and always on the local filesystem.
+The URL is cryptographically signed with your credentials and grants anyone holding it read access until it expires, so a private object can be shared without opening the bucket. Returns `null` when the credentials cannot sign: on GCS without a [service-account private key](#google-cloud-storage), on Azure when authenticating with managed identity instead of an account key, and always on the filesystem and in-memory providers, which have nothing to sign for.
 
 ```js
 const url = await bucket.file("invoice.pdf").signedUrl({ expires: "15min" });
@@ -833,9 +848,9 @@ All services share the same API. The only difference is how you initialize the b
 Treats a local folder as a bucket. Useful for development, testing, or when you just want a consistent file API over local disk.
 
 ```js
-import FileSystem from "bucket/fs";
+import { FS } from "bucket"; // also exported as FileSystem
 
-const bucket = FileSystem("./my-folder");
+const bucket = FS("./my-folder");
 ```
 
 The path is resolved relative to the current working directory. No credentials needed.
@@ -843,12 +858,12 @@ The path is resolved relative to the current working directory. No credentials n
 It takes one option, `publicUrl` (or `FS_PUBLIC_URL`): the origin whatever serves the directory is reachable at, so `file.publicUrl()` returns a working URL in development instead of `null`.
 
 ```js
-FileSystem("./public", { publicUrl: "http://localhost:3000/static" });
+FS("./public", { publicUrl: "http://localhost:3000/static" });
 ```
 
 Paths are bucket-relative, exactly like the remote providers: a leading `/` means the bucket root (the folder above), never the filesystem root, and `file.path` is the path within the bucket. The real location on disk is `join(root, file.path)`. Nothing ever resolves outside the root folder; escapes throw a `BucketError` with code `"INVALID_PATH"`. The check is lexical: a symlink inside the folder that points outside is not caught.
 
-As a safety net, passing the bucket's own OS path back in throws instead of silently nesting: `FileSystem("/data").file("/data/a.png")` is almost always a mistake for `file("a.png")`, so it throws `INVALID_PATH` with the suggested fix rather than creating `/data/data/a.png`.
+As a safety net, passing the bucket's own OS path back in throws instead of silently nesting: `FS("/data").file("/data/a.png")` is almost always a mistake for `file("a.png")`, so it throws `INVALID_PATH` with the suggested fix rather than creating `/data/data/a.png`.
 
 Streaming writes go to a temporary `.tmp-` sibling and are renamed into place on completion, so a file is never observable half-written; `list()` skips these temp entries.
 
@@ -857,7 +872,7 @@ Streaming writes go to a temporary `.tmp-` sibling and are renamed into place on
 An in-memory bucket backed by a `Map`, for tests: fast, no disk, nothing to clean up, and isolated per instance.
 
 ```js
-import Memory from "bucket/memory";
+import { Memory } from "bucket";
 
 const bucket = Memory();
 await bucket.file("hello.txt").write("hello");
@@ -865,7 +880,7 @@ await bucket.file("hello.txt").write("hello");
 
 It is for tests only. It is not a cache, not a scratch bucket, and not for production: the data lives in one process's heap, dies with it, and is never shared. Two `Memory()` calls are two separate buckets, which is what lets tests run in parallel without colliding.
 
-It is also the one provider that ignores nothing a write is given. `type`, `metadata`, `cacheControl` and `disposition` all round-trip through `info()`, where the filesystem quietly drops them, so it is the provider to develop against if you use metadata:
+It keeps everything a write is given, exactly as the remote providers do: `type`, `metadata`, `cacheControl` and `disposition` all round-trip through `info()`. The filesystem is the one provider that drops them, so develop against Memory rather than `FS` if you use metadata:
 
 ```js
 const file = await bucket.file("report.txt").write("a,b", {
@@ -885,9 +900,9 @@ Everything else matches the remote providers exactly: folders and path resolutio
 ### Backblaze B2
 
 ```js
-import BackBlaze from "bucket/b2";
+import { B2 } from "bucket"; // also exported as BackBlaze
 
-const bucket = BackBlaze("my-bucket-name", {
+const bucket = B2("my-bucket-name", {
   id: "...", // Application Key ID
   secret: "...", // Application Key
 });
@@ -907,7 +922,7 @@ Environment variable fallbacks:
 ### AWS S3
 
 ```js
-import S3 from "bucket/s3";
+import { S3 } from "bucket";
 
 const bucket = S3("my-bucket-name", {
   id: "...", // Access Key ID
@@ -929,7 +944,7 @@ Environment variable fallbacks:
 | `url`          | `AWS_ENDPOINT_URL`      |
 | `publicUrl`    | `AWS_PUBLIC_URL`        |
 
-`sessionToken` is the third part of a temporary STS credential; on Lambda, ECS and EC2 the whole trio is picked up from the environment automatically.
+`sessionToken` is the third part of a temporary STS credential. You rarely set it by hand: leave `id` and `secret` unset and the credentials are resolved for you, from the environment variables on Lambda, from the container credentials endpoint on ECS, and from the instance metadata service (IMDSv2) on EC2.
 
 The `url` option is the endpoint **without** the bucket, which lets you point at any S3-compatible service:
 
@@ -943,7 +958,7 @@ With no `url`, requests use AWS's virtual-hosted endpoint, `https://my-bucket.s3
 ### Cloudflare R2
 
 ```js
-import R2 from "bucket/r2";
+import { R2 } from "bucket"; // also exported as CloudflareR2
 
 const bucket = R2("my-bucket", {
   id: "...", // Access Key ID
@@ -978,7 +993,7 @@ Environment variable fallbacks:
 ### Google Cloud Storage
 
 ```js
-import GCS from "bucket/gcs";
+import { GCS } from "bucket";
 
 const bucket = GCS("my-bucket");
 ```
@@ -1011,7 +1026,7 @@ const bucket = GCS("my-bucket", {
 ### Azure Blob Storage
 
 ```js
-import Azure from "bucket/azure";
+import { Azure } from "bucket";
 
 const bucket = Azure("my-container", {
   account: "my-account",
@@ -1305,17 +1320,16 @@ Providers cap how many chunks an upload may have, which sets the ceiling: 10,000
 `write()` accepts a `BucketFile` from **any** provider, so moving data between services is one call:
 
 ```js
-import S3 from "bucket/s3";
-import FileSystem from "bucket/fs";
+import { S3, FS } from "bucket";
 
 const s3 = S3("my-bucket");
-const fs = FileSystem("./downloads");
+const disk = FS("./downloads");
 
-await fs.file("report.pdf").write(s3.file("report.pdf")); // download S3 → disk
-await s3.file("report.pdf").write(fs.file("report.pdf")); // upload disk → S3
+await disk.file("report.pdf").write(s3.file("report.pdf")); // download S3 → disk
+await s3.file("report.pdf").write(disk.file("report.pdf")); // upload disk → S3
 
 // Or stream between them without buffering
-await s3.file("a.bin").stream().pipeTo(fs.file("a.bin").writable());
+await s3.file("a.bin").stream().pipeTo(disk.file("a.bin").writable());
 ```
 
 **Direction:** `dst.write(src)` is a _pull_, so the file you call it on is the destination and it reads from the argument. `src.copyTo(dst)` and `src.moveTo(dst)` _push_ instead, and both accept either a path in the same bucket or a file from any other one.
@@ -1468,8 +1482,8 @@ await pipeline(
 Yes. The library is written in TypeScript and ships types for all methods. No `@types/` package needed.
 
 ```ts
-import S3 from "bucket/s3";
-import type { Bucket, BucketFile, FileInfo } from "bucket/s3";
+import { S3 } from "bucket";
+import type { Bucket, BucketFile, FileInfo } from "bucket";
 
 const bucket: Bucket = S3("my-bucket");
 const file: BucketFile = bucket.file("photo.jpg");
@@ -1478,9 +1492,9 @@ const info: FileInfo | null = await file.info();
 
 ### Which runtimes are supported?
 
-Node.js, Bun, and Deno, fully. Cloudflare Workers works with the remote providers when the `nodejs_compat` flag is enabled (the flag is required to deploy at all, since every provider imports `node:stream` for the `.nodeReadable()` / `.nodeWritable()` helpers). `FileSystem` is not supported on Workers: there is no persistent disk, and recent Workers runtimes expose an in-memory `node:fs`, so writes may appear to succeed and then vanish.
+Node.js, Bun, and Deno, fully. Cloudflare Workers works with the remote providers when the `nodejs_compat` flag is enabled (the flag is required to deploy at all, since every provider imports `node:stream` for the `.nodeReadable()` / `.nodeWritable()` helpers). `FS` is not supported on Workers: there is no persistent disk, and recent Workers runtimes expose an in-memory `node:fs`, so writes may appear to succeed and then vanish.
 
-Everything else is Web standards: request signing uses **WebCrypto** (`crypto.subtle`), and reads/writes use the Web `fetch`, `Blob`, and Streams APIs, so there is no `node:crypto` dependency. Beyond `node:stream`, the only Node-specific imports are `node:fs` / `node:os` in the FileSystem provider. For browsers, don't use this library directly (it would expose your credentials); hand the browser [`signedUrl()`](#filesignedurlopts) / [`uploadUrl()`](#fileuploadurlopts) links instead.
+Everything else is Web standards: request signing uses **WebCrypto** (`crypto.subtle`), and reads/writes use the Web `fetch`, `Blob`, and Streams APIs, so there is no `node:crypto` dependency. Beyond `node:stream`, the only Node-specific imports are `node:fs` / `node:os` in the FS provider. For browsers, don't use this library directly (it would expose your credentials); hand the browser [`signedUrl()`](#filesignedurlopts) / [`uploadUrl()`](#fileuploadurlopts) links instead.
 
 ### What happens when a file doesn't exist?
 
@@ -1492,7 +1506,7 @@ Methods throw a `BucketError` (a subclass of `Error`). Alongside the human-reada
 
 - `code`: a normalized, uppercase string, one of `"NOT_FOUND" | "FORBIDDEN" | "UNAUTHORIZED" | "CONFLICT" | "INVALID_PATH" | "INVALID_FILTER" | "INVALID_CONFIG" | "ABORTED" | "UNKNOWN"`. It means the same thing across every provider, including the filesystem.
 - `status`: the raw HTTP status, when the failure came from an HTTP response (absent for the filesystem).
-- `provider`: which backend produced it (e.g. `"S3"`). Absent for `"INVALID_PATH"`, `"INVALID_FILTER"`, `"INVALID_CONFIG"` and `"ABORTED"`, which are thrown before any provider is involved. `"INVALID_CONFIG"` is thrown by the constructor, so an unusable bucket fails where you build it rather than on its first request.
+- `provider`: which backend produced it (e.g. `"S3"`). Absent for the `INVALID_*` codes, which are raised client-side before any provider is involved, and for `"ABORTED"`, which can happen at any point (including mid-request) and describes your own cancellation rather than anything a provider reported. `"INVALID_CONFIG"` is thrown by the constructor, so an unusable bucket fails where you build it rather than on its first request.
 
 There is no automatic retry.
 
@@ -1512,15 +1526,19 @@ try {
 
 Removing is about the path, never the history. After `.remove()` the path stops resolving (`.exists()` is `false`, reads throw `NOT_FOUND`, `.info()` is `null`, and it is absent from `.list()`, `.scan()` and `.count()`), but the versions written before it are kept:
 
-| Service | What `.remove()` leaves behind               |
-| ------- | -------------------------------------------- |
-| S3, R2  | A delete marker; earlier versions stay       |
-| GCS     | The generations become noncurrent            |
-| Azure   | The blob and its snapshots go, versions stay |
-| B2      | A hide marker; every version stays           |
-| FS      | Nothing, the file is unlinked                |
+| Service | Versioning    | What `.remove()` leaves behind               |
+| ------- | ------------- | -------------------------------------------- |
+| S3      | Optional      | A delete marker; earlier versions stay       |
+| GCS     | Optional      | The generations become noncurrent            |
+| Azure   | Optional      | The blob and its snapshots go, versions stay |
+| B2      | Always on     | A hide marker; every version stays           |
+| R2      | Not supported | Nothing, the object is gone                  |
+| FS      | Not supported | Nothing, the file is unlinked                |
+| Memory  | Not supported | Nothing, the entry is dropped                |
 
-So removal is reversible through the provider's own console or API, and the retained versions keep costing storage until a lifecycle rule expires them. Bucket never deletes a version, so it can never destroy data you cannot get back.
+Where versioning is on, removal is reversible through the provider's own console or API, and the retained versions keep costing storage until a lifecycle rule expires them. Bucket never deletes a version itself, so it will not destroy history that the provider is keeping for you.
+
+Where it is off, and always on R2, the filesystem and the in-memory bucket, `.remove()` is permanent, and so is an overwriting `.write()`. Turn versioning on at the provider if you need an undo.
 
 The same applies to [`.moveTo()`](#filemovetopath) and [`.rename()`](#filerenamename), which remove the source once the copy lands: a move within a versioned bucket duplicates the bytes rather than relocating them.
 
@@ -1539,7 +1557,9 @@ const text = await bucket.file("big.csv").text({ signal: controller.signal });
 
 Readers take it as `{ signal }`, writes through the existing options object (`write(content, { signal })`), and the bucket methods after the filter (`list(filter, { signal })`, `remove(/./, { signal })`). `scan()` rejects when you call it rather than on the first iteration, and stops a loop already running.
 
-An aborted operation never half-applies: nothing is written, nothing is deleted, and an in-flight multipart upload is cancelled rather than left open and billed.
+Aborting stops the client, not the server, so it is not a rollback. A single request may already have been committed by the provider even though your call rejects, and a multi-step call stops partway: `bucket.remove(/./, { signal })` leaves already-deleted files deleted, and `moveTo()` aborted between the copy and the remove leaves both copies in place. What is guaranteed is that no further request is made, and that an in-flight multipart upload is cancelled rather than left open and billed.
+
+Treat an abort as "stop as soon as possible", and check the state afterwards if you need to know how far it got.
 
 The error suits both idioms. It is a `BucketError` with `code: "ABORTED"`, and its `name` mirrors the signal's own reason, so a timeout stays distinguishable from a cancel:
 

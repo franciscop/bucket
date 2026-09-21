@@ -1,5 +1,5 @@
-import BucketError from "../lib/BucketError.ts";
-import { S3LikeBucket, s3Context } from "../lib/s3like.ts";
+import { invalidConfig, origin } from "../lib/config.ts";
+import { S3LikeBucket, s3Context, type S3LikeConfig } from "../lib/s3like.ts";
 
 const {
   R2_BUCKET: ENV_BUCKET,
@@ -34,10 +34,6 @@ export interface R2Config {
 const endpointFor = (account: string) =>
   `https://${account}.r2.cloudflarestorage.com`;
 
-const invalid = (message: string): never => {
-  throw new BucketError(message, { code: "INVALID_CONFIG" });
-};
-
 /**
  * Create a Cloudflare R2 bucket handle.
  *
@@ -71,36 +67,29 @@ export default function CloudflareR2(
   }: R2Config = {},
 ): S3LikeBucket {
   if (!name)
-    invalid("R2 needs a bucket name, as the first argument or R2_BUCKET.");
-  const custom = url.replace(/\/+$/, "");
+    invalidConfig(
+      "R2 needs a bucket name, as the first argument or R2_BUCKET.",
+    );
+  const custom = origin(url);
   if (account && custom && custom !== endpointFor(account))
-    invalid(
+    invalidConfig(
       `R2 account "${account}" implies the endpoint ${endpointFor(account)}, ` +
         `which does not match url "${custom}". Pass one or the other.`,
     );
   if (!account && !custom)
-    invalid(
+    invalidConfig(
       "R2 needs an account id (or R2_ACCOUNT_ID) to build its endpoint, " +
         "or a url for a custom endpoint.",
     );
-  return new S3LikeBucket(
-    s3Context({
-      type: "R2",
-      name,
-      region,
-      endpoint: custom || endpointFor(account),
-      publicUrl: publicUrl.replace(/\/+$/, ""),
-      auth: { id, secret, region, sessionToken },
-      canonicalPublic: false,
-    }),
-  );
+  const config: S3LikeConfig = {
+    type: "R2",
+    name,
+    region,
+    endpoint: custom || endpointFor(account),
+    publicUrl: origin(publicUrl),
+    auth: { id, secret, region, sessionToken },
+    canonicalPublic: false,
+  };
+  const ctx = s3Context(config);
+  return new S3LikeBucket(ctx);
 }
-
-export type {
-  Bucket,
-  BucketFile,
-  FileInfo,
-  BucketInfo,
-  WriteContent,
-  WriteOptions,
-} from "../lib/types.ts";

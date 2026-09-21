@@ -1,8 +1,8 @@
-// Everything a provider does NOT have to write. A file is defined by five
-// primitives (fetch a range, head, put a body, open a chunked target, copy,
-// delete); a bucket by two (list a page, describe itself). The public API is
-// derived from those here, once, so the seven providers agree by construction
-// rather than by copy.
+// Everything a provider does NOT have to write. A file is defined by its
+// primitives (fetch a range, describe itself, put a body, open a chunked
+// target, copy to a key, delete, sign a URL); a bucket by two (list a page,
+// describe itself). The public API is derived from those here, once, so the
+// seven providers agree by construction rather than by copy.
 //
 // Both halves share one context object, which carries what every provider has
 // (its label, the folder prefix, the public origin) plus whatever that
@@ -23,7 +23,7 @@ import { publicUrlFrom } from "./publicUrl.ts";
 import { throwIfAborted, withAbort, type ReadOptions } from "./abort.ts";
 import { assertFilter, requireFilter } from "./filter.ts";
 import { randomName } from "./nanoid.ts";
-import { fileKey, folderKey } from "./prefix.ts";
+import { destKey, fileKey, folderKey } from "./prefix.ts";
 import { composeRange, isEmptyRange, type ByteRange } from "./range.ts";
 import { writeMeta, type WriteMeta } from "./writeMeta.ts";
 import type {
@@ -74,14 +74,14 @@ export abstract class BaseFile<
   protected abstract target(
     options: WriteOptions,
   ): ChunkedTarget<unknown, unknown>;
+  /** Server-side copy of this file to an already-resolved key in the same
+   * bucket. Providers without one stream the bytes through. */
+  protected abstract copy(key: string, opts?: ReadOptions): Promise<void>;
+  /** Deletes this file. Already gone is success, so removing twice is a no-op. */
+  protected abstract delete(opts?: ReadOptions): Promise<void>;
   /** The provider's own public address, or null when it has none. */
   protected abstract canonicalUrl(): Promise<string | null>;
   abstract info(opts?: ReadOptions): Promise<FileInfo | null>;
-  abstract copyTo(
-    dest: string | BucketFile,
-    opts?: ReadOptions,
-  ): Promise<BucketFile>;
-  abstract remove(opts?: ReadOptions): Promise<this>;
   abstract signedUrl(opts: {
     expires: number | string;
   }): Promise<string | null>;
@@ -185,6 +185,24 @@ export abstract class BaseFile<
         "write() needs a string, Buffer, Blob, stream, or a file from any bucket",
         { code: "INVALID_CONTENT" },
       );
+  }
+
+  async copyTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
+    throwIfAborted(opts?.signal);
+    // A file in this or any other bucket: stream the bytes across
+    if (typeof dest !== "string") return dest.write(this, opts);
+    const key = destKey(this.ctx.prefix, dest, this.name);
+    await this.copy(key, opts);
+    return this.at(key);
+  }
+
+  async remove(opts?: ReadOptions): Promise<this> {
+    throwIfAborted(opts?.signal);
+    await this.delete(opts);
+    return this;
   }
 
   async moveTo(

@@ -2,7 +2,7 @@
 // content-type. Pure function, so this validates the logic for every backend
 // (their integration tests only run against emulators).
 
-import { resolveContentType } from "./fileTypes.ts";
+import { resolveContentType } from "./contentType.ts";
 
 const png = () => new Blob(["x"], { type: "image/png" });
 

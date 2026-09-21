@@ -1,0 +1,59 @@
+// AWS Signature V4, shared by the header-signed request (signS3), the
+// query-signed URL (presignS3) and GCS's V4 variant, which differs only in
+// the algorithm name and the key.
+import { hmacSha256, sha256hex, toHex } from "./webcrypto.ts";
+
+/** Now as `YYYYMMDDTHHMMSSZ`, the timestamp every V4 signature carries. */
+export const basicDate = (): string =>
+  new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
+
+const ordinal = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Lowercased header names, sorted the way V4 wants them listed. */
+export const signedHeaders = (headers: Record<string, string>): string =>
+  Object.keys(headers)
+    .map((k) => k.toLowerCase())
+    .sort(ordinal)
+    .join(";");
+
+export function canonicalRequest(
+  method: string,
+  path: string,
+  query: string,
+  headers: Record<string, string>,
+  payloadHash: string,
+): string {
+  const sorted = Object.entries(headers)
+    .map(([k, v]) => [k.toLowerCase(), v.trim()] as [string, string])
+    .sort(([a], [b]) => ordinal(a, b));
+  return [
+    method.toUpperCase(),
+    path,
+    query,
+    sorted.map(([k, v]) => `${k}:${v}`).join("\n") + "\n",
+    sorted.map(([k]) => k).join(";"),
+    payloadHash,
+  ].join("\n");
+}
+
+export const scopeOf = (timestamp: string, region: string): string =>
+  `${timestamp.slice(0, 8)}/${region}/s3/aws4_request`;
+
+/** The hex HMAC signature of a canonical request. */
+export async function signature(
+  secret: string,
+  timestamp: string,
+  region: string,
+  canonical: string,
+): Promise<string> {
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    timestamp,
+    scopeOf(timestamp, region),
+    await sha256hex(canonical),
+  ].join("\n");
+  let key: string | Uint8Array = `AWS4${secret}`;
+  for (const part of [timestamp.slice(0, 8), region, "s3", "aws4_request"])
+    key = await hmacSha256(key, part);
+  return toHex(await hmacSha256(key, stringToSign));
+}

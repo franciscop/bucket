@@ -6,6 +6,7 @@ import {
   toBase64Url,
 } from "./webcrypto.ts";
 import BucketError from "./BucketError.ts";
+import { basicDate, canonicalRequest } from "./sigv4.ts";
 
 export interface GCSAuth {
   clientEmail: string;
@@ -15,12 +16,6 @@ export interface GCSAuth {
 const enc = new TextEncoder();
 const b64urlJson = (o: unknown): string =>
   toBase64Url(enc.encode(JSON.stringify(o)));
-
-const plainDate = (): string =>
-  new Date()
-    .toISOString()
-    .replace(/[-:]/g, "")
-    .replace(/\.\d+Z$/, "Z");
 
 // Create a signed JWT and exchange it for an OAuth2 access token
 export async function getAccessToken(auth: GCSAuth): Promise<string> {
@@ -74,36 +69,32 @@ export async function presignGCS(
   method: "GET" | "PUT",
   expiresSeconds: number,
 ): Promise<string> {
-  const timestamp = plainDate();
-  const datestamp = timestamp.slice(0, 8);
-  const credential = `${auth.clientEmail}/${datestamp}/auto/storage/goog4_request`;
-  const signedHeaders = "host";
+  const timestamp = basicDate();
+  const scope = `${timestamp.slice(0, 8)}/auto/storage/goog4_request`;
   const host = "storage.googleapis.com";
   const path = `/${bucket}/${objectPath.replace(/^\//, "")}`;
 
   const params = new URLSearchParams({
     "X-Goog-Algorithm": "GOOG4-RSA-SHA256",
-    "X-Goog-Credential": credential,
+    "X-Goog-Credential": `${auth.clientEmail}/${scope}`,
     "X-Goog-Date": timestamp,
     "X-Goog-Expires": String(expiresSeconds),
-    "X-Goog-SignedHeaders": signedHeaders,
+    "X-Goog-SignedHeaders": "host",
   });
   params.sort();
 
-  const canonicalRequest = [
+  const canonical = canonicalRequest(
     method,
     path,
     params.toString(),
-    `host:${host}\n`,
-    signedHeaders,
+    { host },
     "UNSIGNED-PAYLOAD",
-  ].join("\n");
-
+  );
   const stringToSign = [
     "GOOG4-RSA-SHA256",
     timestamp,
-    `${datestamp}/auto/storage/goog4_request`,
-    await sha256hex(canonicalRequest),
+    scope,
+    await sha256hex(canonical),
   ].join("\n");
 
   const key = await importRsaPkcs8(auth.privateKey);

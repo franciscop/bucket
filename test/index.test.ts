@@ -1058,6 +1058,27 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
           expect(info!.metadata.foo).toBe("bar");
         }
       });
+
+      it("round-trips cacheControl and disposition via info()", async () => {
+        const name = testFile("txt");
+        await bucket.file(name).write("x", {
+          cacheControl: "max-age=60",
+          disposition: "inline",
+        });
+        const info = await bucket.file(name).info();
+        // The filesystem has no metadata store, so it reports neither.
+        if (bucket.type === "FILESYSTEM") {
+          expect(info!.cacheControl).toBeUndefined();
+          expect(info!.disposition).toBeUndefined();
+        } else {
+          expect(`${bucket.type}: ${info!.cacheControl}`).toBe(
+            `${bucket.type}: max-age=60`,
+          );
+          expect(`${bucket.type}: ${info!.disposition}`).toBe(
+            `${bucket.type}: inline`,
+          );
+        }
+      });
     });
 
     // ── copyTo / moveTo a File ───────────────────────────────────────────────

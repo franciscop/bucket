@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 
-import { getContentType } from "../lib/fileTypes.ts";
+import { getContentType } from "../lib/contentType.ts";
 import BucketError from "../lib/BucketError.ts";
 import { destKey } from "../lib/prefix.ts";
 import { throwIfAborted, withAbort, type ReadOptions } from "../lib/abort.ts";
@@ -96,18 +96,23 @@ export class FSFile extends BaseFile<FSContext> {
     return wholeBody((data) => this.put(data, options));
   }
 
-  async copyTo(dest: string | BucketFile, opts?: ReadOptions) {
-    throwIfAborted(opts?.signal);
-    if (typeof dest !== "string") return dest.write(this, opts);
-    assertNotOsPath(this.ctx.root, dest);
-    const dst = this.at(destKey(this.ctx.prefix, dest, this.name));
+  // The OS-path guard runs on the raw destination, before the base resolves it.
+  copyTo(dest: string | BucketFile, opts?: ReadOptions) {
+    if (typeof dest === "string") assertNotOsPath(this.ctx.root, dest);
+    return super.copyTo(dest, opts);
+  }
+
+  protected async copy(key: string): Promise<void> {
+    const dst = this.at(key);
     await fsp.mkdir(dirname(dst.#abs), { recursive: true });
     await fsp.copyFile(this.#abs, dst.#abs).catch(fsError);
-    return dst;
   }
 
   // A single atomic rename rather than copy + unlink.
-  async moveTo(dest: string | BucketFile, opts?: ReadOptions) {
+  async moveTo(
+    dest: string | BucketFile,
+    opts?: ReadOptions,
+  ): Promise<BucketFile> {
     throwIfAborted(opts?.signal);
     if (typeof dest !== "string") return super.moveTo(dest, opts);
     assertNotOsPath(this.ctx.root, dest);
@@ -117,13 +122,10 @@ export class FSFile extends BaseFile<FSContext> {
     return dst;
   }
 
-  async remove(opts?: ReadOptions): Promise<this> {
-    throwIfAborted(opts?.signal);
+  protected async delete(): Promise<void> {
     await fsp.unlink(this.#abs).catch((err: NodeJS.ErrnoException) => {
-      // Already gone is success: removing a path twice is a no-op
       if (err.code !== "ENOENT") fsError(err);
     });
-    return this;
   }
 
   // Nothing canonical: the library does not serve the files.

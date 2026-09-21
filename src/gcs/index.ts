@@ -2,6 +2,8 @@ import { getAccessToken, getMetadataToken } from "../lib/signGCS.ts";
 import { scope } from "../lib/prefix.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
 import { Http } from "../lib/http.ts";
+import { origin } from "../lib/config.ts";
+import { TokenCache } from "../lib/TokenCache.ts";
 import { BaseBucket } from "../lib/base.ts";
 import type { BucketInfo } from "../lib/types.ts";
 import {
@@ -14,6 +16,7 @@ import {
 const {
   GCS_BUCKET: ENV_BUCKET,
   GCS_URL: ENV_URL,
+  GCS_ANONYMOUS: ENV_ANONYMOUS,
   GCS_PUBLIC_URL: ENV_PUBLIC_URL,
 } = process.env;
 
@@ -27,6 +30,23 @@ export interface GCSConfig {
   /** Public origin the bucket is served from, e.g. a CDN domain (falls back
    * to `GCS_PUBLIC_URL`). Used by `file.publicUrl()`. */
   publicUrl?: string;
+}
+
+/** The options and env, resolved into one place. */
+interface GCSResolved {
+  bucket: string;
+  url: string;
+  anonymous: boolean;
+  publicUrl: string;
+}
+
+function resolveConfig(bucket: string, config: GCSConfig): GCSResolved {
+  return {
+    bucket,
+    url: origin(config.url || ENV_URL || "https://storage.googleapis.com"),
+    anonymous: config.anonymous ?? ENV_ANONYMOUS === "true",
+    publicUrl: origin(config.publicUrl ?? ENV_PUBLIC_URL),
+  };
 }
 
 async function loadAuth(): Promise<GCSAuth> {
@@ -51,47 +71,36 @@ async function loadAuth(): Promise<GCSAuth> {
   return null;
 }
 
-/** Caches the OAuth token. Lives in the context, so folders share one. */
-function tokenCache(auth: Promise<GCSAuth>, anonymous: boolean) {
-  let token: string | null = null;
-  let expiry = 0;
-  return async (): Promise<string> => {
-    if (anonymous) return "";
-    if (token && Date.now() < expiry) return token;
+function gcsContext(config: GCSResolved): GCSContext {
+  const auth = loadAuth();
+  // Tokens last an hour; refresh five minutes early.
+  const token = new TokenCache<string>(async () => {
     const resolved = await auth;
-    token = resolved
+    const value = resolved
       ? await getAccessToken(resolved)
       : await getMetadataToken();
-    expiry = Date.now() + 55 * 60 * 1000; // 55 min (tokens last 1h)
-    return token;
-  };
-}
-
-function gcsContext(bucket: string, config: GCSConfig = {}): GCSContext {
-  const auth = loadAuth();
-  const anonymous = config.anonymous ?? process.env.GCS_ANONYMOUS === "true";
-  const token = tokenCache(auth, anonymous);
+    return [value, Date.now() + 55 * 60 * 1000];
+  });
   return {
     provider: "GCS",
     prefix: "",
-    publicUrl: (config.publicUrl ?? ENV_PUBLIC_URL ?? "").replace(/\/+$/, ""),
-    bucket,
+    publicUrl: config.publicUrl,
+    bucket: config.bucket,
     auth,
-    anonymous,
-    url: (config.url || ENV_URL || "https://storage.googleapis.com").replace(
-      /\/$/,
-      "",
-    ),
+    anonymous: config.anonymous,
+    url: config.url,
     http: new Http({
       provider: "GCS",
       authorize: async (req) => {
-        const bearer = await token();
-        // A resumable session URI is itself the credential, so it is left
-        // alone; emulators take unauthenticated requests too.
-        if (!bearer) return req;
+        // Emulators take unauthenticated requests; a resumable session URI
+        // is itself the credential either way.
+        if (config.anonymous) return req;
         return {
           ...req,
-          headers: { Authorization: `Bearer ${bearer}`, ...req.headers },
+          headers: {
+            Authorization: `Bearer ${await token.get()}`,
+            ...req.headers,
+          },
         };
       },
     }),
@@ -123,8 +132,7 @@ class GCSBucket extends BaseBucket<GCSContext, GCSFile> {
       const params = new URLSearchParams({ maxResults: "1000" });
       if (s.query) params.set("prefix", s.query);
       if (pageToken) params.set("pageToken", pageToken);
-      const res = await this.ctx.http.send(
-        "GET",
+      const res = await this.ctx.http.get(
         `${this.ctx.url}/storage/v1/b/${this.ctx.bucket}/o?${params}`,
         { signal: opts?.signal, what: "list" },
       );
@@ -159,16 +167,9 @@ class GCSBucket extends BaseBucket<GCSContext, GCSFile> {
  */
 export default function GCS(
   bucket: string = ENV_BUCKET || "",
-  config?: GCSConfig,
+  config: GCSConfig = {},
 ): GCSBucket {
-  return new GCSBucket(gcsContext(bucket, config));
+  const resolved = resolveConfig(bucket, config);
+  const ctx = gcsContext(resolved);
+  return new GCSBucket(ctx);
 }
-
-export type {
-  Bucket,
-  BucketFile,
-  FileInfo,
-  BucketInfo,
-  WriteContent,
-  WriteOptions,
-} from "../lib/types.ts";

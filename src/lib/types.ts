@@ -174,12 +174,3 @@ export interface S3Auth {
   region: string;
   sessionToken?: string;
 }
-
-export interface S3Request {
-  url: string;
-  method?: string;
-  headers: Record<string, string>;
-  body?: string | Buffer;
-  params?: Record<string, string | undefined>;
-  [key: string]: unknown;
-}

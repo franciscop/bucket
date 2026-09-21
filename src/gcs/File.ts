@@ -1,13 +1,13 @@
 import { presignGCS } from "../lib/signGCS.ts";
 import BucketError from "../lib/BucketError.ts";
-import { destKey } from "../lib/prefix.ts";
 import { publicUrlFrom } from "../lib/publicUrl.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
 import type { Http } from "../lib/http.ts";
+import { metaExtras } from "../lib/meta.ts";
 import { rangeHeader, rangeSize } from "../lib/range.ts";
 import { BaseFile, expiresIn, type FileContext } from "../lib/base.ts";
 import type { ChunkedTarget } from "../lib/chunkedWritable.ts";
-import type { BucketFile, FileInfo, WriteOptions } from "../lib/types.ts";
+import type { FileInfo, WriteOptions } from "../lib/types.ts";
 
 export interface GCSObjectMeta {
   name: string;
@@ -15,6 +15,8 @@ export interface GCSObjectMeta {
   size: string;
   updated: string;
   generation?: string;
+  cacheControl?: string;
+  contentDisposition?: string;
   mediaLink: string;
   metadata?: Record<string, string>;
 }
@@ -40,7 +42,7 @@ export class GCSFile extends BaseFile<GCSContext> {
 
   protected async fetch(opts?: ReadOptions): Promise<Response> {
     const rh = this.range && rangeHeader(this.range);
-    return this.ctx.http.send("GET", `${this.#apiUrl()}?alt=media`, {
+    return this.ctx.http.get(`${this.#apiUrl()}?alt=media`, {
       headers: rh ? { Range: rh } : {},
       signal: opts?.signal,
       what: "GET",
@@ -49,7 +51,7 @@ export class GCSFile extends BaseFile<GCSContext> {
 
   async info(opts?: ReadOptions): Promise<FileInfo | null> {
     throwIfAborted(opts?.signal);
-    const res = await this.ctx.http.send("GET", this.#apiUrl(), {
+    const res = await this.ctx.http.get(this.#apiUrl(), {
       signal: opts?.signal,
       ok: [404],
       what: "info",
@@ -62,6 +64,7 @@ export class GCSFile extends BaseFile<GCSContext> {
       modified: new Date(meta.updated),
       version: meta.generation ?? null,
       metadata: meta.metadata ?? {},
+      ...metaExtras(meta.cacheControl, meta.contentDisposition),
     };
   }
 
@@ -81,8 +84,7 @@ export class GCSFile extends BaseFile<GCSContext> {
     const hasMeta =
       cacheControl || disposition || Object.keys(metadata).length > 0;
     if (!hasMeta) {
-      await this.ctx.http.send(
-        "POST",
+      await this.ctx.http.post(
         this.#uploadUrl(
           `uploadType=media&name=${encodeURIComponent(this.path)}`,
         ),
@@ -104,7 +106,7 @@ export class GCSFile extends BaseFile<GCSContext> {
       data,
       Buffer.from(`\r\n--${boundary}--`),
     ]);
-    await this.ctx.http.send("POST", this.#uploadUrl("uploadType=multipart"), {
+    await this.ctx.http.post(this.#uploadUrl("uploadType=multipart"), {
       headers: { "Content-Type": `multipart/related; boundary=${boundary}` },
       body,
       signal: options.signal,
@@ -123,8 +125,7 @@ export class GCSFile extends BaseFile<GCSContext> {
       partSize: 8 * 1024 * 1024,
       single: (data) => this.put(data, options),
       start: async () => {
-        const res = await this.ctx.http.send(
-          "POST",
+        const res = await this.ctx.http.post(
           this.#uploadUrl(
             `uploadType=resumable&name=${encodeURIComponent(this.path)}`,
           ),
@@ -149,7 +150,7 @@ export class GCSFile extends BaseFile<GCSContext> {
         // The session URI carries its own credentials, so this goes out
         // unsigned; 308 means "resume incomplete", expected on every
         // non-final chunk.
-        const res = await this.ctx.http.send("PUT", ctx.uri, {
+        const res = await this.ctx.http.put(ctx.uri, {
           headers: { "Content-Range": `bytes ${ctx.offset}-${to}/${total}` },
           body: data,
           signal: options.signal,
@@ -169,29 +170,21 @@ export class GCSFile extends BaseFile<GCSContext> {
     };
   }
 
-  async copyTo(dest: string | BucketFile, opts?: ReadOptions) {
-    throwIfAborted(opts?.signal);
-    if (typeof dest !== "string") return dest.write(this, opts);
-    const dst = destKey(this.ctx.prefix, dest, this.name);
-    await this.ctx.http.send(
-      "POST",
-      `${this.#apiUrl()}/copyTo/b/${this.ctx.bucket}/o/${encodeURIComponent(dst)}`,
+  protected async copy(key: string, opts?: ReadOptions): Promise<void> {
+    await this.ctx.http.post(
+      `${this.#apiUrl()}/copyTo/b/${this.ctx.bucket}/o/${encodeURIComponent(key)}`,
       { signal: opts?.signal, what: "COPY" },
     );
-    return this.at(dst);
   }
 
-  async remove(opts?: ReadOptions): Promise<this> {
-    throwIfAborted(opts?.signal);
+  protected async delete(opts?: ReadOptions): Promise<void> {
     // No `generation` parameter: this removes the path, not a specific
     // generation, so on a versioned bucket the prior ones are kept.
-    // Already gone is success: removing a path twice is a no-op.
-    await this.ctx.http.send("DELETE", this.#apiUrl(), {
+    await this.ctx.http.delete(this.#apiUrl(), {
       signal: opts?.signal,
       ok: [404, 204],
       what: "DELETE",
     });
-    return this;
   }
 
   protected async canonicalUrl() {

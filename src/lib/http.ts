@@ -27,6 +27,9 @@ export interface SendOptions {
   what?: string;
   /** Return the response whatever the status, leaving the check to the caller. */
   raw?: boolean;
+  /** false sends the request as given: no authorizer and no 401 refresh, for
+   * a request that carries its own credential (a B2 upload URL). */
+  auth?: boolean;
 }
 
 // Transient by nature: the same request a moment later may well succeed.
@@ -58,6 +61,9 @@ export interface HttpOptions {
   authorize: Authorizer;
   /** Extra attempts after a retriable failure. 0 disables retrying. */
   retries?: number;
+  /** Called once when an authorized request comes back 401, before it is
+   * authorized again and retried. For credentials that expire (a B2 session). */
+  refresh?: (req: HttpRequest) => Promise<void>;
 }
 
 export class Http {
@@ -67,17 +73,39 @@ export class Http {
     this.#opts = opts;
   }
 
-  /** Sends one authorized request, retrying transient failures. */
+  get(url: string, options?: SendOptions): Promise<Response> {
+    return this.send("GET", url, options);
+  }
+
+  head(url: string, options?: SendOptions): Promise<Response> {
+    return this.send("HEAD", url, options);
+  }
+
+  put(url: string, options?: SendOptions): Promise<Response> {
+    return this.send("PUT", url, options);
+  }
+
+  post(url: string, options?: SendOptions): Promise<Response> {
+    return this.send("POST", url, options);
+  }
+
+  delete(url: string, options?: SendOptions): Promise<Response> {
+    return this.send("DELETE", url, options);
+  }
+
+  /** Sends one authorized request, retrying transient failures. The verb
+   * methods above are the usual entry; this is for a method held in a variable. */
   async send(
     method: string,
     url: string,
     options: SendOptions = {},
   ): Promise<Response> {
-    const { provider, retries = 2 } = this.#opts;
+    const { provider, retries = 2, authorize, refresh } = this.#opts;
     const attempts = IDEMPOTENT.has(method.toUpperCase()) ? retries + 1 : 1;
-    let last: unknown;
+    let attempt = 0;
+    let refreshed = false;
 
-    for (let attempt = 0; attempt < attempts; attempt++) {
+    for (;;) {
       if (attempt) {
         // Exponential backoff with jitter, so a fleet of clients retrying the
         // same throttled bucket does not come back in lockstep.
@@ -85,12 +113,13 @@ export class Http {
       }
       // Re-authorize on every attempt: a signature carries a timestamp, and a
       // token may have been refreshed since the last try.
-      const req = await this.#opts.authorize({
+      const plain: HttpRequest = {
         method: method.toUpperCase(),
         url,
         headers: { ...(options.headers ?? {}) },
         body: options.body,
-      });
+      };
+      const req = options.auth === false ? plain : await authorize(plain);
       // Only the transport goes in the try: a bad status is decided below, so
       // that throwing on a 403 can never look like a network failure to retry.
       let res: Response;
@@ -106,11 +135,20 @@ export class Http {
       } catch (err) {
         // An abort is the caller's decision, never something to retry.
         if (err instanceof BucketError && err.code === "ABORTED") throw err;
-        last = err;
-        if (attempt === attempts - 1) throw err;
+        if (++attempt >= attempts) throw err;
         continue;
       }
-      if (attempt < attempts - 1 && RETRIABLE.has(res.status)) continue;
+      if (
+        res.status === 401 &&
+        refresh &&
+        options.auth !== false &&
+        !refreshed
+      ) {
+        refreshed = true;
+        await refresh(req);
+        continue;
+      }
+      if (RETRIABLE.has(res.status) && ++attempt < attempts) continue;
       return options.raw
         ? res
         : checkStatus(
@@ -120,6 +158,5 @@ export class Http {
             ...(options.ok ?? []),
           );
     }
-    throw last;
   }
 }

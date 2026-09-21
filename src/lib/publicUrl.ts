@@ -12,16 +12,3 @@ export function encodePublicPath(path: string): string {
 export function publicUrlFrom(base: string, path: string): string {
   return `${base.replace(/\/+$/, "")}/${encodePublicPath(path)}`;
 }
-
-/**
- * Resolves `file.publicUrl()`: a configured public origin wins, otherwise the
- * provider's own canonical URL, otherwise null for providers that have none.
- */
-export function resolvePublicUrl(
-  base: string | undefined,
-  path: string,
-  canonical: () => string | null | Promise<string | null>,
-): string | Promise<string | null> | null {
-  if (base) return publicUrlFrom(base, path);
-  return canonical();
-}

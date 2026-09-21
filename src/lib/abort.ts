@@ -53,12 +53,3 @@ export async function withAbort<T>(
     rethrow(err, signal);
   }
 }
-
-/** `fetch` that rejects with our own aborted error instead of a DOMException. */
-export function withAbortFetch(
-  signal: AbortSignal | undefined,
-  url: string,
-  init: RequestInit,
-): Promise<Response> {
-  return withAbort(signal, () => fetch(url, { ...init, signal }));
-}

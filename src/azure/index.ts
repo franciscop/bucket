@@ -4,6 +4,8 @@ import BucketError from "../lib/BucketError.ts";
 import { scope } from "../lib/prefix.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
 import { Http } from "../lib/http.ts";
+import { invalidConfig, origin } from "../lib/config.ts";
+import { TokenCache } from "../lib/TokenCache.ts";
 import { BaseBucket } from "../lib/base.ts";
 import type { BucketInfo } from "../lib/types.ts";
 import { AzureFile, type AzureContext, type AzureFileAuth } from "./File.ts";
@@ -34,9 +36,16 @@ export interface AzureConfig {
   publicUrl?: string;
 }
 
-const invalid = (message: string): never => {
-  throw new BucketError(message, { code: "INVALID_CONFIG" });
-};
+/** The options, env and connection string, resolved into one place. */
+interface AzureResolved {
+  account: string;
+  container: string;
+  /** "" means Managed Identity. */
+  key: string;
+  /** Blob host including the account path; "" means the public cloud. */
+  url: string;
+  publicUrl: string;
+}
 
 // The account in a blob URL is the subdomain (`<account>.blob.core.windows.net`)
 // or, for path-style emulators, the first path segment
@@ -67,61 +76,70 @@ function parseConnectionString(cs: string) {
   };
 }
 
-/** Caches the Managed Identity token. Lives in the context, so folders
- * share one instead of each fetching its own. */
-function managedToken() {
-  let cache: { token: string; expiry: number } | null = null;
-  return async (): Promise<string> => {
-    if (cache && Date.now() < cache.expiry) return cache.token;
-    const res = await fetch(
-      "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://storage.azure.com/",
-      { headers: { Metadata: "true" } },
+function resolveConfig(container: string, config: AzureConfig): AzureResolved {
+  const cs = config.connectionString ?? ENV_CONNECTION_STRING;
+  const parsed = cs ? parseConnectionString(cs) : null;
+  // A connection string carries its own account; an explicit one must match.
+  if (parsed && config.account && config.account !== parsed.account)
+    invalidConfig(
+      `Azure account "${config.account}" does not match the AccountName "${parsed.account}" in the connection string`,
     );
-    if (!res.ok)
-      throw new BucketError("Azure Managed Identity token fetch failed", {
-        provider: "Azure",
-        status: res.status,
-        code: "UNAUTHORIZED",
-      });
-    const data = (await res.json()) as {
-      access_token: string;
-      expires_in: string;
-    };
-    cache = {
-      token: data.access_token,
-      expiry: Date.now() + (parseInt(data.expires_in) - 60) * 1000,
-    };
-    return cache.token;
-  };
-}
-
-function azureContext(
-  account: string,
-  container: string,
-  key: string,
-  url: string,
-  publicUrl: string,
-): AzureContext {
+  const account = parsed
+    ? parsed.account
+    : (config.account ?? ENV_ACCOUNT ?? "");
+  const key = parsed ? parsed.key : (config.key ?? ENV_KEY ?? "");
+  const url = origin(
+    parsed ? config.url || parsed.url : (config.url ?? ENV_URL),
+  );
   // A custom url embeds the account, so make sure it agrees with the account.
   if (url && account) {
     const derived = accountFromUrl(url);
     if (derived && derived !== account)
-      invalid(
+      invalidConfig(
         `Azure account "${account}" does not match the account in url "${url}"`,
       );
   }
-  const getToken = managedToken();
+  return {
+    account,
+    container,
+    key,
+    url,
+    publicUrl: origin(config.publicUrl ?? ENV_PUBLIC_URL),
+  };
+}
+
+async function fetchIdentityToken(): Promise<[string, number]> {
+  const res = await fetch(
+    "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://storage.azure.com/",
+    { headers: { Metadata: "true" } },
+  );
+  if (!res.ok)
+    throw new BucketError("Azure Managed Identity token fetch failed", {
+      provider: "Azure",
+      status: res.status,
+      code: "UNAUTHORIZED",
+    });
+  const data = (await res.json()) as {
+    access_token: string;
+    expires_in: string;
+  };
+  const expiry = Date.now() + (parseInt(data.expires_in) - 60) * 1000;
+  return [data.access_token, expiry];
+}
+
+function azureContext(config: AzureResolved): AzureContext {
+  const { account, container, key, publicUrl } = config;
+  const token = new TokenCache(fetchIdentityToken);
   const auth: AzureFileAuth = key
     ? { type: "shared-key", key }
-    : { type: "managed-identity", getToken };
+    : { type: "managed-identity", getToken: () => token.get() };
   // Default to the public cloud host; an explicit url (emulator, custom
   // or sovereign cloud) overrides it and already includes the account path.
-  const host =
-    url.replace(/\/$/, "") || `https://${account}.blob.core.windows.net`;
+  const host = config.url || `https://${account}.blob.core.windows.net`;
   return {
     provider: "Azure",
     prefix: "",
-    publicUrl: publicUrl.replace(/\/+$/, ""),
+    publicUrl,
     account,
     container,
     url: host,
@@ -158,7 +176,7 @@ function azureContext(
             ...headers,
             "x-ms-date": new Date().toUTCString(),
             "x-ms-version": "2020-10-02",
-            Authorization: `Bearer ${await getToken()}`,
+            Authorization: `Bearer ${await token.get()}`,
           },
         };
       },
@@ -195,8 +213,7 @@ class AzureBucket extends BaseBucket<AzureContext, AzureFile> {
         ...(s.query ? { prefix: s.query } : {}),
         ...(marker ? { marker } : {}),
       };
-      const res = await this.ctx.http.send(
-        "GET",
+      const res = await this.ctx.http.get(
         `${url}/${container}?${new URLSearchParams(params)}`,
         { signal: opts?.signal, what: "list" },
       );
@@ -231,41 +248,7 @@ export default function Azure(
   container: string = ENV_CONTAINER || "",
   config: AzureConfig = {},
 ): AzureBucket {
-  const cs = config.connectionString ?? ENV_CONNECTION_STRING;
-  if (cs) {
-    const parsed = parseConnectionString(cs);
-    // A connection string carries its own account; an explicit one must match.
-    if (config.account && config.account !== parsed.account)
-      invalid(
-        `Azure account "${config.account}" does not match the AccountName "${parsed.account}" in the connection string`,
-      );
-    return new AzureBucket(
-      azureContext(
-        parsed.account,
-        container,
-        parsed.key,
-        config.url || parsed.url || "",
-        config.publicUrl ?? ENV_PUBLIC_URL ?? "",
-      ),
-    );
-  }
-  return new AzureBucket(
-    azureContext(
-      config.account ?? ENV_ACCOUNT ?? "",
-      container,
-      config.key ?? ENV_KEY ?? "",
-      config.url ?? ENV_URL ?? "",
-      config.publicUrl ?? ENV_PUBLIC_URL ?? "",
-    ),
-  );
+  const resolved = resolveConfig(container, config);
+  const ctx = azureContext(resolved);
+  return new AzureBucket(ctx);
 }
-
-export type { AzureFileAuth };
-export type {
-  Bucket,
-  BucketFile,
-  FileInfo,
-  BucketInfo,
-  WriteContent,
-  WriteOptions,
-} from "../lib/types.ts";

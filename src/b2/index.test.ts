@@ -229,6 +229,15 @@ describe("B2 token refresh", () => {
         auths++;
         return Promise.resolve(makeResponse(JSON.stringify(AUTH_RESPONSE)));
       }
+      if ((url as string).includes("b2_get_upload_url"))
+        return Promise.resolve(
+          makeResponse(
+            JSON.stringify({
+              uploadUrl: "https://upload.example/x",
+              authorizationToken: "upload-token",
+            }),
+          ),
+        );
       if (new Headers(init?.headers).get("authorization") === "upload-token") {
         return Promise.resolve(
           makeResponse(
@@ -245,12 +254,7 @@ describe("B2 token refresh", () => {
       return Promise.resolve(makeResponse("{}"));
     });
     const bucket = BackBlaze("test-bucket", CREDS);
-    await bucket.info();
-    await expect(
-      bucket.fetch("https://upload.example/x", {
-        headers: { Authorization: "upload-token" },
-      }),
-    ).rejects.toThrow(/401/);
+    await expect(bucket.file("x.txt").write("hi")).rejects.toThrow(/401/);
     expect(auths).toBe(1);
   });
 });
@@ -510,6 +514,29 @@ describe("B2 file().info()", () => {
     expect(info!.type).toBe("text/plain");
     expect(info!.size).toBe(5);
     expect(info!.version).toBe("id123");
+  });
+
+  // B2 has no emulator, so the round-trip the shared suite checks on the other
+  // providers is asserted here against the headers B2 actually returns.
+  it("reports cacheControl and disposition, and keeps them out of metadata", async () => {
+    const bucket = await makeBucket((url, init) => {
+      if ((url as string).includes("/file/") && init?.method === "HEAD")
+        return Promise.resolve(
+          makeResponse(null, 200, {
+            "content-length": "5",
+            "content-type": "text/plain",
+            "x-bz-info-b2-cache-control": "max-age=60",
+            "x-bz-info-b2-content-disposition": "inline",
+            "x-bz-info-owner": "ana",
+          }),
+        );
+      return Promise.resolve(makeResponse(null));
+    });
+    const info = await bucket.file("hello.txt").info();
+    expect(info!.cacheControl).toBe("max-age=60");
+    expect(info!.disposition).toBe("inline");
+    // The b2-* entries are B2's own, not user metadata
+    expect(info!.metadata).toEqual({ owner: "ana" });
   });
 
   it("returns null when the HEAD 404s", async () => {

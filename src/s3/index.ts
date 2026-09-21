@@ -1,5 +1,6 @@
 import BucketError from "../lib/BucketError.ts";
-import { S3LikeBucket, s3Context } from "../lib/s3like.ts";
+import { invalidConfig, origin } from "../lib/config.ts";
+import { S3LikeBucket, s3Context, type S3LikeConfig } from "../lib/s3like.ts";
 import type { S3Auth } from "../lib/types.ts";
 
 const {
@@ -126,29 +127,19 @@ export default function S3(
   }: S3Config = {},
 ): S3LikeBucket {
   if (!bucket)
-    throw new BucketError(
+    invalidConfig(
       "S3 needs a bucket name, as the first argument or AWS_BUCKET.",
-      { code: "INVALID_CONFIG" },
     );
-  return new S3LikeBucket(
-    s3Context({
-      type: "S3",
-      name: bucket,
-      region,
-      endpoint: (url ?? ENV_ENDPOINT ?? "").replace(/\/+$/, ""),
-      publicUrl: publicUrl.replace(/\/+$/, ""),
-      auth: id && secret ? { id, secret, region, sessionToken } : null,
-      resolveAuth: fetchInstanceCredentials,
-      canonicalPublic: true,
-    }),
-  );
+  const config: S3LikeConfig = {
+    type: "S3",
+    name: bucket,
+    region,
+    endpoint: origin(url ?? ENV_ENDPOINT),
+    publicUrl: origin(publicUrl),
+    auth: id && secret ? { id, secret, region, sessionToken } : null,
+    resolveAuth: fetchInstanceCredentials,
+    canonicalPublic: true,
+  };
+  const ctx = s3Context(config);
+  return new S3LikeBucket(ctx);
 }
-
-export type {
-  Bucket,
-  BucketFile,
-  FileInfo,
-  BucketInfo,
-  WriteContent,
-  WriteOptions,
-} from "../lib/types.ts";

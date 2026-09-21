@@ -2,20 +2,18 @@
 // CreateMultipartUpload → UploadPart × n → CompleteMultipartUpload, with
 // AbortMultipartUpload on any failure so no billed orphan parts remain.
 
-import cleanAndSignS3 from "./cleanAndSignS3.ts";
 import BucketError from "./BucketError.ts";
-import { withAbortFetch } from "./abort.ts";
 import { escapeXml, extractTags, getTag } from "./xml.ts";
 import type { ChunkedTarget } from "./chunkedWritable.ts";
-import type { S3Auth, S3Request } from "./types.ts";
+import type { Http } from "./http.ts";
 
 export const S3_PART_SIZE = 8 * 1024 * 1024;
 
 export interface S3MultipartOptions {
   provider: string;
-  path: string;
-  makeUrl: (path?: string) => string;
-  getAuth: () => S3Auth | Promise<S3Auth>;
+  /** The object's URL; each multipart call adds its own query to it. */
+  url: string;
+  http: Http;
   /** Content headers (type, cache-control, disposition, x-amz-meta-*) set
    * on the create call; S3 applies them to the assembled object. */
   headers: Record<string, string>;
@@ -25,7 +23,7 @@ export interface S3MultipartOptions {
   signal?: AbortSignal;
 }
 
-async function request(
+function request(
   o: S3MultipartOptions,
   method: string,
   query: Record<string, string>,
@@ -33,27 +31,15 @@ async function request(
   headers: Record<string, string> = {},
   signal: AbortSignal | undefined = o.signal,
 ): Promise<Response> {
-  const url = new URL(o.makeUrl(o.path));
+  const url = new URL(o.url);
   for (const [key, value] of Object.entries(query))
     url.searchParams.set(key, value);
-  const req: S3Request = {
-    url: url.toString(),
-    method: method.toLowerCase(),
-    headers: { ...headers },
+  return o.http.send(method, url.toString(), {
     body,
-  };
-  await cleanAndSignS3(req, await o.getAuth());
-  const res = await withAbortFetch(signal, url.toString(), {
-    method,
-    headers: req.headers,
-    body: body as BodyInit | undefined,
+    headers,
+    signal,
+    what: "multipart",
   });
-  if (!res.ok)
-    throw new BucketError(`${o.provider} multipart error: ${res.status}`, {
-      provider: o.provider,
-      status: res.status,
-    });
-  return res;
 }
 
 export default function multipartS3(
@@ -83,10 +69,7 @@ export default function multipartS3(
       const res = await request(
         o,
         "PUT",
-        {
-          partNumber: String(n),
-          uploadId,
-        },
+        { partNumber: String(n), uploadId },
         data,
       );
       const etag = res.headers.get("etag") ?? "";

@@ -1,4 +1,4 @@
-import { getExtension } from "./fileTypes.ts";
+import { getExtension } from "./contentType.ts";
 import type { WriteContent, WriteOptions } from "./types.ts";
 
 // nanoid, inlined to stay dependency-free, over a strictly alphanumeric

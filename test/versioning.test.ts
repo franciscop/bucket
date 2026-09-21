@@ -11,8 +11,8 @@
 //   Azurite          no versioning (PUT returns no x-ms-version-id)
 //   B2               no emulator exists; the hide path is covered by the
 //                    request-level tests in b2/index.test.ts
-import cleanAndSignS3 from "../src/lib/cleanAndSignS3.ts";
-import type { S3Auth, S3Request } from "../src/lib/types.ts";
+import signS3 from "../src/lib/signS3.ts";
+import type { S3Auth } from "../src/lib/types.ts";
 import S3 from "../src/s3/index.ts";
 import GCS from "../src/gcs/index.ts";
 
@@ -35,10 +35,7 @@ const auth: S3Auth = {
 // outside the library, or the test would only prove Bucket agrees with itself.
 async function rawS3(method: string, query: string, body?: string) {
   const url = S3_URL + query;
-  const req = (await cleanAndSignS3(
-    { url, method: method.toLowerCase(), headers: {}, body },
-    auth,
-  )) as S3Request & { headers: Record<string, string> };
+  const req = await signS3({ url, method, headers: {}, body }, auth);
   const res = await fetch(url, { method, headers: req.headers, body });
   return res.text();
 }

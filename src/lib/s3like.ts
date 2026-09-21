@@ -1,28 +1,22 @@
 // One implementation of the S3 wire protocol, used by S3 and R2. The two
 // differ only in how their config resolves (see s3/index.ts and r2/index.ts)
 // and in whether the storage endpoint doubles as a public URL.
-import cleanAndSignS3 from "./cleanAndSignS3.ts";
+import signS3 from "./signS3.ts";
 import encodeS3Path from "./encodeS3Path.ts";
 import { escapeXml, unescapeXml, extractTags, getTag } from "./xml.ts";
 import { sha256base64 } from "./webcrypto.ts";
-import { scope, destKey } from "./prefix.ts";
+import { scope } from "./prefix.ts";
 import { throwIfAborted, type ReadOptions } from "./abort.ts";
-import { Http, type SendOptions } from "./http.ts";
+import { Http } from "./http.ts";
 import { presignS3 } from "./presignS3.ts";
 import multipartS3 from "./multipartS3.ts";
-import metaFromHeaders from "./meta.ts";
+import metaFromHeaders, { metaExtras } from "./meta.ts";
 import { publicUrlFrom } from "./publicUrl.ts";
 import { rangeHeader, rangeSize } from "./range.ts";
 import { metaHeaders } from "./writeMeta.ts";
+import { TokenCache } from "./TokenCache.ts";
 import { BaseBucket, BaseFile, expiresIn, type FileContext } from "./base.ts";
-import type {
-  BucketFile,
-  BucketInfo,
-  FileInfo,
-  S3Auth,
-  S3Request,
-  WriteOptions,
-} from "./types.ts";
+import type { BucketInfo, FileInfo, S3Auth, WriteOptions } from "./types.ts";
 
 export interface S3LikeConfig {
   /** "S3" or "R2": the `type` of the bucket and the label in errors. */
@@ -40,30 +34,11 @@ export interface S3LikeConfig {
   canonicalPublic: boolean;
 }
 
-/** Resolves credentials once and holds them until they expire. Lives in the
- * context, so every folder shares one cache instead of re-resolving. */
-class AuthCache {
-  #config: S3LikeConfig;
-  #cached: (S3Auth & { expiry: number }) | null = null;
-
-  constructor(config: S3LikeConfig) {
-    this.#config = config;
-  }
-
-  async get(): Promise<S3Auth> {
-    if (this.#config.auth) return this.#config.auth;
-    if (this.#cached && Date.now() < this.#cached.expiry - 60_000)
-      return this.#cached;
-    this.#cached = await this.#config.resolveAuth!(this.#config.region);
-    return this.#cached;
-  }
-}
-
 export interface S3Context extends FileContext {
   config: S3LikeConfig;
   /** Endpoint with the bucket appended: the base every request is built on. */
   url: string;
-  auth: AuthCache;
+  auth: TokenCache<S3Auth>;
   http: Http;
 }
 
@@ -74,7 +49,13 @@ export function s3Context(config: S3LikeConfig, prefix = ""): S3Context {
   const url = config.endpoint
     ? `${config.endpoint}/${config.name}`
     : `https://${config.name}.s3.${config.region}.amazonaws.com`;
-  const auth = new AuthCache(config);
+  // Static credentials never expire; resolved ones are refreshed a minute
+  // before their expiry.
+  const auth = new TokenCache<S3Auth>(async () => {
+    if (config.auth) return [config.auth, Infinity];
+    const resolved = await config.resolveAuth!(config.region);
+    return [resolved, resolved.expiry - 60_000];
+  });
   return {
     provider: config.type,
     prefix,
@@ -84,16 +65,7 @@ export function s3Context(config: S3LikeConfig, prefix = ""): S3Context {
     auth,
     http: new Http({
       provider: config.type,
-      authorize: async (req) => {
-        const signed: S3Request = {
-          url: req.url,
-          method: req.method.toLowerCase(),
-          headers: req.headers,
-          body: req.body,
-        };
-        await cleanAndSignS3(signed, await auth.get());
-        return { ...req, headers: signed.headers };
-      },
+      authorize: async (req) => signS3(req, await auth.get()),
     }),
   };
 }
@@ -135,7 +107,7 @@ export class S3LikeBucket extends BaseBucket<S3Context, S3LikeFile> {
       url.searchParams.set("list-type", "2");
       if (s.query) url.searchParams.set("prefix", s.query);
       if (token) url.searchParams.set("continuation-token", token);
-      const res = await this.ctx.http.send("GET", url.toString(), {
+      const res = await this.ctx.http.get(url.toString(), {
         signal: opts?.signal,
         what: "list",
       });
@@ -164,7 +136,7 @@ export class S3LikeBucket extends BaseBucket<S3Context, S3LikeFile> {
         "</Delete>";
       const url = new URL(makeUrl(this.ctx));
       url.searchParams.set("delete", "");
-      const res = await this.ctx.http.send("POST", url.toString(), {
+      const res = await this.ctx.http.post(url.toString(), {
         body,
         // Required body integrity header; S3/R2/MinIO 400 without it.
         headers: { "x-amz-checksum-sha256": await sha256base64(body) },
@@ -181,13 +153,13 @@ export class S3LikeBucket extends BaseBucket<S3Context, S3LikeFile> {
 }
 
 export class S3LikeFile extends BaseFile<S3Context> {
-  #send(method: string, path: string, options: SendOptions = {}) {
-    return this.ctx.http.send(method, makeUrl(this.ctx, path), options);
+  #url(path: string): string {
+    return makeUrl(this.ctx, path);
   }
 
   protected async fetch(opts?: ReadOptions): Promise<Response> {
     const rh = this.range && rangeHeader(this.range);
-    return this.#send("GET", this.path, {
+    return this.ctx.http.get(this.#url(this.path), {
       headers: rh ? { Range: rh } : {},
       signal: opts?.signal,
     });
@@ -195,7 +167,7 @@ export class S3LikeFile extends BaseFile<S3Context> {
 
   async info(opts?: ReadOptions): Promise<FileInfo | null> {
     throwIfAborted(opts?.signal);
-    const res = await this.#send("HEAD", this.path, {
+    const res = await this.ctx.http.head(this.#url(this.path), {
       signal: opts?.signal,
       ok: [404],
       what: "HEAD",
@@ -210,6 +182,10 @@ export class S3LikeFile extends BaseFile<S3Context> {
       modified: new Date(res.headers.get("last-modified") ?? Date.now()),
       version: res.headers.get("x-amz-version-id"),
       metadata: metaFromHeaders(res.headers, "x-amz-meta-"),
+      ...metaExtras(
+        res.headers.get("cache-control"),
+        res.headers.get("content-disposition"),
+      ),
     };
   }
 
@@ -223,7 +199,7 @@ export class S3LikeFile extends BaseFile<S3Context> {
   }
 
   protected async put(data: Buffer, options: WriteOptions): Promise<void> {
-    await this.#send("PUT", this.path, {
+    await this.ctx.http.put(this.#url(this.path), {
       body: data,
       headers: this.#putHeaders(options),
       signal: options.signal,
@@ -234,38 +210,31 @@ export class S3LikeFile extends BaseFile<S3Context> {
   protected target(options: WriteOptions) {
     return multipartS3({
       provider: this.provider,
-      path: this.path,
-      makeUrl: (p) => makeUrl(this.ctx, p),
-      getAuth: () => this.ctx.auth.get(),
+      url: makeUrl(this.ctx, this.path),
+      http: this.ctx.http,
       headers: this.#putHeaders(options),
       single: (data) => this.put(data, options),
       signal: options.signal,
     });
   }
 
-  async copyTo(dest: string | BucketFile, opts?: ReadOptions) {
-    throwIfAborted(opts?.signal);
-    if (typeof dest !== "string") return dest.write(this, opts);
-    const dst = destKey(this.ctx.prefix, dest, this.name);
-    await this.#send("PUT", dst, {
+  protected async copy(key: string, opts?: ReadOptions): Promise<void> {
+    await this.ctx.http.put(this.#url(key), {
       headers: {
         "x-amz-copy-source": `/${this.ctx.config.name}/${this.path}`,
       },
       signal: opts?.signal,
       what: "COPY",
     });
-    return this.at(dst);
   }
 
-  async remove(opts?: ReadOptions): Promise<this> {
-    throwIfAborted(opts?.signal);
+  protected async delete(opts?: ReadOptions): Promise<void> {
     // Already gone is success: removing a path twice is a no-op
-    await this.#send("DELETE", this.path, {
+    await this.ctx.http.delete(this.#url(this.path), {
       signal: opts?.signal,
       ok: [404, 204],
       what: "DELETE",
     });
-    return this;
   }
 
   protected async canonicalUrl() {
