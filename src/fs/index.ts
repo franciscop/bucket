@@ -1,13 +1,11 @@
-import { userInfo } from "node:os";
-import fsp from "node:fs/promises";
-import { basename, join, relative, resolve, sep } from "node:path";
-
+import BucketError from "../lib/BucketError.ts";
 import { scope } from "../lib/prefix.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
 import { origin } from "../lib/config.ts";
 import { BaseBucket } from "../lib/base.ts";
 import type { BucketInfo } from "../lib/types.ts";
 import assertNotOsPath from "./osPathGuard.ts";
+import * as node from "../lib/node.ts";
 import { FSFile, type FSContext } from "./File.ts";
 
 const { FS_PUBLIC_URL: ENV_PUBLIC_URL } = process.env;
@@ -24,7 +22,7 @@ class FileSystemBucket extends BaseBucket<FSContext, FSFile> {
 
   // OS directory of the current scope (the root plus the folder prefix).
   get path(): string {
-    return join(this.ctx.root, this.PREFIX);
+    return node.path.join(this.ctx.root, this.PREFIX);
   }
 
   protected make(key: string): FSFile {
@@ -45,9 +43,9 @@ class FileSystemBucket extends BaseBucket<FSContext, FSFile> {
     throwIfAborted(opts?.signal);
     return {
       type: this.type,
-      name: basename(this.path) || this.path,
+      name: node.path.basename(this.path) || this.path,
       url: this.path,
-      id: userInfo().username,
+      id: node.os.userInfo().username,
     };
   }
 
@@ -56,7 +54,7 @@ class FileSystemBucket extends BaseBucket<FSContext, FSFile> {
     const s = scope(this.PREFIX, filter);
     let raw: import("node:fs").Dirent[];
     try {
-      raw = await fsp.readdir(this.path, {
+      raw = await node.fsp.readdir(this.path, {
         recursive: true,
         withFileTypes: true,
       });
@@ -70,7 +68,10 @@ class FileSystemBucket extends BaseBucket<FSContext, FSFile> {
         const dir =
           (d as unknown as { parentPath?: string }).parentPath ??
           (d as unknown as { path: string }).path;
-        const rel = relative(this.path, join(dir, d.name)).split(sep).join("/");
+        const rel = node
+          .path!.relative(this.path, node.path.join(dir, d.name))
+          .split(node.path.sep)
+          .join("/");
         return this.PREFIX ? `${this.PREFIX}/${rel}` : rel;
       })
       // Skip in-progress streaming writes (temp siblings, renamed on close)
@@ -101,11 +102,16 @@ export default function FileSystem(
   path: string,
   config: FSConfig = {},
 ): FileSystemBucket {
+  if (!node.fs || !node.path || !node.os)
+    throw new BucketError(
+      "FileSystem needs Node, which this runtime does not provide",
+      { code: "INVALID_CONFIG" },
+    );
   const ctx: FSContext = {
     provider: "FILESYSTEM",
     prefix: "",
     publicUrl: origin(config.publicUrl ?? ENV_PUBLIC_URL),
-    root: resolve(path),
+    root: node.path.resolve(path),
   };
   return new FileSystemBucket(ctx);
 }

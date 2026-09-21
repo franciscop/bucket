@@ -9,9 +9,8 @@
 // provider needs. folder() copies the context with a new prefix, so anything
 // held by reference in there, notably an auth or token cache, is shared with
 // every folder rather than re-resolved or hand-copied.
-import { Readable, Writable } from "node:stream";
-
 import BucketError from "./BucketError.ts";
+import { stream } from "./node.ts";
 import chunkedWritable, {
   writeChunked,
   type ChunkedTarget,
@@ -178,8 +177,8 @@ export abstract class BaseFile<
       await (content as BucketFile).stream().pipeTo(this.writable(options));
     else if (typeof (content as ReadableStream).pipeTo === "function")
       await (content as ReadableStream).pipeTo(this.writable(options));
-    else if (content instanceof Readable)
-      await Readable.toWeb(content).pipeTo(this.writable(options));
+    else if (stream && content instanceof stream.Readable)
+      await stream.Readable.toWeb(content).pipeTo(this.writable(options));
     else
       throw new BucketError(
         "write() needs a string, Buffer, Blob, stream, or a file from any bucket",
@@ -240,8 +239,17 @@ export abstract class BaseFile<
     return promiseToReadable(async () => (await this.get(opts)).body!);
   }
 
+  // The node* methods are the one place a missing Node runtime is an error.
+  #node(): NonNullable<typeof stream> {
+    if (!stream)
+      throw new BucketError("Node streams are not available in this runtime", {
+        code: "INVALID_CONTENT",
+      });
+    return stream;
+  }
+
   nodeReadable(opts?: ReadOptions): NodeJS.ReadableStream {
-    return Readable.fromWeb(
+    return this.#node().Readable.fromWeb(
       this.stream(
         opts,
       ) as unknown as import("node:stream/web").ReadableStream<Uint8Array>,
@@ -253,7 +261,7 @@ export abstract class BaseFile<
   }
 
   nodeWritable(options?: WriteOptions): NodeJS.WritableStream {
-    return Writable.fromWeb(
+    return this.#node().Writable.fromWeb(
       this.writable(options) as import("node:stream/web").WritableStream,
     );
   }

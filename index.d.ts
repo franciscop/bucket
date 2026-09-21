@@ -222,6 +222,7 @@ interface FileContext {
     publicUrl: string;
 }
 declare abstract class BaseFile<Ctx extends FileContext = FileContext> implements BucketFile {
+    #private;
     name: string;
     path: string;
     protected readonly ctx: Ctx;

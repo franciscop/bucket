@@ -1,8 +1,3 @@
-// src/fs/index.ts
-import { userInfo } from "os";
-import fsp2 from "fs/promises";
-import { basename, join as join2, relative, resolve, sep } from "path";
-
 // src/lib/BucketError.ts
 var CODE_BY_STATUS = {
   401: "UNAUTHORIZED",
@@ -27,17 +22,17 @@ var BucketError = class extends Error {
 };
 
 // src/lib/prefix.ts
-var invalid = (path) => {
-  throw new BucketError(`Invalid path: "${path}"`, { code: "INVALID_PATH" });
+var invalid = (path2) => {
+  throw new BucketError(`Invalid path: "${path2}"`, { code: "INVALID_PATH" });
 };
-var resolvePath = (base, path) => {
-  if (path.includes("\\")) invalid(path);
-  const out = !path.startsWith("/") && base ? base.split("/") : [];
-  for (const segment of path.split("/")) {
+var resolvePath = (base, path2) => {
+  if (path2.includes("\\")) invalid(path2);
+  const out = !path2.startsWith("/") && base ? base.split("/") : [];
+  for (const segment of path2.split("/")) {
     if (!segment || segment === ".") continue;
     if (segment === "..") {
       if (!out.length)
-        throw new BucketError(`Path escapes the bucket: "${path}"`, {
+        throw new BucketError(`Path escapes the bucket: "${path2}"`, {
           code: "INVALID_PATH"
         });
       out.pop();
@@ -99,8 +94,13 @@ var invalidConfig = (message) => {
 };
 var origin = (url) => (url ?? "").replace(/\/+$/, "");
 
-// src/lib/base.ts
-import { Readable, Writable } from "stream";
+// src/lib/node.ts
+var load = (name) => import(name).catch(() => null);
+var stream = await load("node:stream");
+var fs = await load("node:fs");
+var path = await load("node:path");
+var os = await load("node:os");
+var fsp = fs?.promises;
 
 // src/lib/chunkedWritable.ts
 var Chunker = class {
@@ -311,11 +311,11 @@ function promiseToReadable(work) {
 }
 
 // src/lib/publicUrl.ts
-function encodePublicPath(path) {
-  return path.split("/").map(encodeURIComponent).join("/");
+function encodePublicPath(path2) {
+  return path2.split("/").map(encodeURIComponent).join("/");
 }
-function publicUrlFrom(base, path) {
-  return `${base.replace(/\/+$/, "")}/${encodePublicPath(path)}`;
+function publicUrlFrom(base, path2) {
+  return `${base.replace(/\/+$/, "")}/${encodePublicPath(path2)}`;
 }
 
 // src/lib/filter.ts
@@ -420,8 +420,8 @@ var mimes = {
 var mimes_default = mimes;
 
 // src/lib/contentType.ts
-function getContentType(path) {
-  const ext = path.split(".").pop()?.toLowerCase();
+function getContentType(path2) {
+  const ext = path2.split(".").pop()?.toLowerCase();
   return ext ? mimes_default[ext] : void 0;
 }
 var isExtension = (type) => /^\.?[a-zA-Z0-9]+$/.test(type);
@@ -451,8 +451,8 @@ function getExtension(type) {
   const ext = extensions[value.split(";")[0].trim().toLowerCase()];
   return ext ? "." + ext : "";
 }
-function resolveContentType(path, content, options) {
-  return (options?.type ? toMime(options.type) : void 0) ?? getContentType(path) ?? (content instanceof Blob && content.type ? content.type : void 0);
+function resolveContentType(path2, content, options) {
+  return (options?.type ? toMime(options.type) : void 0) ?? getContentType(path2) ?? (content instanceof Blob && content.type ? content.type : void 0);
 }
 
 // src/lib/nanoid.ts
@@ -509,9 +509,9 @@ function rangeSize(range, total) {
 }
 
 // src/lib/writeMeta.ts
-function writeMeta(path, options = {}, content) {
+function writeMeta(path2, options = {}, content) {
   return {
-    type: resolveContentType(path, content, options) ?? null,
+    type: resolveContentType(path2, content, options) ?? null,
     cacheControl: options.cacheControl,
     disposition: options.disposition,
     metadata: Object.fromEntries(
@@ -542,8 +542,8 @@ var BaseFile = class {
   path;
   ctx;
   range = null;
-  constructor(path, ctx) {
-    this.path = path.startsWith("/") ? path.slice(1) : path;
+  constructor(path2, ctx) {
+    this.path = path2.startsWith("/") ? path2.slice(1) : path2;
     this.name = this.path.split("/").pop() || this.path;
     this.ctx = ctx;
   }
@@ -552,9 +552,9 @@ var BaseFile = class {
     return this.ctx.provider;
   }
   /** A fresh handle for another key in the same bucket scope. */
-  at(path) {
+  at(path2) {
     const Self = this.constructor;
-    return new Self(path, this.ctx);
+    return new Self(path2, this.ctx);
   }
   /** Throws a BucketError unless the response is ok or in `also`. */
   check(res, what, ...also) {
@@ -613,8 +613,8 @@ var BaseFile = class {
       await content.stream().pipeTo(this.writable(options));
     else if (typeof content.pipeTo === "function")
       await content.pipeTo(this.writable(options));
-    else if (content instanceof Readable)
-      await Readable.toWeb(content).pipeTo(this.writable(options));
+    else if (stream && content instanceof stream.Readable)
+      await stream.Readable.toWeb(content).pipeTo(this.writable(options));
     else
       throw new BucketError(
         "write() needs a string, Buffer, Blob, stream, or a file from any bucket",
@@ -659,8 +659,16 @@ var BaseFile = class {
   stream(opts) {
     return promiseToReadable(async () => (await this.get(opts)).body);
   }
+  // The node* methods are the one place a missing Node runtime is an error.
+  #node() {
+    if (!stream)
+      throw new BucketError("Node streams are not available in this runtime", {
+        code: "INVALID_CONTENT"
+      });
+    return stream;
+  }
   nodeReadable(opts) {
-    return Readable.fromWeb(
+    return this.#node().Readable.fromWeb(
       this.stream(
         opts
       )
@@ -670,7 +678,7 @@ var BaseFile = class {
     return chunkedWritable(this.target(options));
   }
   nodeWritable(options) {
-    return Writable.fromWeb(
+    return this.#node().Writable.fromWeb(
       this.writable(options)
     );
   }
@@ -708,9 +716,9 @@ var BaseBucket = class {
       throw new BucketError("file() needs a name", { code: "INVALID_PATH" });
     return this.make(fileKey(this.PREFIX, name));
   }
-  folder(path) {
+  folder(path2) {
     const Self = this.constructor;
-    return new Self({ ...this.ctx, prefix: folderKey(this.PREFIX, path) });
+    return new Self({ ...this.ctx, prefix: folderKey(this.PREFIX, path2) });
   }
   /** Deletes the listed files, returning the ones confirmed gone. Overridden
    * where the provider has a batch delete. */
@@ -757,20 +765,16 @@ var BaseBucket = class {
 };
 
 // src/fs/osPathGuard.ts
-function assertNotOsPath(root, path) {
-  if (path !== root && !path.startsWith(root + "/")) return;
-  const rest = path.slice(root.length).replace(/^\/+/, "");
+function assertNotOsPath(root, path2) {
+  if (path2 !== root && !path2.startsWith(root + "/")) return;
+  const rest = path2.slice(root.length).replace(/^\/+/, "");
   throw new BucketError(
-    `"${path}" looks like an OS path; paths are relative to the bucket ("${root}")` + (rest ? `. Did you mean "${rest}"?` : ""),
+    `"${path2}" looks like an OS path; paths are relative to the bucket ("${root}")` + (rest ? `. Did you mean "${rest}"?` : ""),
     { code: "INVALID_PATH" }
   );
 }
 
 // src/fs/File.ts
-import { createReadStream, createWriteStream } from "fs";
-import fsp from "fs/promises";
-import { dirname, join } from "path";
-import { Readable as Readable2 } from "stream";
 function fsError(err) {
   if (err instanceof BucketError) throw err;
   const code = err.code;
@@ -783,7 +787,7 @@ function fsError(err) {
 var FSFile = class extends BaseFile {
   // The OS location is private; derive it externally with join(root, file.path).
   get #abs() {
-    return join(this.ctx.root, this.path);
+    return path.join(this.ctx.root, this.path);
   }
   // Wraps the bytes as a Response so the shared readers work unchanged; the
   // content type comes from the extension, as there is no metadata store.
@@ -795,9 +799,10 @@ var FSFile = class extends BaseFile {
   }
   async #read(signal) {
     if (!this.range)
-      return withAbort(signal, () => fsp.readFile(this.#abs, { signal })).catch(
-        fsError
-      );
+      return withAbort(
+        signal,
+        () => fsp.readFile(this.#abs, { signal })
+      ).catch(fsError);
     const { start, end } = this.range;
     const fh = await fsp.open(this.#abs).catch(fsError);
     try {
@@ -829,9 +834,9 @@ var FSFile = class extends BaseFile {
     };
   }
   // The filesystem has no metadata store, so every write option but the
-  // bytes is dropped; fsp.writeFile with a signal removes a partial file itself.
+  // bytes is dropped; node.fsp.writeFile with a signal removes a partial file itself.
   async put(data, options) {
-    await fsp.mkdir(dirname(this.#abs), { recursive: true });
+    await fsp.mkdir(path.dirname(this.#abs), { recursive: true });
     await fsp.writeFile(this.#abs, data, { signal: options.signal });
   }
   target(options) {
@@ -844,7 +849,7 @@ var FSFile = class extends BaseFile {
   }
   async copy(key) {
     const dst = this.at(key);
-    await fsp.mkdir(dirname(dst.#abs), { recursive: true });
+    await fsp.mkdir(path.dirname(dst.#abs), { recursive: true });
     await fsp.copyFile(this.#abs, dst.#abs).catch(fsError);
   }
   // A single atomic rename rather than copy + unlink.
@@ -853,7 +858,7 @@ var FSFile = class extends BaseFile {
     if (typeof dest !== "string") return super.moveTo(dest, opts);
     assertNotOsPath(this.ctx.root, dest);
     const dst = this.at(destKey(this.ctx.prefix, dest, this.name));
-    await fsp.mkdir(dirname(dst.#abs), { recursive: true });
+    await fsp.mkdir(path.dirname(dst.#abs), { recursive: true });
     await fsp.rename(this.#abs, dst.#abs).catch(fsError);
     return dst;
   }
@@ -874,14 +879,16 @@ var FSFile = class extends BaseFile {
   }
   // Streams straight from disk instead of buffering the whole file.
   stream(opts) {
-    return Readable2.toWeb(this.nodeReadable(opts));
+    return stream.Readable.toWeb(
+      this.nodeReadable(opts)
+    );
   }
   nodeReadable(opts) {
     const signal = opts?.signal;
-    if (!this.range) return createReadStream(this.#abs, { signal });
-    if (isEmptyRange(this.range)) return Readable2.from([]);
+    if (!this.range) return fs.createReadStream(this.#abs, { signal });
+    if (isEmptyRange(this.range)) return stream.Readable.from([]);
     const { start, end } = this.range;
-    return createReadStream(this.#abs, {
+    return fs.createReadStream(this.#abs, {
       start,
       signal,
       ...end !== void 0 ? { end: end - 1 } : {}
@@ -893,24 +900,26 @@ var FSFile = class extends BaseFile {
     let writer = null;
     return new WritableStream({
       async start() {
-        await fsp.mkdir(dirname(finalPath), { recursive: true });
-        writer = createWriteStream(tmpPath);
-        await new Promise((resolve2, reject) => {
-          writer.once("open", resolve2);
+        await fsp.mkdir(path.dirname(finalPath), {
+          recursive: true
+        });
+        writer = fs.createWriteStream(tmpPath);
+        await new Promise((resolve, reject) => {
+          writer.once("open", resolve);
           writer.once("error", reject);
         });
       },
       write(chunk) {
-        return new Promise((resolve2, reject) => {
+        return new Promise((resolve, reject) => {
           const ok = writer.write(chunk);
-          if (ok) resolve2();
-          else writer.once("drain", resolve2);
+          if (ok) resolve();
+          else writer.once("drain", resolve);
           writer.once("error", reject);
         });
       },
       async close() {
-        await new Promise((resolve2, reject) => {
-          writer.end((err) => err ? reject(err) : resolve2());
+        await new Promise((resolve, reject) => {
+          writer.end((err) => err ? reject(err) : resolve());
         });
         await fsp.rename(tmpPath, finalPath);
       },
@@ -929,7 +938,7 @@ var FileSystemBucket = class extends BaseBucket {
   type = "FILESYSTEM";
   // OS directory of the current scope (the root plus the folder prefix).
   get path() {
-    return join2(this.ctx.root, this.PREFIX);
+    return path.join(this.ctx.root, this.PREFIX);
   }
   make(key) {
     return new FSFile(key, this.ctx);
@@ -938,17 +947,17 @@ var FileSystemBucket = class extends BaseBucket {
     assertNotOsPath(this.ctx.root, name);
     return super.file(name);
   }
-  folder(path) {
-    assertNotOsPath(this.ctx.root, path);
-    return super.folder(path);
+  folder(path2) {
+    assertNotOsPath(this.ctx.root, path2);
+    return super.folder(path2);
   }
   async info(opts) {
     throwIfAborted(opts?.signal);
     return {
       type: this.type,
-      name: basename(this.path) || this.path,
+      name: path.basename(this.path) || this.path,
       url: this.path,
-      id: userInfo().username
+      id: os.userInfo().username
     };
   }
   // The filesystem has no pagination: readdir returns everything at once.
@@ -956,7 +965,7 @@ var FileSystemBucket = class extends BaseBucket {
     const s = scope(this.PREFIX, filter);
     let raw;
     try {
-      raw = await fsp2.readdir(this.path, {
+      raw = await fsp.readdir(this.path, {
         recursive: true,
         withFileTypes: true
       });
@@ -966,24 +975,29 @@ var FileSystemBucket = class extends BaseBucket {
     }
     yield raw.filter((d) => d.isFile()).map((d) => {
       const dir = d.parentPath ?? d.path;
-      const rel = relative(this.path, join2(dir, d.name)).split(sep).join("/");
+      const rel = path.relative(this.path, path.join(dir, d.name)).split(path.sep).join("/");
       return this.PREFIX ? `${this.PREFIX}/${rel}` : rel;
     }).filter((key) => !/\.tmp-[a-z0-9]+$/.test(key) && s.test(key)).sort((a, b) => a.localeCompare(b)).map((key) => this.make(key));
   }
 };
-function FileSystem(path, config = {}) {
+function FileSystem(path2, config = {}) {
+  if (!fs || !path || !os)
+    throw new BucketError(
+      "FileSystem needs Node, which this runtime does not provide",
+      { code: "INVALID_CONFIG" }
+    );
   const ctx = {
     provider: "FILESYSTEM",
     prefix: "",
     publicUrl: origin(config.publicUrl ?? ENV_PUBLIC_URL),
-    root: resolve(path)
+    root: path.resolve(path2)
   };
   return new FileSystemBucket(ctx);
 }
 
 // src/lib/encodeS3Path.ts
-function encodeS3Path(path) {
-  return path.replace(
+function encodeS3Path(path2) {
+  return path2.replace(
     /[!'()*&<>]/g,
     (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase()
   );
@@ -1048,11 +1062,11 @@ async function sha256base64(data) {
 var basicDate = () => (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
 var ordinal = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 var signedHeaders = (headers) => Object.keys(headers).map((k) => k.toLowerCase()).sort(ordinal).join(";");
-function canonicalRequest(method, path, query, headers, payloadHash) {
+function canonicalRequest(method, path2, query, headers, payloadHash) {
   const sorted = Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v.trim()]).sort(([a], [b]) => ordinal(a, b));
   return [
     method.toUpperCase(),
-    path,
+    path2,
     query,
     sorted.map(([k, v]) => `${k}:${v}`).join("\n") + "\n",
     sorted.map(([k]) => k).join(";"),
@@ -1262,8 +1276,8 @@ var TokenCache = class {
   #value = null;
   #expiry = 0;
   /** `resolve` returns the credential and the epoch millis it expires at. */
-  constructor(resolve2) {
-    this.#resolve = resolve2;
+  constructor(resolve) {
+    this.#resolve = resolve;
   }
   async get() {
     if (this.#value !== null && Date.now() < this.#expiry) return this.#value;
@@ -1293,8 +1307,8 @@ function s3Context(config, prefix = "") {
     })
   };
 }
-var makeUrl = (ctx, path = "") => {
-  const clean = path ? path.startsWith("/") ? path : "/" + path : "";
+var makeUrl = (ctx, path2 = "") => {
+  const clean = path2 ? path2.startsWith("/") ? path2 : "/" + path2 : "";
   return ctx.url + encodeS3Path(clean);
 };
 var S3LikeBucket = class extends BaseBucket {
@@ -1357,8 +1371,8 @@ var S3LikeBucket = class extends BaseBucket {
   }
 };
 var S3LikeFile = class extends BaseFile {
-  #url(path) {
-    return makeUrl(this.ctx, path);
+  #url(path2) {
+    return makeUrl(this.ctx, path2);
   }
   async fetch(opts) {
     const rh = this.range && rangeHeader(this.range);
@@ -1632,7 +1646,7 @@ async function presignGCS(bucket, objectPath, auth, method, expiresSeconds) {
   const timestamp = basicDate();
   const scope2 = `${timestamp.slice(0, 8)}/auto/storage/goog4_request`;
   const host = "storage.googleapis.com";
-  const path = `/${bucket}/${objectPath.replace(/^\//, "")}`;
+  const path2 = `/${bucket}/${objectPath.replace(/^\//, "")}`;
   const params = new URLSearchParams({
     "X-Goog-Algorithm": "GOOG4-RSA-SHA256",
     "X-Goog-Credential": `${auth.clientEmail}/${scope2}`,
@@ -1643,7 +1657,7 @@ async function presignGCS(bucket, objectPath, auth, method, expiresSeconds) {
   params.sort();
   const canonical = canonicalRequest(
     method,
-    path,
+    path2,
     params.toString(),
     { host },
     "UNSIGNED-PAYLOAD"
@@ -1657,13 +1671,13 @@ async function presignGCS(bucket, objectPath, auth, method, expiresSeconds) {
   const key = await importRsaPkcs8(auth.privateKey);
   const signature2 = toHex(await rsaSha256(key, stringToSign));
   params.set("X-Goog-Signature", signature2);
-  return `https://${host}${path}?${params}`;
+  return `https://${host}${path2}?${params}`;
 }
 
 // src/gcs/File.ts
 var GCSFile = class extends BaseFile {
-  #apiUrl(path = this.path) {
-    return `${this.ctx.url}/storage/v1/b/${this.ctx.bucket}/o/${encodeURIComponent(path)}`;
+  #apiUrl(path2 = this.path) {
+    return `${this.ctx.url}/storage/v1/b/${this.ctx.bucket}/o/${encodeURIComponent(path2)}`;
   }
   #uploadUrl(query) {
     return `${this.ctx.url}/upload/storage/v1/b/${this.ctx.bucket}/o?${query}`;
@@ -1847,8 +1861,12 @@ function resolveConfig(bucket, config) {
 async function loadAuth() {
   const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (credPath) {
-    const { readFileSync } = await import("fs");
-    const json = JSON.parse(readFileSync(credPath, "utf-8"));
+    if (!fs)
+      throw new BucketError(
+        "GOOGLE_APPLICATION_CREDENTIALS needs Node's fs module to read the file",
+        { code: "INVALID_CONFIG" }
+      );
+    const json = JSON.parse(fs.readFileSync(credPath, "utf-8"));
     return {
       clientEmail: json.client_email ?? "",
       privateKey: json.private_key?.replace(/\\n/g, "\n")
@@ -1933,13 +1951,13 @@ var accountPathPrefix = (endpoint) => new URL(endpoint).pathname.replace(/\/$/, 
 function canonicalHeaders(headers) {
   return Object.entries(headers).filter(([k]) => k.toLowerCase().startsWith("x-ms-")).sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase())).map(([k, v]) => `${k.toLowerCase()}:${v.trim()}`).join("\n");
 }
-function canonicalResource(account, path, params = {}) {
-  const base = `/${account}${path.startsWith("/") ? path : "/" + path}`;
+function canonicalResource(account, path2, params = {}) {
+  const base = `/${account}${path2.startsWith("/") ? path2 : "/" + path2}`;
   const sorted = Object.entries(params).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `
 ${k}:${v}`).join("");
   return base + sorted;
 }
-async function signAzure(method, path, headers, auth, params = {}) {
+async function signAzure(method, path2, headers, auth, params = {}) {
   const date = plainDate();
   const allHeaders = {
     ...headers,
@@ -1971,7 +1989,7 @@ async function signAzure(method, path, headers, auth, params = {}) {
     "",
     // Range
     canonicalHeaders(allHeaders),
-    canonicalResource(auth.account, path, params)
+    canonicalResource(auth.account, path2, params)
   ].join("\n");
   const signature2 = toBase64(
     await hmacSha256(base64ToBytes(auth.key), stringToSign)
@@ -2033,16 +2051,16 @@ async function presignAzure(account, container, blobPath, key, method, expiresSe
 }
 
 // src/azure/File.ts
-var encodePath = (path) => path.replace(
+var encodePath = (path2) => path2.replace(
   /[<>]/g,
   (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase()
 );
 var AzureFile = class extends BaseFile {
-  #blobUrl(path = this.path) {
-    return `${this.ctx.url}/${this.ctx.container}/${encodePath(path)}`;
+  #blobUrl(path2 = this.path) {
+    return `${this.ctx.url}/${this.ctx.container}/${encodePath(path2)}`;
   }
-  #url(path = this.path, params) {
-    const base = this.#blobUrl(path);
+  #url(path2 = this.path, params) {
+    const base = this.#blobUrl(path2);
     return params ? `${base}?${new URLSearchParams(params)}` : base;
   }
   async fetch(opts) {
@@ -2262,12 +2280,12 @@ function azureContext(config) {
           ...req.body !== void 0 ? { "Content-Length": String(Buffer.byteLength(req.body)) } : {}
         };
         if (auth.type === "shared-key") {
-          const path = u.pathname.replace(accountPathPrefix(host), "");
+          const path2 = u.pathname.replace(accountPathPrefix(host), "");
           return {
             ...req,
             headers: await signAzure(
               req.method,
-              `${accountPathPrefix(host)}${path}`,
+              `${accountPathPrefix(host)}${path2}`,
               headers,
               { account, key: auth.key },
               Object.keys(params).length ? params : void 0

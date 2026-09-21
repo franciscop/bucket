@@ -2,7 +2,9 @@ import { getAccessToken, getMetadataToken } from "../lib/signGCS.ts";
 import { scope } from "../lib/prefix.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
 import { Http } from "../lib/http.ts";
+import BucketError from "../lib/BucketError.ts";
 import { origin } from "../lib/config.ts";
+import { fs } from "../lib/node.ts";
 import { TokenCache } from "../lib/TokenCache.ts";
 import { BaseBucket } from "../lib/base.ts";
 import type { BucketInfo } from "../lib/types.ts";
@@ -53,8 +55,12 @@ async function loadAuth(): Promise<GCSAuth> {
   // Service account or google credentials (`gcloud auth application-default login`)
   const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
   if (credPath) {
-    const { readFileSync } = await import("node:fs");
-    const json = JSON.parse(readFileSync(credPath, "utf-8")) as {
+    if (!fs)
+      throw new BucketError(
+        "GOOGLE_APPLICATION_CREDENTIALS needs Node's fs module to read the file",
+        { code: "INVALID_CONFIG" },
+      );
+    const json = JSON.parse(fs.readFileSync(credPath, "utf-8")) as {
       client_email: string;
       private_key: string;
     };

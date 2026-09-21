@@ -1,8 +1,3 @@
-import { createReadStream, createWriteStream } from "node:fs";
-import fsp from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { Readable } from "node:stream";
-
 import { getContentType } from "../lib/contentType.ts";
 import BucketError from "../lib/BucketError.ts";
 import { destKey } from "../lib/prefix.ts";
@@ -10,6 +5,7 @@ import { throwIfAborted, withAbort, type ReadOptions } from "../lib/abort.ts";
 import { isEmptyRange, rangeSize } from "../lib/range.ts";
 import { BaseFile, wholeBody, type FileContext } from "../lib/base.ts";
 import assertNotOsPath from "./osPathGuard.ts";
+import * as node from "../lib/node.ts";
 import type { BucketFile, FileInfo, WriteOptions } from "../lib/types.ts";
 
 // Map a Node filesystem error to a BucketError so `.code` is uniform with the
@@ -36,7 +32,7 @@ export interface FSContext extends FileContext {
 export class FSFile extends BaseFile<FSContext> {
   // The OS location is private; derive it externally with join(root, file.path).
   get #abs(): string {
-    return join(this.ctx.root, this.path);
+    return node.path.join(this.ctx.root, this.path);
   }
 
   // Wraps the bytes as a Response so the shared readers work unchanged; the
@@ -50,11 +46,11 @@ export class FSFile extends BaseFile<FSContext> {
 
   async #read(signal?: AbortSignal): Promise<Buffer> {
     if (!this.range)
-      return withAbort(signal, () => fsp.readFile(this.#abs, { signal })).catch(
-        fsError,
-      );
+      return withAbort(signal, () =>
+        node.fsp.readFile(this.#abs, { signal }),
+      ).catch(fsError);
     const { start, end } = this.range;
-    const fh = await fsp.open(this.#abs).catch(fsError);
+    const fh = await node.fsp.open(this.#abs).catch(fsError);
     try {
       const size = (await fh.stat()).size;
       const from = Math.min(start, size);
@@ -72,7 +68,7 @@ export class FSFile extends BaseFile<FSContext> {
     throwIfAborted(opts?.signal);
     let stat: { size: number; mtime: Date };
     try {
-      stat = await fsp.stat(this.#abs);
+      stat = await node.fsp.stat(this.#abs);
     } catch {
       return null;
     }
@@ -86,10 +82,10 @@ export class FSFile extends BaseFile<FSContext> {
   }
 
   // The filesystem has no metadata store, so every write option but the
-  // bytes is dropped; fsp.writeFile with a signal removes a partial file itself.
+  // bytes is dropped; node.fsp.writeFile with a signal removes a partial file itself.
   protected async put(data: Buffer, options: WriteOptions): Promise<void> {
-    await fsp.mkdir(dirname(this.#abs), { recursive: true });
-    await fsp.writeFile(this.#abs, data, { signal: options.signal });
+    await node.fsp.mkdir(node.path.dirname(this.#abs), { recursive: true });
+    await node.fsp.writeFile(this.#abs, data, { signal: options.signal });
   }
 
   protected target(options: WriteOptions) {
@@ -104,8 +100,8 @@ export class FSFile extends BaseFile<FSContext> {
 
   protected async copy(key: string): Promise<void> {
     const dst = this.at(key);
-    await fsp.mkdir(dirname(dst.#abs), { recursive: true });
-    await fsp.copyFile(this.#abs, dst.#abs).catch(fsError);
+    await node.fsp.mkdir(node.path.dirname(dst.#abs), { recursive: true });
+    await node.fsp.copyFile(this.#abs, dst.#abs).catch(fsError);
   }
 
   // A single atomic rename rather than copy + unlink.
@@ -117,13 +113,13 @@ export class FSFile extends BaseFile<FSContext> {
     if (typeof dest !== "string") return super.moveTo(dest, opts);
     assertNotOsPath(this.ctx.root, dest);
     const dst = this.at(destKey(this.ctx.prefix, dest, this.name));
-    await fsp.mkdir(dirname(dst.#abs), { recursive: true });
-    await fsp.rename(this.#abs, dst.#abs).catch(fsError);
+    await node.fsp.mkdir(node.path.dirname(dst.#abs), { recursive: true });
+    await node.fsp.rename(this.#abs, dst.#abs).catch(fsError);
     return dst;
   }
 
   protected async delete(): Promise<void> {
-    await fsp.unlink(this.#abs).catch((err: NodeJS.ErrnoException) => {
+    await node.fsp.unlink(this.#abs).catch((err: NodeJS.ErrnoException) => {
       if (err.code !== "ENOENT") fsError(err);
     });
   }
@@ -143,16 +139,18 @@ export class FSFile extends BaseFile<FSContext> {
 
   // Streams straight from disk instead of buffering the whole file.
   stream(opts?: ReadOptions): ReadableStream {
-    return Readable.toWeb(this.nodeReadable(opts)) as unknown as ReadableStream;
+    return node.stream!.Readable.toWeb(
+      this.nodeReadable(opts) as import("node:stream").Readable,
+    ) as unknown as ReadableStream;
   }
 
   nodeReadable(opts?: ReadOptions): NodeJS.ReadableStream {
     const signal = opts?.signal;
-    if (!this.range) return createReadStream(this.#abs, { signal });
-    if (isEmptyRange(this.range)) return Readable.from([]);
+    if (!this.range) return node.fs.createReadStream(this.#abs, { signal });
+    if (isEmptyRange(this.range)) return node.stream!.Readable.from([]);
     const { start, end } = this.range;
     // Node's `end` is inclusive; our range end is exclusive.
-    return createReadStream(this.#abs, {
+    return node.fs.createReadStream(this.#abs, {
       start,
       signal,
       ...(end !== undefined ? { end: end - 1 } : {}),
@@ -165,12 +163,14 @@ export class FSFile extends BaseFile<FSContext> {
     // content (or absence) untouched.
     const finalPath = this.#abs;
     const tmpPath = `${finalPath}.tmp-${Math.random().toString(36).slice(2)}`;
-    let writer: ReturnType<typeof createWriteStream> | null = null;
+    let writer: import("node:fs").WriteStream | null = null;
 
     return new WritableStream<Uint8Array>({
       async start() {
-        await fsp.mkdir(dirname(finalPath), { recursive: true });
-        writer = createWriteStream(tmpPath);
+        await node.fsp.mkdir(node.path.dirname(finalPath), {
+          recursive: true,
+        });
+        writer = node.fs.createWriteStream(tmpPath);
         await new Promise<void>((resolve, reject) => {
           writer!.once("open", resolve);
           writer!.once("error", reject);
@@ -188,11 +188,11 @@ export class FSFile extends BaseFile<FSContext> {
         await new Promise<void>((resolve, reject) => {
           writer!.end((err?: Error | null) => (err ? reject(err) : resolve()));
         });
-        await fsp.rename(tmpPath, finalPath);
+        await node.fsp.rename(tmpPath, finalPath);
       },
       async abort() {
         writer?.destroy();
-        await fsp.unlink(tmpPath).catch(() => {});
+        await node.fsp.unlink(tmpPath).catch(() => {});
       },
     });
   }
