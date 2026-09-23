@@ -778,3 +778,44 @@ describe("GCS async iteration", () => {
     expect(names.sort()).toEqual(["hello.txt", "world.json"]);
   });
 });
+
+describe("GCS credentials", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  });
+
+  it("does not crash the process when the credentials file is missing", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (err: unknown) => rejections.push(err);
+    process.on("unhandledRejection", onRejection);
+    try {
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = "/nope/missing.json";
+      GCS("test-bucket", { anonymous: true });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+  });
+
+  it("throws UNAUTHORIZED when the token exchange is refused", async () => {
+    mockFetch(async (url) =>
+      url.includes("oauth2.googleapis.com")
+        ? makeResponse('{"error":"invalid_grant"}', 400)
+        : makeResponse("{}"),
+    );
+    const err = await GCS("test-bucket")
+      .file("x.txt")
+      .text()
+      .then(
+        () => null,
+        (e: { code?: string }) => e,
+      );
+    expect(err?.code).toBe("UNAUTHORIZED");
+  });
+});

@@ -41,6 +41,12 @@ export async function getAccessToken(auth: GCSAuth): Promise<string> {
       assertion: jwt,
     }),
   });
+  if (!res.ok)
+    throw new BucketError("GCS token exchange failed: " + res.status, {
+      provider: "GCS",
+      status: res.status,
+      code: "UNAUTHORIZED",
+    });
   const data = (await res.json()) as { access_token: string };
   return data.access_token;
 }

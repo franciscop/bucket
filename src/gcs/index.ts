@@ -80,6 +80,8 @@ async function loadAuth(): Promise<GCSAuth> {
 
 function gcsContext(config: GCSResolved): GCSContext {
   const auth = loadAuth();
+  // Awaited only on first use, so a bad credentials file must not crash first.
+  auth.catch(() => {});
   // Tokens last an hour; refresh five minutes early.
   const token = new TokenCache<string>(async () => {
     const resolved = await auth;

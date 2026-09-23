@@ -65,7 +65,12 @@ export function scope(
   const dir = prefix ? prefix + "/" : "";
   return {
     query: dir,
-    test: (key) =>
-      key.startsWith(dir) && (!filter || filter.test(key.slice(dir.length))),
+    test: (key) => {
+      if (!key.startsWith(dir)) return false;
+      if (!filter) return true;
+      // A /g or /y RegExp resumes from lastIndex, which skips every other key.
+      filter.lastIndex = 0;
+      return filter.test(key.slice(dir.length));
+    },
   };
 }

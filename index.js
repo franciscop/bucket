@@ -55,7 +55,12 @@ function scope(prefix, filter) {
   const dir = prefix ? prefix + "/" : "";
   return {
     query: dir,
-    test: (key) => key.startsWith(dir) && (!filter || filter.test(key.slice(dir.length)))
+    test: (key) => {
+      if (!key.startsWith(dir)) return false;
+      if (!filter) return true;
+      filter.lastIndex = 0;
+      return filter.test(key.slice(dir.length));
+    }
   };
 }
 
@@ -312,13 +317,18 @@ var parse_default = parse;
 
 // src/lib/promiseToReadable.ts
 function promiseToReadable(work) {
-  if (typeof work === "function") work = work();
+  const body = typeof work === "function" ? work() : work;
+  let reader;
   return new ReadableStream({
-    async start(controller) {
-      for await (const chunk of await work) {
-        controller.enqueue(chunk);
-      }
-      controller.close();
+    async pull(controller) {
+      reader ??= (await body).getReader();
+      const { done, value } = await reader.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    async cancel(reason) {
+      reader ??= (await body).getReader();
+      await reader.cancel(reason);
     }
   });
 }
@@ -647,6 +657,10 @@ var BaseFile = class {
     return this;
   }
   async moveTo(dest, opts) {
+    if (typeof dest === "string" && destKey(this.ctx.prefix, dest, this.name) === this.path) {
+      throwIfAborted(opts?.signal);
+      return this;
+    }
     const moved = await this.copyTo(dest, opts);
     await this.remove(opts);
     return moved;
@@ -661,9 +675,8 @@ var BaseFile = class {
         "rename() cannot change directory, use moveTo() instead",
         { code: "INVALID_PATH" }
       );
-    const rel = this.ctx.prefix ? this.path.slice(this.ctx.prefix.length + 1) : this.path;
-    const dir = rel.split("/").slice(0, -1).join("/");
-    return this.moveTo(dir ? dir + "/" + name : name, opts);
+    const dir = this.path.split("/").slice(0, -1).join("/");
+    return this.moveTo(dir ? `/${dir}/${name}` : `/${name}`, opts);
   }
   // Bun-style alias, so muscle memory from Bun's S3File carries over
   unlink(opts) {
@@ -1102,6 +1115,11 @@ async function sha256base64(data) {
 var basicDate = () => (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
 var ordinal = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 var signedHeaders = (headers) => Object.keys(headers).map((k) => k.toLowerCase()).sort(ordinal).join(";");
+var rfc3986 = (s) => encodeURIComponent(s).replace(
+  /[!'()*]/g,
+  (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase()
+);
+var canonicalQuery = (params) => [...params].map(([k, v]) => `${rfc3986(k)}=${rfc3986(v)}`).sort(ordinal).join("&");
 function canonicalRequest(method, path2, query, headers, payloadHash) {
   const sorted = Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v.trim()]).sort(([a], [b]) => ordinal(a, b));
   return [
@@ -1147,11 +1165,12 @@ async function signS3(req, auth) {
     ...auth.sessionToken ? { "x-amz-security-token": auth.sessionToken } : {}
   };
   const timestamp = headers["x-amz-date"];
-  url.searchParams.sort();
+  const query = canonicalQuery(url.searchParams);
+  url.search = query;
   const canonical = canonicalRequest(
     method,
     encodeS3Path(url.pathname),
-    url.searchParams.toString(),
+    query,
     headers,
     payload
   );
@@ -1159,6 +1178,7 @@ async function signS3(req, auth) {
   const credential = `${auth.id}/${timestamp.slice(0, 8)}/${auth.region}/s3/aws4_request`;
   return {
     ...req,
+    url: url.toString(),
     method,
     body,
     headers: {
@@ -1665,6 +1685,12 @@ async function getAccessToken(auth) {
       assertion: jwt
     })
   });
+  if (!res.ok)
+    throw new BucketError("GCS token exchange failed: " + res.status, {
+      provider: "GCS",
+      status: res.status,
+      code: "UNAUTHORIZED"
+    });
   const data = await res.json();
   return data.access_token;
 }
@@ -1919,6 +1945,8 @@ async function loadAuth() {
 }
 function gcsContext(config) {
   const auth = loadAuth();
+  auth.catch(() => {
+  });
   const token = new TokenCache(async () => {
     const resolved = await auth;
     const value = resolved ? await getAccessToken(resolved) : await getMetadataToken();

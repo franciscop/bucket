@@ -89,6 +89,14 @@ const cases: Case[] = [
     url: `${B}/?list-type=2&prefix=logs%2F&continuation-token=abc123`,
   },
   {
+    name: "list prefix with a space and sub-delimiters",
+    url: `${B}/?list-type=2&prefix=${encodeURIComponent("my folder (1)!/")}`,
+  },
+  {
+    name: "continuation token with base64 characters",
+    url: `${B}/?list-type=2&continuation-token=${encodeURIComponent("a+b/c==")}`,
+  },
+  {
     name: "PUT with body and content headers",
     url: `${B}/data/file.txt`,
     method: "put",

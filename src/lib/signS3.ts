@@ -3,6 +3,7 @@ import encodeS3Path from "./encodeS3Path.ts";
 import { sha256hex } from "./webcrypto.ts";
 import {
   basicDate,
+  canonicalQuery,
   canonicalRequest,
   signature,
   signedHeaders,
@@ -34,11 +35,13 @@ export default async function signS3(
     ...(auth.sessionToken ? { "x-amz-security-token": auth.sessionToken } : {}),
   };
   const timestamp = headers["x-amz-date"];
-  url.searchParams.sort();
+  const query = canonicalQuery(url.searchParams);
+  // Send the query exactly as signed.
+  url.search = query;
   const canonical = canonicalRequest(
     method,
     encodeS3Path(url.pathname),
-    url.searchParams.toString(),
+    query,
     headers,
     payload,
   );
@@ -46,6 +49,7 @@ export default async function signS3(
   const credential = `${auth.id}/${timestamp.slice(0, 8)}/${auth.region}/s3/aws4_request`;
   return {
     ...req,
+    url: url.toString(),
     method,
     body,
     headers: {

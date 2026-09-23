@@ -124,3 +124,14 @@ describe("list/scan/count keep an optional filter", () => {
     expect(await code(() => bucket.scan("x" as never))).toBe("INVALID_FILTER");
   });
 });
+
+describe("a global RegExp filter", () => {
+  it("matches every file, not every other one", async () => {
+    const bucket = freshBucket();
+    for (const n of ["x1.txt", "x2.txt", "x3.txt", "x4.txt"])
+      await bucket.file(n).write("-");
+    expect((await bucket.list(/x/g)).length).toBe(4);
+    expect(await bucket.count(/x/g)).toBe(4);
+    expect((await bucket.remove(/x/g)).length).toBe(4);
+  });
+});

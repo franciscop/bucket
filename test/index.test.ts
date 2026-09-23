@@ -777,6 +777,13 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         await src.moveTo(dstPath);
         expect(await bucket.file(dstPath).text()).toBe("deep-move");
       });
+
+      it("moving a file onto itself keeps it", async () => {
+        const src = bucket.file(testFile());
+        await src.write("stay");
+        await src.moveTo(src.path);
+        expect(await src.text()).toBe("stay");
+      });
     });
 
     describe("rename()", () => {
@@ -810,6 +817,23 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
         const src = bucket.file(testFile());
         await src.write("x");
         await expect(src.rename("sub/name.txt")).rejects.toThrow();
+      });
+
+      it("renaming a file to its own name keeps it", async () => {
+        const src = bucket.file(testFile());
+        await src.write("stay");
+        await src.rename(src.name);
+        expect(await src.text()).toBe("stay");
+      });
+
+      it("renames in place after a move out of a folder", async () => {
+        const src = bucket.folder("nested").file(testFile());
+        await src.write("climbed");
+        const moved = await src.moveTo("../" + testFile());
+        const name = testFile();
+        const renamed = await moved.rename(name);
+        expect(renamed.path).toBe(name);
+        expect(await bucket.file(name).text()).toBe("climbed");
       });
     });
 

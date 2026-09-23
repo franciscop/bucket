@@ -212,6 +212,14 @@ export abstract class BaseFile<
     dest: string | BucketFile,
     opts?: ReadOptions,
   ): Promise<BucketFile> {
+    // Onto itself: copy-then-remove would delete the only copy.
+    if (
+      typeof dest === "string" &&
+      destKey(this.ctx.prefix, dest, this.name) === this.path
+    ) {
+      throwIfAborted(opts?.signal);
+      return this;
+    }
     const moved = await this.copyTo(dest, opts);
     await this.remove(opts);
     return moved;
@@ -227,11 +235,9 @@ export abstract class BaseFile<
         "rename() cannot change directory, use moveTo() instead",
         { code: "INVALID_PATH" },
       );
-    const rel = this.ctx.prefix
-      ? this.path.slice(this.ctx.prefix.length + 1)
-      : this.path;
-    const dir = rel.split("/").slice(0, -1).join("/");
-    return this.moveTo(dir ? dir + "/" + name : name, opts);
+    // Anchored at the root: the file may no longer sit under ctx.prefix.
+    const dir = this.path.split("/").slice(0, -1).join("/");
+    return this.moveTo(dir ? `/${dir}/${name}` : `/${name}`, opts);
   }
 
   // Bun-style alias, so muscle memory from Bun's S3File carries over

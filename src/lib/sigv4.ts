@@ -16,6 +16,21 @@ export const signedHeaders = (headers: Record<string, string>): string =>
     .sort(ordinal)
     .join(";");
 
+// RFC 3986, as SigV4 wants: URLSearchParams would send spaces as "+" and
+// leave !'()* bare, and the server rejects that signature.
+const rfc3986 = (s: string): string =>
+  encodeURIComponent(s).replace(
+    /[!'()*]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
+
+/** The query string V4 signs: each pair encoded, then sorted. */
+export const canonicalQuery = (params: URLSearchParams): string =>
+  [...params]
+    .map(([k, v]) => `${rfc3986(k)}=${rfc3986(v)}`)
+    .sort(ordinal)
+    .join("&");
+
 export function canonicalRequest(
   method: string,
   path: string,
