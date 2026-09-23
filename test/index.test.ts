@@ -104,14 +104,19 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
       // and the S3/R2 batch delete body) and must be percent-encoded in
       // signed S3-style URLs, so they must round-trip end to end.
       it("round-trips names with & < > ' through list() and remove()", async () => {
-        const fname = `test${Math.floor(Math.random() * 100000)}-a&<b>'.txt`;
+        // Windows forbids "<" and ">" in file names, so FS there tests the rest.
+        const special =
+          bucket.type === "FILESYSTEM" && process.platform === "win32"
+            ? "a&b'"
+            : "a&<b>'";
+        const fname = `test${Math.floor(Math.random() * 100000)}-${special}.txt`;
         await bucket.file(fname).write("xml-chars");
         expect(await bucket.file(fname).text()).toBe("xml-chars");
 
         const names = (await bucket.list()).map((f) => f.name);
         expect(names).toContain(fname);
 
-        const deleted = await bucket.remove(/-a&<b>'\.txt$/);
+        const deleted = await bucket.remove(/-a&<?b>?'\.txt$/);
         expect(deleted.map((f) => f.name)).toContain(fname);
         expect(await bucket.file(fname).exists()).toBe(false);
       });

@@ -114,26 +114,30 @@ describe("FileSystem bucket-relative paths", () => {
     await file.remove();
   });
 
-  it("rejects (not hangs) when the temp file cannot be opened", async () => {
-    const fs = await import("node:fs/promises");
-    const dir = join(ROOT, "locked");
-    await fs.mkdir(dir, { recursive: true });
-    await fs.chmod(dir, 0o555); // read-only: opening the temp sibling fails
-    try {
-      let threw = false;
+  // Windows ignores chmod on directories, so the lock cannot be set up there.
+  it.skipIf(process.platform === "win32")(
+    "rejects (not hangs) when the temp file cannot be opened",
+    async () => {
+      const fs = await import("node:fs/promises");
+      const dir = join(ROOT, "locked");
+      await fs.mkdir(dir, { recursive: true });
+      await fs.chmod(dir, 0o555); // read-only: opening the temp sibling fails
       try {
-        await new Blob(["x"])
-          .stream()
-          .pipeTo(bucket.file("locked/x.txt").writable());
-      } catch {
-        threw = true;
+        let threw = false;
+        try {
+          await new Blob(["x"])
+            .stream()
+            .pipeTo(bucket.file("locked/x.txt").writable());
+        } catch {
+          threw = true;
+        }
+        expect(threw).toBe(true);
+      } finally {
+        await fs.chmod(dir, 0o755);
+        await fs.rm(dir, { recursive: true, force: true });
       }
-      expect(threw).toBe(true);
-    } finally {
-      await fs.chmod(dir, 0o755);
-      await fs.rm(dir, { recursive: true, force: true });
-    }
-  });
+    },
+  );
 
   it("rejects OS-style paths that start with the bucket's own root", async () => {
     expect(errorCode(() => bucket.file(ROOT + "/a/b.txt"))).toBe(
