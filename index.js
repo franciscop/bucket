@@ -911,36 +911,59 @@ var FSFile = class extends BaseFile {
     const finalPath = this.#abs;
     const tmpPath = `${finalPath}.tmp-${Math.random().toString(36).slice(2)}`;
     let writer = null;
+    let failed = null;
+    const discard = async () => {
+      writer?.destroy();
+      await fsp.unlink(tmpPath).catch(() => {
+      });
+    };
+    const rethrow2 = async (err) => {
+      await discard();
+      throw failed ?? err;
+    };
     return new WritableStream({
       async start() {
         await fsp.mkdir(path.dirname(finalPath), {
           recursive: true
         });
-        writer = fs.createWriteStream(tmpPath);
+        const stream2 = fs.createWriteStream(tmpPath);
         await new Promise((resolve, reject) => {
-          writer.once("open", resolve);
-          writer.once("error", reject);
+          stream2.once("open", () => {
+            stream2.off("error", reject);
+            resolve();
+          });
+          stream2.once("error", reject);
         });
+        stream2.on("error", (err) => failed ??= err);
+        writer = stream2;
       },
-      write(chunk) {
-        return new Promise((resolve, reject) => {
-          const ok = writer.write(chunk);
-          if (ok) resolve();
-          else writer.once("drain", resolve);
-          writer.once("error", reject);
-        });
+      async write(chunk) {
+        if (failed) return rethrow2(failed);
+        if (!writer.write(chunk) && !writer.destroyed) {
+          await new Promise((resolve) => {
+            const done = () => {
+              writer.off("drain", done).off("close", done);
+              resolve();
+            };
+            writer.once("drain", done).once("close", done);
+          });
+        }
+        if (failed) return rethrow2(failed);
       },
       async close() {
-        await new Promise((resolve, reject) => {
-          writer.end((err) => err ? reject(err) : resolve());
-        });
+        try {
+          await new Promise((resolve, reject) => {
+            writer.end(
+              (err) => err ? reject(err) : resolve()
+            );
+          });
+        } catch (err) {
+          return rethrow2(err);
+        }
+        if (failed) return rethrow2(failed);
         await fsp.rename(tmpPath, finalPath);
       },
-      async abort() {
-        writer?.destroy();
-        await fsp.unlink(tmpPath).catch(() => {
-        });
-      }
+      abort: discard
     });
   }
 };

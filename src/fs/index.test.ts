@@ -5,7 +5,9 @@
 // A leading "/" anchors at the bucket root (never the OS root), file.path is
 // the path within the bucket, and nothing resolves outside the root folder.
 
+import fs from "node:fs";
 import { resolve, join } from "node:path";
+import { describe, expect, it, spyOn } from "bun:test";
 
 import FileSystem from "./index.ts";
 
@@ -160,5 +162,64 @@ describe("FileSystem bucket-relative paths", () => {
       expect((err as { code?: string }).code).toBe("INVALID_PATH");
     }
     await src.remove();
+  });
+});
+
+describe("FileSystem streaming writes", () => {
+  // 256 chunks of 64 KiB, far past the write stream's 16 KiB buffer, so the
+  // writer hits backpressure and waits on "drain" many times.
+  const chunked = (count = 256, size = 64 * 1024) =>
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        for (let i = 0; i < count; i++) c.enqueue(new Uint8Array(size).fill(i));
+        c.close();
+      },
+    });
+
+  it("does not add a listener per chunk", async () => {
+    const warnings: string[] = [];
+    const onWarning = (w: Error) => warnings.push(w.name);
+    process.on("warning", onWarning);
+    try {
+      const file = bucket.file("many-chunks.bin");
+      await chunked().pipeTo(file.writable());
+      expect((await file.info())!.size).toBe(256 * 64 * 1024);
+      await new Promise((r) => setTimeout(r, 10)); // warnings are emitted async
+      expect(warnings).not.toContain("MaxListenersExceededWarning");
+      await file.remove();
+    } finally {
+      process.off("warning", onWarning);
+    }
+  });
+
+  it("rejects when the disk fails mid-stream, leaving nothing behind", async () => {
+    const original = fs.createWriteStream;
+    const spy = spyOn(fs, "createWriteStream").mockImplementation(((
+      ...args: Parameters<typeof original>
+    ) => {
+      const stream = original(...args);
+      const write = stream._write.bind(stream);
+      let n = 0;
+      stream._write = (chunk, encoding, cb) =>
+        ++n === 3 ? cb(new Error("disk full")) : write(chunk, encoding, cb);
+      return stream;
+    }) as typeof original);
+    try {
+      const file = bucket.file("disk-full.bin");
+      const err = await chunked()
+        .pipeTo(file.writable())
+        .then(
+          () => null,
+          (e: Error) => e,
+        );
+      expect(err?.message).toBe("disk full");
+      expect(await file.exists()).toBe(false);
+      const leftovers = (await fs.promises.readdir(ROOT)).filter((e) =>
+        e.startsWith("disk-full.bin.tmp-"),
+      );
+      expect(leftovers).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

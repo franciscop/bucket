@@ -164,36 +164,63 @@ export class FSFile extends BaseFile<FSContext> {
     const finalPath = this.#abs;
     const tmpPath = `${finalPath}.tmp-${Math.random().toString(36).slice(2)}`;
     let writer: import("node:fs").WriteStream | null = null;
+    let failed: Error | null = null;
+
+    const discard = async () => {
+      writer?.destroy();
+      await node.fsp.unlink(tmpPath).catch(() => {});
+    };
+    // The spec never calls abort() when the sink itself fails, so clean up here.
+    const rethrow = async (err: unknown): Promise<never> => {
+      await discard();
+      throw failed ?? err;
+    };
 
     return new WritableStream<Uint8Array>({
       async start() {
         await node.fsp.mkdir(node.path.dirname(finalPath), {
           recursive: true,
         });
-        writer = node.fs.createWriteStream(tmpPath);
+        const stream = node.fs.createWriteStream(tmpPath);
         await new Promise<void>((resolve, reject) => {
-          writer!.once("open", resolve);
-          writer!.once("error", reject);
+          stream.once("open", () => {
+            stream.off("error", reject);
+            resolve();
+          });
+          stream.once("error", reject);
         });
+        // One listener for the whole stream: a per-chunk one piles up.
+        stream.on("error", (err) => (failed ??= err));
+        writer = stream;
       },
-      write(chunk) {
-        return new Promise<void>((resolve, reject) => {
-          const ok = writer!.write(chunk);
-          if (ok) resolve();
-          else writer!.once("drain", resolve);
-          writer!.once("error", reject);
-        });
+      async write(chunk) {
+        if (failed) return rethrow(failed);
+        if (!writer!.write(chunk) && !writer!.destroyed) {
+          // "close" too: after an error, "drain" never comes.
+          await new Promise<void>((resolve) => {
+            const done = () => {
+              writer!.off("drain", done).off("close", done);
+              resolve();
+            };
+            writer!.once("drain", done).once("close", done);
+          });
+        }
+        if (failed) return rethrow(failed);
       },
       async close() {
-        await new Promise<void>((resolve, reject) => {
-          writer!.end((err?: Error | null) => (err ? reject(err) : resolve()));
-        });
+        try {
+          await new Promise<void>((resolve, reject) => {
+            writer!.end((err?: Error | null) =>
+              err ? reject(err) : resolve(),
+            );
+          });
+        } catch (err) {
+          return rethrow(err);
+        }
+        if (failed) return rethrow(failed);
         await node.fsp.rename(tmpPath, finalPath);
       },
-      async abort() {
-        writer?.destroy();
-        await node.fsp.unlink(tmpPath).catch(() => {});
-      },
+      abort: discard,
     });
   }
 }
