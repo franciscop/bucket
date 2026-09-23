@@ -55,7 +55,7 @@ export class B2File extends BaseFile<B2Context> {
   // out as-is: a 401 there means a stale upload URL, not an expired account.
   async #upload(
     auth: B2UploadAuth,
-    data: Buffer,
+    data: Uint8Array,
     headers: Record<string, string>,
     signal?: AbortSignal,
   ): Promise<void> {
@@ -126,7 +126,7 @@ export class B2File extends BaseFile<B2Context> {
     });
   }
 
-  protected async put(data: Buffer, options: WriteOptions): Promise<void> {
+  protected async put(data: Uint8Array, options: WriteOptions): Promise<void> {
     const auth = await this.ctx.session.get();
     const upload = await this.#uploadAuth(
       "b2_get_upload_url?bucketId=" + auth.bucketId,

@@ -17,7 +17,7 @@ export interface S3MultipartOptions {
   /** Content headers (type, cache-control, disposition, x-amz-meta-*) set
    * on the create call; S3 applies them to the assembled object. */
   headers: Record<string, string>;
-  single: (data: Buffer) => Promise<void>;
+  single: (data: Uint8Array) => Promise<void>;
   /** Cancels the upload. Never passed to abort(), which has to clean up
    * precisely because the signal already fired. */
   signal?: AbortSignal;
@@ -27,7 +27,7 @@ function request(
   o: S3MultipartOptions,
   method: string,
   query: Record<string, string>,
-  body?: Buffer | string,
+  body?: Uint8Array | string,
   headers: Record<string, string> = {},
   signal: AbortSignal | undefined = o.signal,
 ): Promise<Response> {

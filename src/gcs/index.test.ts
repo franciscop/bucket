@@ -494,7 +494,9 @@ describe("GCS file().write()", () => {
     expect(capturedMethod).toBe("POST");
     expect(capturedUrl).toContain("uploadType=media");
     expect(capturedUrl).toContain("hello.txt");
-    expect(String(capturedBody)).toBe("hello world");
+    expect(new TextDecoder().decode(capturedBody as Uint8Array)).toBe(
+      "hello world",
+    );
   });
 
   it("throws on non-OK response", async () => {
@@ -740,7 +742,7 @@ describe("GCS file().write() content types", () => {
       return Promise.resolve(makeResponse(null, 200));
     }) as typeof fetch;
     await bucket.file("hello.txt").write(Buffer.from("hello"));
-    expect(capturedBody).toBeInstanceOf(Buffer);
+    expect(capturedBody).toBeInstanceOf(Uint8Array);
   });
 
   it("sends a PUT request with Blob content", async () => {
@@ -751,7 +753,7 @@ describe("GCS file().write() content types", () => {
       return Promise.resolve(makeResponse(null, 200));
     }) as typeof fetch;
     await bucket.file("hello.txt").write(new Blob(["hello"]));
-    expect(capturedBody).toBeInstanceOf(Buffer);
+    expect(capturedBody).toBeInstanceOf(Uint8Array);
   });
 });
 

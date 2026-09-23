@@ -1,5 +1,6 @@
 import { invalidConfig, origin } from "../lib/config.ts";
 import { S3LikeBucket, s3Context, type S3LikeConfig } from "../lib/s3like.ts";
+import { env } from "../lib/env.ts";
 
 const {
   R2_BUCKET: ENV_BUCKET,
@@ -10,7 +11,7 @@ const {
   R2_SESSION_TOKEN: ENV_SESSION_TOKEN,
   R2_REGION: ENV_REGION,
   R2_PUBLIC_URL: ENV_PUBLIC_URL,
-} = process.env;
+} = env;
 
 export interface R2Config {
   id?: string;

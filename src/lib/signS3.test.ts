@@ -105,7 +105,7 @@ const cases: Case[] = [
       "x-amz-checksum-sha256": "XdTEZdpLcGp4q+3bRpH9fAIdT4YgmdlXr5J/Fa2MTdM=",
     },
   },
-  // The case the FS/B2 fixture `a-1*(a!.txt` is designed to surface: RFC-3986
+  // The case the `a-1*(a!.txt` fixture key is designed to surface: RFC-3986
   // sub-delimiters must be percent-encoded in the canonical URI, or S3 → 403.
   { name: "key with sub-delimiters ! * (", url: `${B}/a-1*(a!.txt` },
   { name: "key with apostrophe and parens", url: `${B}/o'brien (1).txt` },

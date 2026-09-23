@@ -15,7 +15,11 @@ jobs:
   # Backblaze secrets are set. The bundle is built via the `prepare` hook during
   # `bun install`, so a build failure fails this job too. No Docker required.
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
@@ -56,7 +60,7 @@ jobs:
           docker cp minio-bin:/usr/bin/minio /tmp/minio
           docker rm minio-bin >/dev/null
           sudo install -m 0755 /tmp/minio /usr/local/bin/minio
-          curl -fsSL https://github.com/fsouza/fake-gcs-server/releases/download/v1.52.2/fake-gcs-server_1.52.2_Linux_amd64.tar.gz \
+          curl -fsSL https://github.com/fsouza/fake-gcs-server/releases/download/v1.56.1/fake-gcs-server_1.56.1_Linux_amd64.tar.gz \
             | sudo tar -xz -C /usr/local/bin fake-gcs-server
           # Fail here rather than with a confusing ENOEXEC once the suite runs
           minio --version

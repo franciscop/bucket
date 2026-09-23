@@ -83,7 +83,7 @@ export class FSFile extends BaseFile<FSContext> {
 
   // The filesystem has no metadata store, so every write option but the
   // bytes is dropped; node.fsp.writeFile with a signal removes a partial file itself.
-  protected async put(data: Buffer, options: WriteOptions): Promise<void> {
+  protected async put(data: Uint8Array, options: WriteOptions): Promise<void> {
     await node.fsp.mkdir(node.path.dirname(this.#abs), { recursive: true });
     await node.fsp.writeFile(this.#abs, data, { signal: options.signal });
   }

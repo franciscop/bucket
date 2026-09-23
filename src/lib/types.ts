@@ -34,7 +34,6 @@ export interface BucketInfo {
 /** Accepted input types for `file.write()` */
 export type WriteContent =
   | string
-  | Buffer
   | Uint8Array
   | Blob
   | BucketFile

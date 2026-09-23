@@ -12,8 +12,8 @@ const PART = 100;
 
 function makeTarget(partSize: number | (() => Promise<number>) = PART) {
   const events: string[] = [];
-  const buffers: Buffer[] = [];
-  let single: Buffer | null = null;
+  const buffers: Uint8Array[] = [];
+  let single: Uint8Array | null = null;
   let inFlight = 0;
   let maxInFlight = 0;
   let failPart: number | null = null;
@@ -30,7 +30,7 @@ function makeTarget(partSize: number | (() => Promise<number>) = PART) {
 
   const target: ChunkedTarget<string, string> = {
     partSize: resolvedPartSize,
-    async single(data: Buffer) {
+    async single(data: Uint8Array) {
       single = data;
       events.push(`single:${data.length}`);
     },

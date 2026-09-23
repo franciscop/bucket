@@ -1,4 +1,6 @@
 import { presignAzure } from "../lib/signAzure.ts";
+import { toBytes } from "../lib/bytes.ts";
+import { toBase64 } from "../lib/webcrypto.ts";
 import metaFromHeaders, { metaExtras } from "../lib/meta.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
 import type { Http } from "../lib/http.ts";
@@ -83,7 +85,7 @@ export class AzureFile extends BaseFile<AzureContext> {
     });
   }
 
-  protected async put(data: Buffer, options: WriteOptions): Promise<void> {
+  protected async put(data: Uint8Array, options: WriteOptions): Promise<void> {
     await this.ctx.http.put(this.#url(), {
       headers: { "x-ms-blob-type": "BlockBlob", ...this.#blobHeaders(options) },
       body: data,
@@ -98,7 +100,7 @@ export class AzureFile extends BaseFile<AzureContext> {
   protected target(options: WriteOptions): ChunkedTarget<string[], string> {
     // Block ids must be base64 and all the same length, so pad the index.
     const blockId = (n: number) =>
-      Buffer.from(String(n).padStart(6, "0")).toString("base64");
+      toBase64(toBytes(String(n).padStart(6, "0")));
     return {
       partSize: 8 * 1024 * 1024,
       single: (data) => this.put(data, options),

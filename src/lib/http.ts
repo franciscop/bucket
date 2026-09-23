@@ -9,7 +9,7 @@ export interface HttpRequest {
   method: string;
   url: string;
   headers: Record<string, string>;
-  body?: string | Buffer;
+  body?: string | Uint8Array;
 }
 
 /** Fills in a request's auth. May rewrite headers or the url (query signing). */
@@ -19,7 +19,7 @@ export type Authorizer = (
 
 export interface SendOptions {
   headers?: Record<string, string>;
-  body?: string | Buffer;
+  body?: string | Uint8Array;
   signal?: AbortSignal;
   /** Statuses to accept besides 2xx, e.g. 404 on a delete. */
   ok?: number[];
@@ -35,8 +35,8 @@ export interface SendOptions {
 // Transient by nature: the same request a moment later may well succeed.
 // A 429 or a 5xx is the server asking to be left alone briefly.
 const RETRIABLE = new Set([429, 500, 502, 503, 504]);
-// Only replayable methods. Bodies here are always strings or Buffers (a
-// chunked upload sends one Buffer per part), so re-sending is always safe.
+// Only replayable methods. Bodies here are always strings or bytes (a
+// chunked upload sends one Uint8Array per part), so re-sending is always safe.
 const IDEMPOTENT = new Set(["GET", "HEAD", "PUT", "DELETE"]);
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

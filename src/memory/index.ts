@@ -4,8 +4,9 @@ import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
 import { BaseBucket } from "../lib/base.ts";
 import type { BucketInfo } from "../lib/types.ts";
 import { MemoryFile, type MemoryContext } from "./File.ts";
+import { env } from "../lib/env.ts";
 
-const { MEMORY_PUBLIC_URL: ENV_PUBLIC_URL } = process.env;
+const { MEMORY_PUBLIC_URL: ENV_PUBLIC_URL } = env;
 
 export interface MemoryConfig {
   /** Public origin to pretend the bucket is served from (falls back to

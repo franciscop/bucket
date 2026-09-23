@@ -94,12 +94,25 @@ var invalidConfig = (message) => {
 };
 var origin = (url) => (url ?? "").replace(/\/+$/, "");
 
+// src/lib/bytes.ts
+var encoder = new TextEncoder();
+var toBytes = (data) => typeof data === "string" ? encoder.encode(data) : data;
+function concat(chunks) {
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.byteLength;
+  }
+  return out;
+}
+
 // src/lib/node.ts
-var load = (name) => import(name).catch(() => null);
-var stream = await load("node:stream");
-var fs = await load("node:fs");
-var path = await load("node:path");
-var os = await load("node:os");
+var load = (name) => globalThis.process?.getBuiltinModule?.(name) ?? null;
+var stream = load("node:stream");
+var fs = load("node:fs");
+var path = load("node:path");
+var os = load("node:os");
 var fsp = fs?.promises;
 
 // src/lib/chunkedWritable.ts
@@ -133,11 +146,11 @@ var Chunker = class {
         this.#opened = true;
       }
       while (this.#size > partSize) {
-        const all = Buffer.concat(this.#pending);
+        const all = concat(this.#pending);
         const rest = all.subarray(partSize);
         this.#pending = [rest];
         this.#size = rest.length;
-        const head = Buffer.from(all.subarray(0, partSize));
+        const head = all.slice(0, partSize);
         this.#parts.push(
           await this.#target.part(this.#ctx, ++this.#n, head, false)
         );
@@ -148,7 +161,7 @@ var Chunker = class {
     }
   }
   async close() {
-    const data = Buffer.concat(this.#pending);
+    const data = concat(this.#pending);
     this.#pending = [];
     this.#size = 0;
     if (!this.#opened) return this.#target.single(data);
@@ -600,14 +613,14 @@ var BaseFile = class {
   }
   async dispatch(content, options) {
     if (typeof content === "string" || content instanceof Uint8Array)
-      await writeChunked(this.target(options), Buffer.from(content));
+      await writeChunked(this.target(options), toBytes(content));
     else if (content instanceof Blob)
       await writeChunked(
         this.target({
           ...options,
           type: this.meta(options, content).type ?? void 0
         }),
-        Buffer.from(await content.arrayBuffer())
+        new Uint8Array(await content.arrayBuffer())
       );
     else if (typeof content.info === "function")
       await content.stream().pipeTo(this.writable(options));
@@ -932,8 +945,12 @@ var FSFile = class extends BaseFile {
   }
 };
 
+// src/lib/env.ts
+var runtime = globalThis;
+var env = runtime.Netlify?.env.toObject() ?? globalThis.process?.env ?? {};
+
 // src/fs/index.ts
-var { FS_PUBLIC_URL: ENV_PUBLIC_URL } = process.env;
+var { FS_PUBLIC_URL: ENV_PUBLIC_URL } = env;
 var FileSystemBucket = class extends BaseBucket {
   type = "FILESYSTEM";
   // OS directory of the current scope (the root plus the folder prefix).
@@ -1475,7 +1492,7 @@ var {
   AWS_REGION: ENV_REGION,
   AWS_ENDPOINT_URL: ENV_ENDPOINT,
   AWS_PUBLIC_URL: ENV_PUBLIC_URL2
-} = process.env;
+} = env;
 async function fetchInstanceCredentials(region) {
   const toCache = (data) => ({
     id: data.AccessKeyId,
@@ -1493,13 +1510,13 @@ async function fetchInstanceCredentials(region) {
       });
     return toCache(await res.json());
   };
-  const fullUri = process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI;
+  const fullUri = env.AWS_CONTAINER_CREDENTIALS_FULL_URI;
   if (fullUri) {
-    const token = process.env.AWS_CONTAINER_AUTHORIZATION_TOKEN;
+    const token = env.AWS_CONTAINER_AUTHORIZATION_TOKEN;
     const headers2 = token ? { Authorization: token } : {};
     return json(await fetch(fullUri, { headers: headers2 }), "container");
   }
-  const relUri = process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+  const relUri = env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
   if (relUri)
     return json(await fetch(`http://169.254.170.2${relUri}`), "container");
   const imds = "http://169.254.169.254/latest";
@@ -1564,7 +1581,7 @@ var {
   R2_SESSION_TOKEN: ENV_SESSION_TOKEN2,
   R2_REGION: ENV_REGION2,
   R2_PUBLIC_URL: ENV_PUBLIC_URL3
-} = process.env;
+} = env;
 var endpointFor = (account) => `https://${account}.r2.cloudflarestorage.com`;
 function CloudflareR2(name = ENV_BUCKET2 || "", {
   id = ENV_ID2 || "",
@@ -1736,8 +1753,8 @@ var GCSFile = class extends BaseFile {
       return;
     }
     const boundary = `_b_${Date.now()}`;
-    const body = Buffer.concat([
-      Buffer.from(
+    const body = concat([
+      toBytes(
         `--${boundary}\r
 Content-Type: application/json; charset=UTF-8\r
 \r
@@ -1748,7 +1765,7 @@ Content-Type: ${type ?? "application/octet-stream"}\r
 `
       ),
       data,
-      Buffer.from(`\r
+      toBytes(`\r
 --${boundary}--`)
     ]);
     await this.ctx.http.post(this.#uploadUrl("uploadType=multipart"), {
@@ -1849,7 +1866,7 @@ var {
   GCS_URL: ENV_URL2,
   GCS_ANONYMOUS: ENV_ANONYMOUS,
   GCS_PUBLIC_URL: ENV_PUBLIC_URL4
-} = process.env;
+} = env;
 function resolveConfig(bucket, config) {
   return {
     bucket,
@@ -1859,7 +1876,7 @@ function resolveConfig(bucket, config) {
   };
 }
 async function loadAuth() {
-  const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const credPath = env.GOOGLE_APPLICATION_CREDENTIALS;
   if (credPath) {
     if (!fs)
       throw new BucketError(
@@ -1872,8 +1889,8 @@ async function loadAuth() {
       privateKey: json.private_key?.replace(/\\n/g, "\n")
     };
   }
-  const clientEmail = process.env.GCS_CLIENT_EMAIL;
-  const privateKey = process.env.GCS_PRIVATE_KEY?.replace(/\\n/g, "\n");
+  const clientEmail = env.GCS_CLIENT_EMAIL;
+  const privateKey = env.GCS_PRIVATE_KEY?.replace(/\\n/g, "\n");
   if (clientEmail && privateKey) return { clientEmail, privateKey };
   return null;
 }
@@ -2114,7 +2131,7 @@ var AzureFile = class extends BaseFile {
   // is no server-side session to open or abort; uncommitted blocks are
   // garbage-collected by Azure after about a week.
   target(options) {
-    const blockId = (n) => Buffer.from(String(n).padStart(6, "0")).toString("base64");
+    const blockId = (n) => toBase64(toBytes(String(n).padStart(6, "0")));
     return {
       partSize: 8 * 1024 * 1024,
       single: (data) => this.put(data, options),
@@ -2191,7 +2208,7 @@ var {
   AZURE_URL: ENV_URL3,
   AZURE_PUBLIC_URL: ENV_PUBLIC_URL5,
   AZURE_CONNECTION_STRING: ENV_CONNECTION_STRING
-} = process.env;
+} = env;
 function accountFromUrl(url) {
   try {
     const u = new URL(url);
@@ -2277,7 +2294,7 @@ function azureContext(config) {
         const params = Object.fromEntries(u.searchParams);
         const headers = {
           ...req.headers,
-          ...req.body !== void 0 ? { "Content-Length": String(Buffer.byteLength(req.body)) } : {}
+          ...req.body !== void 0 ? { "Content-Length": String(toBytes(req.body).byteLength) } : {}
         };
         if (auth.type === "shared-key") {
           const path2 = u.pathname.replace(accountPathPrefix(host), "");
@@ -2353,7 +2370,7 @@ var authError = (message, status) => {
   throw new BucketError(message, { provider: "BACKBLAZE", status });
 };
 async function authorize(id, secret, name, knownBucketId = "") {
-  const derived = Buffer.from(id + ":" + secret).toString("base64");
+  const derived = toBase64(toBytes(id + ":" + secret));
   const res = await fetch(
     "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
     { headers: { Authorization: "Basic " + derived } }
@@ -2647,7 +2664,7 @@ var {
   B2_APPLICATION_KEY_ID: ENV_ID3,
   B2_APPLICATION_KEY: ENV_KEY4,
   B2_PUBLIC_URL: ENV_PUBLIC_URL6
-} = process.env;
+} = env;
 function b2Context(session, publicUrl) {
   return {
     provider: "BACKBLAZE",
@@ -2763,7 +2780,7 @@ var MemoryFile = class extends BaseFile {
     const entry = this.#entry();
     this.ctx.files.set(key, {
       ...entry,
-      data: Buffer.from(entry.data),
+      data: Uint8Array.from(entry.data),
       metadata: { ...entry.metadata },
       modified: /* @__PURE__ */ new Date()
     });
@@ -2785,7 +2802,7 @@ var MemoryFile = class extends BaseFile {
 };
 
 // src/memory/index.ts
-var { MEMORY_PUBLIC_URL: ENV_PUBLIC_URL7 } = process.env;
+var { MEMORY_PUBLIC_URL: ENV_PUBLIC_URL7 } = env;
 var MemoryBucket = class extends BaseBucket {
   type = "MEMORY";
   make(key) {

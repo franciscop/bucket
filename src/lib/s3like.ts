@@ -198,7 +198,7 @@ export class S3LikeFile extends BaseFile<S3Context> {
     });
   }
 
-  protected async put(data: Buffer, options: WriteOptions): Promise<void> {
+  protected async put(data: Uint8Array, options: WriteOptions): Promise<void> {
     await this.ctx.http.put(this.#url(this.path), {
       body: data,
       headers: this.#putHeaders(options),

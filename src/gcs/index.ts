@@ -14,13 +14,14 @@ import {
   type GCSContext,
   type GCSObjectMeta,
 } from "./File.ts";
+import { env } from "../lib/env.ts";
 
 const {
   GCS_BUCKET: ENV_BUCKET,
   GCS_URL: ENV_URL,
   GCS_ANONYMOUS: ENV_ANONYMOUS,
   GCS_PUBLIC_URL: ENV_PUBLIC_URL,
-} = process.env;
+} = env;
 
 export interface GCSConfig {
   /** Override the API host (falls back to `GCS_URL`). Use for the
@@ -53,7 +54,7 @@ function resolveConfig(bucket: string, config: GCSConfig): GCSResolved {
 
 async function loadAuth(): Promise<GCSAuth> {
   // Service account or google credentials (`gcloud auth application-default login`)
-  const credPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const credPath = env.GOOGLE_APPLICATION_CREDENTIALS;
   if (credPath) {
     if (!fs)
       throw new BucketError(
@@ -70,8 +71,8 @@ async function loadAuth(): Promise<GCSAuth> {
     };
   }
   // Individual environment variables, for some platforms (Vercel, Railway, etc.)
-  const clientEmail = process.env.GCS_CLIENT_EMAIL;
-  const privateKey = process.env.GCS_PRIVATE_KEY?.replace(/\\n/g, "\n");
+  const clientEmail = env.GCS_CLIENT_EMAIL;
+  const privateKey = env.GCS_PRIVATE_KEY?.replace(/\\n/g, "\n");
   if (clientEmail && privateKey) return { clientEmail, privateKey };
   // GCP metadata server: Cloud Run, GKE, Compute Engine, etc.
   return null;

@@ -726,7 +726,7 @@ describe("Azure file().write() content types", () => {
       return Promise.resolve(makeResponse(null, 201));
     });
     await bucket.file("hello.txt").write(Buffer.from("hello"));
-    expect(capturedBody).toBeInstanceOf(Buffer);
+    expect(capturedBody).toBeInstanceOf(Uint8Array);
   });
 
   it("sends a PUT request with Blob content", async () => {
@@ -740,7 +740,7 @@ describe("Azure file().write() content types", () => {
       return Promise.resolve(makeResponse(null, 201));
     });
     await bucket.file("hello.txt").write(new Blob(["hello"]));
-    expect(capturedBody).toBeInstanceOf(Buffer);
+    expect(capturedBody).toBeInstanceOf(Uint8Array);
   });
 });
 

@@ -12,16 +12,18 @@
 // machine cleans up inline on part/finish failure; the sink abort() covers
 // the other direction (an erroring source or an explicit writer.abort()).
 
+import { concat } from "./bytes.ts";
+
 export interface ChunkedTarget<Ctx, Part> {
   /** Bytes to accumulate before escalating to a chunked upload. A function
    * for providers that only learn it at runtime (B2's auth response). */
   partSize: number | (() => Promise<number>);
   /** One-request upload, used when the whole body fits in a single part. */
-  single(data: Buffer): Promise<void>;
+  single(data: Uint8Array): Promise<void>;
   /** Open a chunked-upload session. Only called once a second part exists. */
   start(): Promise<Ctx>;
   /** Upload one part. `n` is 1-indexed; `isLast` marks the final part. */
-  part(ctx: Ctx, n: number, data: Buffer, isLast: boolean): Promise<Part>;
+  part(ctx: Ctx, n: number, data: Uint8Array, isLast: boolean): Promise<Part>;
   /** Assemble the uploaded parts into the final object. */
   finish(ctx: Ctx, parts: Part[]): Promise<void>;
   /** Discard the session and any uploaded parts. */
@@ -61,11 +63,11 @@ class Chunker<Ctx, Part> {
         this.#opened = true;
       }
       while (this.#size > partSize) {
-        const all = Buffer.concat(this.#pending);
+        const all = concat(this.#pending);
         const rest = all.subarray(partSize);
         this.#pending = [rest];
         this.#size = rest.length;
-        const head = Buffer.from(all.subarray(0, partSize));
+        const head = all.slice(0, partSize);
         this.#parts.push(
           await this.#target.part(this.#ctx!, ++this.#n, head, false),
         );
@@ -77,7 +79,7 @@ class Chunker<Ctx, Part> {
   }
 
   async close(): Promise<void> {
-    const data = Buffer.concat(this.#pending);
+    const data = concat(this.#pending);
     this.#pending = [];
     this.#size = 0;
     if (!this.#opened) return this.#target.single(data);
@@ -127,7 +129,7 @@ export default function chunkedWritable<Ctx, Part>(
 /** Run the same machine over an in-memory body of known size. */
 export async function writeChunked<Ctx, Part>(
   target: ChunkedTarget<Ctx, Part>,
-  data: Buffer,
+  data: Uint8Array,
 ): Promise<void> {
   const chunker = new Chunker(target);
   await chunker.write(data);

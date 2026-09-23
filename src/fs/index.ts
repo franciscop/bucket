@@ -7,8 +7,9 @@ import type { BucketInfo } from "../lib/types.ts";
 import assertNotOsPath from "./osPathGuard.ts";
 import * as node from "../lib/node.ts";
 import { FSFile, type FSContext } from "./File.ts";
+import { env } from "../lib/env.ts";
 
-const { FS_PUBLIC_URL: ENV_PUBLIC_URL } = process.env;
+const { FS_PUBLIC_URL: ENV_PUBLIC_URL } = env;
 
 export interface FSConfig {
   /** Public origin the directory is served from, e.g. a static mount like

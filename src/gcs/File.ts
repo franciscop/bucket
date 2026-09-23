@@ -1,4 +1,5 @@
 import { presignGCS } from "../lib/signGCS.ts";
+import { concat, toBytes } from "../lib/bytes.ts";
 import BucketError from "../lib/BucketError.ts";
 import { publicUrlFrom } from "../lib/publicUrl.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
@@ -79,7 +80,7 @@ export class GCSFile extends BaseFile<GCSContext> {
     return out;
   }
 
-  protected async put(data: Buffer, options: WriteOptions): Promise<void> {
+  protected async put(data: Uint8Array, options: WriteOptions): Promise<void> {
     const { type, cacheControl, disposition, metadata } = this.meta(options);
     const hasMeta =
       cacheControl || disposition || Object.keys(metadata).length > 0;
@@ -99,12 +100,12 @@ export class GCSFile extends BaseFile<GCSContext> {
     }
     // Metadata needs the multipart/related form: a JSON part, then the bytes.
     const boundary = `_b_${Date.now()}`;
-    const body = Buffer.concat([
-      Buffer.from(
+    const body = concat([
+      toBytes(
         `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(this.#meta(options))}\r\n--${boundary}\r\nContent-Type: ${type ?? "application/octet-stream"}\r\n\r\n`,
       ),
       data,
-      Buffer.from(`\r\n--${boundary}--`),
+      toBytes(`\r\n--${boundary}--`),
     ]);
     await this.ctx.http.post(this.#uploadUrl("uploadType=multipart"), {
       headers: { "Content-Type": `multipart/related; boundary=${boundary}` },

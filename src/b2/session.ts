@@ -2,6 +2,8 @@
 // us about the bucket. Tokens expire after 24 hours, so a long-lived bucket
 // has to re-authorize; the session lives in the context, which folder()
 // copies by reference, so one refresh serves a bucket and every folder of it.
+import { toBytes } from "../lib/bytes.ts";
+import { toBase64 } from "../lib/webcrypto.ts";
 import BucketError from "../lib/BucketError.ts";
 
 const API_VERSION_URL = "/b2api/v2/";
@@ -45,7 +47,7 @@ async function authorize(
   name: string,
   knownBucketId = "",
 ): Promise<B2Auth> {
-  const derived = Buffer.from(id + ":" + secret).toString("base64");
+  const derived = toBase64(toBytes(id + ":" + secret));
   const res = await fetch(
     "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
     { headers: { Authorization: "Basic " + derived } },

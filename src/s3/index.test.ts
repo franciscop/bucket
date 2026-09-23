@@ -283,7 +283,9 @@ describe("S3 file().write()", () => {
 
     await bucket.file("hello.txt").write("hello world");
     expect(capturedMethod).toBe("PUT");
-    expect(String(capturedBody)).toBe("hello world");
+    expect(new TextDecoder().decode(capturedBody as Uint8Array)).toBe(
+      "hello world",
+    );
   });
 
   it("throws on non-OK response", async () => {

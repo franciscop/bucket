@@ -9,6 +9,7 @@
 // provider needs. folder() copies the context with a new prefix, so anything
 // held by reference in there, notably an auth or token cache, is shared with
 // every folder rather than re-resolved or hand-copied.
+import { toBytes } from "./bytes.ts";
 import BucketError from "./BucketError.ts";
 import { stream } from "./node.ts";
 import chunkedWritable, {
@@ -68,7 +69,10 @@ export abstract class BaseFile<
    * by the base, so `this.range` here is never empty. */
   protected abstract fetch(opts?: ReadOptions): Promise<Response>;
   /** One-request upload of a whole body. */
-  protected abstract put(data: Buffer, options: WriteOptions): Promise<void>;
+  protected abstract put(
+    data: Uint8Array,
+    options: WriteOptions,
+  ): Promise<void>;
   /** The provider's chunked-upload mechanism; the base runs the machine. */
   protected abstract target(
     options: WriteOptions,
@@ -163,14 +167,14 @@ export abstract class BaseFile<
     options: WriteOptions,
   ): Promise<void> {
     if (typeof content === "string" || content instanceof Uint8Array)
-      await writeChunked(this.target(options), Buffer.from(content));
+      await writeChunked(this.target(options), toBytes(content));
     else if (content instanceof Blob)
       await writeChunked(
         this.target({
           ...options,
           type: this.meta(options, content).type ?? undefined,
         }),
-        Buffer.from(await content.arrayBuffer()),
+        new Uint8Array(await content.arrayBuffer()),
       );
     // A BucketFile from this or any other provider: stream it across
     else if (typeof (content as BucketFile).info === "function")
@@ -275,7 +279,7 @@ export abstract class BaseFile<
 
 /** A chunked target for providers with nothing to chunk: one put() on close. */
 export function wholeBody(
-  put: (data: Buffer) => Promise<void>,
+  put: (data: Uint8Array) => Promise<void>,
 ): ChunkedTarget<never, never> {
   return {
     partSize: Infinity,

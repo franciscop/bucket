@@ -6,13 +6,14 @@ import { BaseBucket } from "../lib/base.ts";
 import type { BucketInfo } from "../lib/types.ts";
 import { B2Session } from "./session.ts";
 import { B2File, type B2Context } from "./File.ts";
+import { env } from "../lib/env.ts";
 
 const {
   B2_BUCKET: ENV_NAME,
   B2_APPLICATION_KEY_ID: ENV_ID,
   B2_APPLICATION_KEY: ENV_KEY,
   B2_PUBLIC_URL: ENV_PUBLIC_URL,
-} = process.env;
+} = env;
 
 interface B2Config {
   id?: string;

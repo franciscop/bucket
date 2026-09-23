@@ -6,7 +6,7 @@ import type { FileInfo, WriteOptions } from "../lib/types.ts";
 
 /** What the Map holds: the bytes plus everything write() was told about them. */
 export interface MemoryEntry {
-  data: Buffer;
+  data: Uint8Array;
   type: string | null;
   modified: Date;
   cacheControl?: string;
@@ -62,7 +62,7 @@ export class MemoryFile extends BaseFile<MemoryContext> {
 
   // The single place an entry is created, so every write path records the
   // same metadata: nothing a caller passes is dropped.
-  protected async put(data: Buffer, options: WriteOptions): Promise<void> {
+  protected async put(data: Uint8Array, options: WriteOptions): Promise<void> {
     this.ctx.files.set(this.path, {
       data,
       modified: new Date(),
@@ -81,7 +81,7 @@ export class MemoryFile extends BaseFile<MemoryContext> {
     // never mutate the other.
     this.ctx.files.set(key, {
       ...entry,
-      data: Buffer.from(entry.data),
+      data: Uint8Array.from(entry.data),
       metadata: { ...entry.metadata },
       modified: new Date(),
     });

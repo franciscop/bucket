@@ -29,11 +29,11 @@ interface ChunkedTarget<Ctx, Part> {
      * for providers that only learn it at runtime (B2's auth response). */
     partSize: number | (() => Promise<number>);
     /** One-request upload, used when the whole body fits in a single part. */
-    single(data: Buffer): Promise<void>;
+    single(data: Uint8Array): Promise<void>;
     /** Open a chunked-upload session. Only called once a second part exists. */
     start(): Promise<Ctx>;
     /** Upload one part. `n` is 1-indexed; `isLast` marks the final part. */
-    part(ctx: Ctx, n: number, data: Buffer, isLast: boolean): Promise<Part>;
+    part(ctx: Ctx, n: number, data: Uint8Array, isLast: boolean): Promise<Part>;
     /** Assemble the uploaded parts into the final object. */
     finish(ctx: Ctx, parts: Part[]): Promise<void>;
     /** Discard the session and any uploaded parts. */
@@ -77,7 +77,7 @@ interface BucketInfo {
     id: string;
 }
 /** Accepted input types for `file.write()` */
-type WriteContent = string | Buffer | Uint8Array | Blob | BucketFile | ReadableStream | NodeJS.ReadableStream;
+type WriteContent = string | Uint8Array | Blob | BucketFile | ReadableStream | NodeJS.ReadableStream;
 
 interface WriteOptions extends ReadOptions {
     /** MIME type (`"image/png"`) or extension (`"png"`, `".png"`),
@@ -232,7 +232,7 @@ declare abstract class BaseFile<Ctx extends FileContext = FileContext> implement
      * by the base, so `this.range` here is never empty. */
     protected abstract fetch(opts?: ReadOptions): Promise<Response>;
     /** One-request upload of a whole body. */
-    protected abstract put(data: Buffer, options: WriteOptions): Promise<void>;
+    protected abstract put(data: Uint8Array, options: WriteOptions): Promise<void>;
     /** The provider's chunked-upload mechanism; the base runs the machine. */
     protected abstract target(options: WriteOptions): ChunkedTarget<unknown, unknown>;
     /** Server-side copy of this file to an already-resolved key in the same
@@ -311,7 +311,7 @@ declare class FSFile extends BaseFile<FSContext> {
     #private;
     protected fetch(opts?: ReadOptions): Promise<Response>;
     info(opts?: ReadOptions): Promise<FileInfo | null>;
-    protected put(data: Buffer, options: WriteOptions): Promise<void>;
+    protected put(data: Uint8Array, options: WriteOptions): Promise<void>;
     protected target(options: WriteOptions): ChunkedTarget<never, never>;
     copyTo(dest: string | BucketFile, opts?: ReadOptions): Promise<BucketFile>;
     protected copy(key: string): Promise<void>;
@@ -367,13 +367,13 @@ interface HttpRequest {
     method: string;
     url: string;
     headers: Record<string, string>;
-    body?: string | Buffer;
+    body?: string | Uint8Array;
 }
 /** Fills in a request's auth. May rewrite headers or the url (query signing). */
 type Authorizer = (req: HttpRequest) => Promise<HttpRequest> | HttpRequest;
 interface SendOptions {
     headers?: Record<string, string>;
-    body?: string | Buffer;
+    body?: string | Uint8Array;
     signal?: AbortSignal;
     /** Statuses to accept besides 2xx, e.g. 404 on a delete. */
     ok?: number[];
@@ -451,7 +451,7 @@ declare class S3LikeFile extends BaseFile<S3Context> {
     #private;
     protected fetch(opts?: ReadOptions): Promise<Response>;
     info(opts?: ReadOptions): Promise<FileInfo | null>;
-    protected put(data: Buffer, options: WriteOptions): Promise<void>;
+    protected put(data: Uint8Array, options: WriteOptions): Promise<void>;
     protected target(options: WriteOptions): ChunkedTarget<string, string>;
     protected copy(key: string, opts?: ReadOptions): Promise<void>;
     protected delete(opts?: ReadOptions): Promise<void>;
@@ -552,7 +552,7 @@ declare class GCSFile extends BaseFile<GCSContext> {
     #private;
     protected fetch(opts?: ReadOptions): Promise<Response>;
     info(opts?: ReadOptions): Promise<FileInfo | null>;
-    protected put(data: Buffer, options: WriteOptions): Promise<void>;
+    protected put(data: Uint8Array, options: WriteOptions): Promise<void>;
     protected target(options: WriteOptions): ChunkedTarget<{
         uri: string;
         offset: number;
@@ -622,7 +622,7 @@ declare class AzureFile extends BaseFile<AzureContext> {
     #private;
     protected fetch(opts?: ReadOptions): Promise<Response>;
     info(opts?: ReadOptions): Promise<FileInfo | null>;
-    protected put(data: Buffer, options: WriteOptions): Promise<void>;
+    protected put(data: Uint8Array, options: WriteOptions): Promise<void>;
     protected target(options: WriteOptions): ChunkedTarget<string[], string>;
     protected copy(key: string, opts?: ReadOptions): Promise<void>;
     protected delete(opts?: ReadOptions): Promise<void>;
@@ -703,7 +703,7 @@ declare class B2File extends BaseFile<B2Context> {
     #private;
     protected fetch(opts?: ReadOptions): Promise<Response>;
     info(opts?: ReadOptions): Promise<FileInfo | null>;
-    protected put(data: Buffer, options: WriteOptions): Promise<void>;
+    protected put(data: Uint8Array, options: WriteOptions): Promise<void>;
     protected target(options: WriteOptions): ChunkedTarget<{
         fileId: string;
     }, string>;
@@ -747,7 +747,7 @@ declare function BackBlaze(name?: string, { id, secret, publicUrl, }?: B2Config)
 
 /** What the Map holds: the bytes plus everything write() was told about them. */
 interface MemoryEntry {
-    data: Buffer;
+    data: Uint8Array;
     type: string | null;
     modified: Date;
     cacheControl?: string;
@@ -763,7 +763,7 @@ declare class MemoryFile extends BaseFile<MemoryContext> {
     #private;
     protected fetch(): Promise<Response>;
     info(opts?: ReadOptions): Promise<FileInfo | null>;
-    protected put(data: Buffer, options: WriteOptions): Promise<void>;
+    protected put(data: Uint8Array, options: WriteOptions): Promise<void>;
     protected target(options: WriteOptions): ChunkedTarget<never, never>;
     protected copy(key: string): Promise<void>;
     protected delete(): Promise<void>;

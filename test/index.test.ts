@@ -12,8 +12,12 @@ import {
 import buckets from "./buckets.ts";
 
 const FIXTURE_DIR = "./test/bucket/";
+// Exercises S3 path encoding of RFC-3986 sub-delimiters. Windows forbids "*"
+// in file names, so the fixture is stored plainly and the key drops it there.
+const SPECIAL_KEY = process.platform === "win32" ? "a-1(a!.txt" : "a-1*(a!.txt";
+const SOURCES: Record<string, string> = { [SPECIAL_KEY]: "sub-delimiters.txt" };
 const FIXTURES = [
-  "a-1*(a!.txt",
+  SPECIAL_KEY,
   "capitals.json",
   "data.csv",
   "data.txt",
@@ -44,7 +48,7 @@ const seedBucket = async (
 ): Promise<void> => {
   await Promise.all(
     FIXTURES.map(async (path) => {
-      const data = await fsp.readFile(FIXTURE_DIR + path);
+      const data = await fsp.readFile(FIXTURE_DIR + (SOURCES[path] ?? path));
       await bucket.file(path).write(data);
     }),
   );
@@ -1375,7 +1379,7 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
 
     describe("Examples", () => {
       it("can gzip a file using node pipeline()", async () => {
-        const source = bucket.file("a-1*(a!.txt");
+        const source = bucket.file(SPECIAL_KEY);
         // Diagnostics for the R2 special-character key 404; opt in with DIAG=1.
         if (process.env.DIAG && bucket.type !== "FILESYSTEM") {
           const listed = await bucket.list();

@@ -1,4 +1,5 @@
 import { signAzure, accountPathPrefix } from "../lib/signAzure.ts";
+import { toBytes } from "../lib/bytes.ts";
 import { unescapeXml, extractTags, getTag } from "../lib/xml.ts";
 import BucketError from "../lib/BucketError.ts";
 import { scope } from "../lib/prefix.ts";
@@ -9,6 +10,7 @@ import { TokenCache } from "../lib/TokenCache.ts";
 import { BaseBucket } from "../lib/base.ts";
 import type { BucketInfo } from "../lib/types.ts";
 import { AzureFile, type AzureContext, type AzureFileAuth } from "./File.ts";
+import { env } from "../lib/env.ts";
 
 const {
   AZURE_ACCOUNT: ENV_ACCOUNT,
@@ -17,7 +19,7 @@ const {
   AZURE_URL: ENV_URL,
   AZURE_PUBLIC_URL: ENV_PUBLIC_URL,
   AZURE_CONNECTION_STRING: ENV_CONNECTION_STRING,
-} = process.env;
+} = env;
 
 export interface AzureConfig {
   /** Storage account name (falls back to `AZURE_ACCOUNT`) */
@@ -152,7 +154,7 @@ function azureContext(config: AzureResolved): AzureContext {
         const headers = {
           ...req.headers,
           ...(req.body !== undefined
-            ? { "Content-Length": String(Buffer.byteLength(req.body)) }
+            ? { "Content-Length": String(toBytes(req.body).byteLength) }
             : {}),
         };
         if (auth.type === "shared-key") {

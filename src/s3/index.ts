@@ -2,6 +2,7 @@ import BucketError from "../lib/BucketError.ts";
 import { invalidConfig, origin } from "../lib/config.ts";
 import { S3LikeBucket, s3Context, type S3LikeConfig } from "../lib/s3like.ts";
 import type { S3Auth } from "../lib/types.ts";
+import { env } from "../lib/env.ts";
 
 const {
   AWS_BUCKET: ENV_BUCKET,
@@ -11,7 +12,7 @@ const {
   AWS_REGION: ENV_REGION,
   AWS_ENDPOINT_URL: ENV_ENDPOINT,
   AWS_PUBLIC_URL: ENV_PUBLIC_URL,
-} = process.env;
+} = env;
 
 export interface S3Config {
   id?: string;
@@ -57,16 +58,16 @@ async function fetchInstanceCredentials(region: string) {
   };
 
   // Lambda / ECS: full URI (newer format)
-  const fullUri = process.env.AWS_CONTAINER_CREDENTIALS_FULL_URI;
+  const fullUri = env.AWS_CONTAINER_CREDENTIALS_FULL_URI;
   if (fullUri) {
-    const token = process.env.AWS_CONTAINER_AUTHORIZATION_TOKEN;
+    const token = env.AWS_CONTAINER_AUTHORIZATION_TOKEN;
     const headers: Record<string, string> = token
       ? { Authorization: token }
       : {};
     return json(await fetch(fullUri, { headers }), "container");
   }
   // Lambda / ECS: relative URI (older format)
-  const relUri = process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+  const relUri = env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
   if (relUri)
     return json(await fetch(`http://169.254.170.2${relUri}`), "container");
 
