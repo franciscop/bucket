@@ -47,6 +47,7 @@ describe("metaHeaders", () => {
   it("renders S3's names", () => {
     expect(
       metaHeaders(meta, {
+        provider: "TEST",
         type: "Content-Type",
         cacheControl: "Cache-Control",
         disposition: "Content-Disposition",
@@ -63,6 +64,7 @@ describe("metaHeaders", () => {
   it("renders Azure's names", () => {
     expect(
       metaHeaders(meta, {
+        provider: "TEST",
         type: "x-ms-blob-content-type",
         cacheControl: "x-ms-blob-cache-control",
         disposition: "x-ms-blob-content-disposition",
@@ -80,6 +82,7 @@ describe("metaHeaders", () => {
     // B2 carries the type in its own header, so the map leaves it out
     expect(
       metaHeaders(meta, {
+        provider: "TEST",
         cacheControl: "b2-cache-control",
         disposition: "b2-content-disposition",
         metaPrefix: "",
@@ -95,6 +98,7 @@ describe("metaHeaders", () => {
     const bare = writeMeta("a.unknown-ext", {});
     expect(
       metaHeaders(bare, {
+        provider: "TEST",
         type: "Content-Type",
         cacheControl: "Cache-Control",
         metaPrefix: "x-amz-meta-",

@@ -24,23 +24,16 @@ const sha256hex = (s: string): string =>
   createHash("sha256").update(s).digest("hex");
 
 // Rebuild the canonical request + string-to-sign exactly as Google's V4 spec
-// describes, using the parameters embedded in the URL presignGCS produced.
-function expectedStringToSign(
-  url: URL,
-  method: string,
-  bucket: string,
-  objectPath: string,
-): string {
+// describes. Google signs the path and host exactly as the request carries them.
+function expectedStringToSign(url: URL, method: string): string {
   const params = new URLSearchParams(url.search);
   params.delete("X-Goog-Signature");
   params.sort();
-  const host = "storage.googleapis.com";
-  const path = `/${bucket}/${objectPath.replace(/^\//, "")}`;
   const canonicalRequest = [
     method,
-    path,
+    url.pathname,
     params.toString(),
-    `host:${host}\n`,
+    `host:${url.host}\n`,
     "host",
     "UNSIGNED-PAYLOAD",
   ].join("\n");
@@ -54,57 +47,58 @@ function expectedStringToSign(
   ].join("\n");
 }
 
-function verifySignature(
-  url: string,
-  method: "GET" | "PUT",
-  bucket: string,
-  objectPath: string,
-  pub: KeyObject,
-): boolean {
+function verifySignature(url: string, method: string, pub: KeyObject) {
   const u = new URL(url);
   const sigHex = u.searchParams.get("X-Goog-Signature")!;
-  const stringToSign = expectedStringToSign(u, method, bucket, objectPath);
   const verifier = createVerify("RSA-SHA256");
-  verifier.update(stringToSign);
+  verifier.update(expectedStringToSign(u, method));
   return verifier.verify(pub, Buffer.from(sigHex, "hex"));
 }
 
-describe("presignGCS (GOOG4-RSA-SHA256 signer)", () => {
-  const bucket = "my-bucket";
+const sign = (
+  path: string,
+  method: "GET" | "PUT" = "GET",
+  expires = 3600,
+  url = "https://storage.googleapis.com",
+) => presignGCS({ url, bucket: "my-bucket", path, auth, method, expires });
 
+describe("presignGCS (GOOG4-RSA-SHA256 signer)", () => {
   it("produces a cryptographically valid GET signature", async () => {
-    const url = await presignGCS(bucket, "photo.jpg", auth, "GET", 3600);
-    expect(verifySignature(url, "GET", bucket, "photo.jpg", publicKey)).toBe(
-      true,
-    );
+    const url = await sign("photo.jpg");
+    expect(verifySignature(url, "GET", publicKey)).toBe(true);
   });
 
   it("produces a cryptographically valid PUT (upload) signature", async () => {
-    const url = await presignGCS(bucket, "upload.bin", auth, "PUT", 900);
-    expect(verifySignature(url, "PUT", bucket, "upload.bin", publicKey)).toBe(
-      true,
-    );
+    const url = await sign("upload.bin", "PUT", 900);
+    expect(verifySignature(url, "PUT", publicKey)).toBe(true);
   });
 
   it("signs nested and special-character keys correctly", async () => {
     for (const key of ["deep/a/b.txt", "a-1*(a!.txt", "with space.txt"]) {
-      const url = await presignGCS(bucket, key, auth, "GET", 3600);
-      expect(verifySignature(url, "GET", bucket, key, publicKey)).toBe(true);
+      expect(verifySignature(await sign(key), "GET", publicKey)).toBe(true);
     }
   });
 
+  it("encodes the key in the path it signs", async () => {
+    const u = new URL(await sign("dir/a?#+% b é.txt"));
+    expect(u.pathname).toBe("/my-bucket/dir/a%3F%23%2B%25%20b%20%C3%A9.txt");
+    expect(verifySignature(u.toString(), "GET", publicKey)).toBe(true);
+  });
+
+  it("signs for a custom endpoint, like an emulator", async () => {
+    const url = await sign("x.txt", "GET", 60, "http://127.0.0.1:4443");
+    expect(url.startsWith("http://127.0.0.1:4443/my-bucket/x.txt?")).toBe(true);
+    expect(verifySignature(url, "GET", publicKey)).toBe(true);
+  });
+
   it("rejects a tampered signature (negative control)", async () => {
-    const url = new URL(
-      await presignGCS(bucket, "photo.jpg", auth, "GET", 3600),
-    );
+    const url = new URL(await sign("photo.jpg"));
     url.searchParams.set("X-Goog-Expires", "999999"); // change a signed field
-    expect(
-      verifySignature(url.toString(), "GET", bucket, "photo.jpg", publicKey),
-    ).toBe(false);
+    expect(verifySignature(url.toString(), "GET", publicKey)).toBe(false);
   });
 
   it("emits a spec-compliant GOOG4 query string", async () => {
-    const u = new URL(await presignGCS(bucket, "x.txt", auth, "GET", 3600));
+    const u = new URL(await sign("x.txt"));
     expect(u.host).toBe("storage.googleapis.com");
     expect(u.searchParams.get("X-Goog-Algorithm")).toBe("GOOG4-RSA-SHA256");
     expect(u.searchParams.get("X-Goog-Expires")).toBe("3600");

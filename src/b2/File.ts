@@ -1,4 +1,5 @@
 import { sha1hex } from "../lib/webcrypto.ts";
+import { encodeKey } from "../lib/encodeKey.ts";
 import metaFromHeaders, { metaExtras } from "../lib/meta.ts";
 import { publicUrlFrom } from "../lib/publicUrl.ts";
 import { throwIfAborted, type ReadOptions } from "../lib/abort.ts";
@@ -24,7 +25,7 @@ export class B2File extends BaseFile<B2Context> {
   // The download-by-name URL, only known once the account has authorized.
   async #downloadUrl(): Promise<string> {
     const auth = await this.ctx.session.get();
-    return auth.base + "file/" + auth.bucketName + "/" + this.path;
+    return auth.base + "file/" + auth.bucketName + "/" + encodeKey(this.path);
   }
 
   // A JSON API call; `name` is the B2 operation, e.g. "b2_hide_file".
@@ -120,6 +121,7 @@ export class B2File extends BaseFile<B2Context> {
 
   #fileInfo(options: WriteOptions): Record<string, string> {
     return metaHeaders(this.meta(options), {
+      provider: this.provider,
       cacheControl: "b2-cache-control",
       disposition: "b2-content-disposition",
       metaPrefix: "",
@@ -133,7 +135,8 @@ export class B2File extends BaseFile<B2Context> {
       options.signal,
     );
     const headers: Record<string, string> = {
-      "X-Bz-File-Name": this.path,
+      // B2 requires the name percent-encoded; raw, "?" and non-ASCII break.
+      "X-Bz-File-Name": encodeKey(this.path),
       "Content-Type": this.#type(options),
     };
     for (const [k, v] of Object.entries(this.#fileInfo(options)))
@@ -146,6 +149,8 @@ export class B2File extends BaseFile<B2Context> {
   protected target(
     options: WriteOptions,
   ): ChunkedTarget<{ fileId: string }, string> {
+    // Built up front, so bad metadata fails before any request is sent.
+    const fileInfo = this.#fileInfo(options);
     return {
       // B2's recommendedPartSize is ~100 MB, far too much to buffer per part,
       // so use our own 8 MiB and only defer to B2 when its minimum is higher.
@@ -162,7 +167,7 @@ export class B2File extends BaseFile<B2Context> {
             bucketId: auth.bucketId,
             fileName: this.path,
             contentType: this.#type(options),
-            fileInfo: this.#fileInfo(options),
+            fileInfo,
           },
           { signal: options.signal },
         );

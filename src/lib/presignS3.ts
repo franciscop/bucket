@@ -1,5 +1,10 @@
-import encodeS3Path from "./encodeS3Path.ts";
-import { basicDate, canonicalRequest, scopeOf, signature } from "./sigv4.ts";
+import {
+  basicDate,
+  canonicalPath,
+  canonicalRequest,
+  scopeOf,
+  signature,
+} from "./sigv4.ts";
 import type { S3Auth } from "./types.ts";
 
 export async function presignS3(
@@ -21,10 +26,11 @@ export async function presignS3(
   if (auth.sessionToken)
     u.searchParams.set("X-Amz-Security-Token", auth.sessionToken);
   u.searchParams.sort();
+  u.pathname = canonicalPath(u.pathname);
 
   const canonical = canonicalRequest(
     method,
-    encodeS3Path(u.pathname),
+    u.pathname,
     u.searchParams.toString(),
     { host: u.host },
     "UNSIGNED-PAYLOAD",

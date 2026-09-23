@@ -122,6 +122,73 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
       });
     });
 
+    // ── Special-character keys ────────────────────────────────────────────────
+
+    describe("special-character keys", () => {
+      // "?" and "#" end a URL path, "+" and "%" are encoding characters, and
+      // non-ASCII needs encoding. Windows forbids "?" in file names.
+      const odd = (): string => {
+        const q =
+          bucket.type === "FILESYSTEM" && process.platform === "win32"
+            ? ""
+            : "?";
+        return `test${Math.floor(Math.random() * 100000)}-a${q}#+%b é.txt`;
+      };
+
+      it("round-trips through write, read, info, list and remove", async () => {
+        const name = odd();
+        await bucket.file(name).write("odd");
+        expect(await bucket.file(name).text()).toBe("odd");
+        expect((await bucket.file(name).info())!.size).toBe(3);
+        expect((await bucket.list()).map((f) => f.name)).toContain(name);
+        await bucket.file(name).remove();
+        expect(await bucket.file(name).exists()).toBe(false);
+      });
+
+      it("copies from one such key to another", async () => {
+        const src = await bucket.file(odd()).write("copied");
+        const dst = await src.copyTo(odd());
+        expect(await dst.text()).toBe("copied");
+        await src.remove();
+        await dst.remove();
+      });
+
+      it("lists a folder whose name has spaces and symbols", async () => {
+        const folder = bucket.folder(
+          `test${Math.floor(Math.random() * 100000)} my (dir)!+`,
+        );
+        await folder.file("a.txt").write("x");
+        expect((await folder.list()).map((f) => f.name)).toEqual(["a.txt"]);
+        await folder.file("a.txt").remove();
+      });
+
+      it("serves such a key through its signed URL", async () => {
+        const file = await bucket.file(odd()).write("signed");
+        const url = await file.signedUrl({ expires: 60 });
+        if (url) {
+          const res = await fetch(url);
+          expect(`${bucket.type} ${res.status}`).toBe(`${bucket.type} 200`);
+          expect(await res.text()).toBe("signed");
+        }
+        await file.remove();
+      });
+
+      it("accepts an upload through such a key's upload URL", async () => {
+        const file = bucket.file(odd());
+        const url = await file.uploadUrl({ expires: 60 });
+        if (!url) return;
+        const res = await fetch(url, {
+          method: "PUT",
+          body: "uploaded",
+          headers:
+            bucket.type === "AZURE" ? { "x-ms-blob-type": "BlockBlob" } : {},
+        });
+        expect(`${bucket.type} ${res.status}`).toMatch(/ 20[01]$/);
+        expect(await file.text()).toBe("uploaded");
+        await file.remove();
+      });
+    });
+
     // ── File info ─────────────────────────────────────────────────────────────
 
     describe("File info", () => {
@@ -1110,6 +1177,27 @@ for (const [name, { bucket }] of Object.entries(buckets)) {
           expect(`${bucket.type}: ${info!.disposition}`).toBe(
             `${bucket.type}: inline`,
           );
+        }
+      });
+
+      it("rejects non-ASCII metadata where it travels as headers", async () => {
+        const file = bucket.file(testFile("txt"));
+        const err = await file
+          .write("x", { metadata: { note: "naïve ✓" } })
+          .then(
+            () => null,
+            (e: { code?: string; message: string }) => e,
+          );
+        if (["S3", "R2", "AZURE", "BACKBLAZE"].includes(bucket.type)) {
+          expect(`${bucket.type} ${err?.code}`).toBe(
+            `${bucket.type} INVALID_CONTENT`,
+          );
+          expect(err?.message).toContain('"note"');
+          expect(await file.exists()).toBe(false);
+        } else {
+          expect(err).toBeNull();
+          if (bucket.type !== "FILESYSTEM")
+            expect((await file.info())!.metadata.note).toBe("naïve ✓");
         }
       });
     });

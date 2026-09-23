@@ -1,6 +1,7 @@
 // AWS Signature V4, shared by the header-signed request (signS3), the
 // query-signed URL (presignS3) and GCS's V4 variant, which differs only in
 // the algorithm name and the key.
+import { rfc3986 } from "./encodeKey.ts";
 import { hmacSha256, sha256hex, toHex } from "./webcrypto.ts";
 
 /** Now as `YYYYMMDDTHHMMSSZ`, the timestamp every V4 signature carries. */
@@ -16,14 +17,23 @@ export const signedHeaders = (headers: Record<string, string>): string =>
     .sort(ordinal)
     .join(";");
 
-// RFC 3986, as SigV4 wants: URLSearchParams would send spaces as "+" and
-// leave !'()* bare, and the server rejects that signature.
-const rfc3986 = (s: string): string =>
-  encodeURIComponent(s).replace(
-    /[!'()*]/g,
-    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
-  );
+const decode = (s: string): string => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
 
+/** A URL path as V4 signs it: each segment decoded, then RFC 3986 encoded. */
+export const canonicalPath = (pathname: string): string =>
+  pathname
+    .split("/")
+    .map((s) => rfc3986(decode(s)))
+    .join("/");
+
+// URLSearchParams would send spaces as "+" and leave !'()* bare, which V4
+// servers reject.
 /** The query string V4 signs: each pair encoded, then sorted. */
 export const canonicalQuery = (params: URLSearchParams): string =>
   [...params]

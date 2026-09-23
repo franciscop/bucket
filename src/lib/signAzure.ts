@@ -1,3 +1,4 @@
+import { encodeKey } from "./encodeKey.ts";
 import { hmacSha256, base64ToBytes, toBase64 } from "./webcrypto.ts";
 
 export interface AzureAuth {
@@ -10,7 +11,7 @@ const plainDate = (): string => new Date().toUTCString();
 // The canonicalized resource must mirror the request's actual URL path. Real
 // Azure keeps the account in the host, so the path is `/container/blob` and the
 // prefix is empty. Emulators (Azurite) and path-style endpoints keep the account
-// in the URL path, so it must be repeated in the signature — derive that prefix
+// in the URL path, so it must be repeated in the signature. Derive that prefix
 // from the endpoint, e.g. "http://127.0.0.1:10000/devstoreaccount1" → "/devstoreaccount1".
 export const accountPathPrefix = (endpoint: string): string =>
   new URL(endpoint).pathname.replace(/\/$/, "");
@@ -80,35 +81,52 @@ export async function signAzure(
   };
 }
 
-export async function presignAzure(
-  account: string,
-  container: string,
-  blobPath: string,
-  key: string,
-  method: "r" | "w",
-  expiresSeconds: number,
-): Promise<string> {
+export interface PresignAzureOptions {
+  /** Blob host including any account path, e.g. an Azurite endpoint. */
+  url: string;
+  account: string;
+  container: string;
+  /** Blob name. */
+  path: string;
+  /** Base64-encoded account key. */
+  key: string;
+  permission: "r" | "w";
+  /** Seconds until the URL expires. */
+  expires: number;
+}
+
+export async function presignAzure({
+  url,
+  account,
+  container,
+  path,
+  key,
+  permission,
+  expires,
+}: PresignAzureOptions): Promise<string> {
   const now = new Date();
-  const expiry = new Date(now.getTime() + expiresSeconds * 1000);
+  const expiry = new Date(now.getTime() + expires * 1000);
   const format = (d: Date) => d.toISOString().replace(/\.\d+Z$/, "Z");
   const start = format(now);
   const end = format(expiry);
 
-  const permissions = method === "w" ? "w" : "r";
-  const canonicalizedResource = `/blob/${account}/${container}/${blobPath.replace(/^\//, "")}`;
+  const blob = path.replace(/^\//, "");
+  // The resource names the blob unencoded; only the returned URL is encoded.
+  const canonicalizedResource = `/blob/${account}/${container}/${blob}`;
+  // An http endpoint (Azurite) cannot serve an https-only SAS.
+  const protocol = url.startsWith("https:") ? "https" : "https,http";
 
   const stringToSign = [
-    permissions,
+    permission,
     start,
     end,
     canonicalizedResource,
     "", // identifier
     "", // ip
-    "https",
+    protocol,
     "2020-10-02",
     "b", // signedResource: blob
-    "", // snapshot
-    "", // encryptionScope
+    "", // snapshot (no encryption scope line before version 2020-12-06)
     "", // rscc
     "", // rscd
     "", // rsce
@@ -125,10 +143,10 @@ export async function presignAzure(
     st: start,
     se: end,
     sr: "b",
-    sp: permissions,
-    spr: "https",
+    sp: permission,
+    spr: protocol,
     sig: signature,
   });
 
-  return `https://${account}.blob.core.windows.net/${container}/${blobPath.replace(/^\//, "")}?${params}`;
+  return `${url.replace(/\/+$/, "")}/${container}/${encodeKey(blob)}?${params}`;
 }

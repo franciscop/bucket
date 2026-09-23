@@ -195,13 +195,14 @@ export class GCSFile extends BaseFile<GCSContext> {
   async #presign(method: "GET" | "PUT", opts: { expires: number | string }) {
     const auth = await this.ctx.auth;
     if (!auth) return null;
-    return presignGCS(
-      this.ctx.bucket,
-      this.path,
+    return presignGCS({
+      url: this.ctx.url,
+      bucket: this.ctx.bucket,
+      path: this.path,
       auth,
       method,
-      expiresIn(opts),
-    );
+      expires: expiresIn(opts),
+    });
   }
 
   signedUrl(opts: { expires: number | string }) {

@@ -1,4 +1,6 @@
 import { presignAzure } from "../lib/signAzure.ts";
+import BucketError from "../lib/BucketError.ts";
+import { encodeKey } from "../lib/encodeKey.ts";
 import { toBytes } from "../lib/bytes.ts";
 import { toBase64 } from "../lib/webcrypto.ts";
 import metaFromHeaders, { metaExtras } from "../lib/meta.ts";
@@ -10,14 +12,7 @@ import { BaseFile, expiresIn, type FileContext } from "../lib/base.ts";
 import type { ChunkedTarget } from "../lib/chunkedWritable.ts";
 import type { FileInfo, WriteOptions } from "../lib/types.ts";
 
-// Azure signs the canonicalized resource with the path as sent, and the WHATWG
-// URL parser percent-encodes "<" and ">" in URL paths, so encode them up
-// front and sign that same form (mirrors lib/encodeS3Path for S3/R2).
-export const encodePath = (path: string): string =>
-  path.replace(
-    /[<>]/g,
-    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
-  );
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export type AzureFileAuth =
   | { type: "shared-key"; key: string }
@@ -33,7 +28,7 @@ export interface AzureContext extends FileContext {
 
 export class AzureFile extends BaseFile<AzureContext> {
   #blobUrl(path = this.path): string {
-    return `${this.ctx.url}/${this.ctx.container}/${encodePath(path)}`;
+    return `${this.ctx.url}/${this.ctx.container}/${encodeKey(path)}`;
   }
 
   #url(path = this.path, params?: Record<string, string>): string {
@@ -78,6 +73,7 @@ export class AzureFile extends BaseFile<AzureContext> {
 
   #blobHeaders(options: WriteOptions): Record<string, string> {
     return metaHeaders(this.meta(options), {
+      provider: this.provider,
       type: "x-ms-blob-content-type",
       cacheControl: "x-ms-blob-cache-control",
       disposition: "x-ms-blob-content-disposition",
@@ -101,6 +97,8 @@ export class AzureFile extends BaseFile<AzureContext> {
     // Block ids must be base64 and all the same length, so pad the index.
     const blockId = (n: number) =>
       toBase64(toBytes(String(n).padStart(6, "0")));
+    // Built up front, so bad metadata fails before any block is sent.
+    const headers = this.#blobHeaders(options);
     return {
       partSize: 8 * 1024 * 1024,
       single: (data) => this.put(data, options),
@@ -119,7 +117,7 @@ export class AzureFile extends BaseFile<AzureContext> {
         const res = await this.ctx.http.put(
           this.#url(this.path, { comp: "blocklist" }),
           {
-            headers: this.#blobHeaders(options),
+            headers,
             body:
               `<?xml version="1.0" encoding="utf-8"?><BlockList>` +
               ids.map((id) => `<Latest>${id}</Latest>`).join("") +
@@ -135,11 +133,31 @@ export class AzureFile extends BaseFile<AzureContext> {
   }
 
   protected async copy(key: string, opts?: ReadOptions): Promise<void> {
-    await this.ctx.http.put(this.#url(key), {
+    const res = await this.ctx.http.put(this.#url(key), {
       headers: { "x-ms-copy-source": this.#blobUrl() },
       signal: opts?.signal,
       what: "COPY",
     });
+    // A large copy can finish after the response: wait, or a move would
+    // delete the source mid-copy.
+    let status = res.headers.get("x-ms-copy-status");
+    for (
+      let wait = 100;
+      status === "pending";
+      wait = Math.min(wait * 2, 2000)
+    ) {
+      await sleep(wait);
+      throwIfAborted(opts?.signal);
+      const head = await this.ctx.http.head(this.#url(key), {
+        signal: opts?.signal,
+        what: "copy status",
+      });
+      status = head.headers.get("x-ms-copy-status");
+    }
+    if (status && status !== "success")
+      throw new BucketError(`Azure copy failed: ${status}`, {
+        provider: this.provider,
+      });
   }
 
   protected async delete(opts?: ReadOptions): Promise<void> {
@@ -161,14 +179,15 @@ export class AzureFile extends BaseFile<AzureContext> {
   async #presign(perm: "r" | "w", opts: { expires: number | string }) {
     const auth = this.ctx.auth;
     if (auth.type === "managed-identity") return null;
-    return presignAzure(
-      this.ctx.account,
-      this.ctx.container,
-      this.path,
-      auth.key,
-      perm,
-      expiresIn(opts),
-    );
+    return presignAzure({
+      url: this.ctx.url,
+      account: this.ctx.account,
+      container: this.ctx.container,
+      path: this.path,
+      key: auth.key,
+      permission: perm,
+      expires: expiresIn(opts),
+    });
   }
 
   signedUrl(opts: { expires: number | string }) {

@@ -1,8 +1,8 @@
 import BucketError from "./BucketError.ts";
-import encodeS3Path from "./encodeS3Path.ts";
 import { sha256hex } from "./webcrypto.ts";
 import {
   basicDate,
+  canonicalPath,
   canonicalQuery,
   canonicalRequest,
   signature,
@@ -35,16 +35,12 @@ export default async function signS3(
     ...(auth.sessionToken ? { "x-amz-security-token": auth.sessionToken } : {}),
   };
   const timestamp = headers["x-amz-date"];
+  const path = canonicalPath(url.pathname);
   const query = canonicalQuery(url.searchParams);
-  // Send the query exactly as signed.
+  // Send the path and query exactly as signed.
+  url.pathname = path;
   url.search = query;
-  const canonical = canonicalRequest(
-    method,
-    encodeS3Path(url.pathname),
-    query,
-    headers,
-    payload,
-  );
+  const canonical = canonicalRequest(method, path, query, headers, payload);
   const sig = await signature(auth.secret, timestamp, auth.region, canonical);
   const credential = `${auth.id}/${timestamp.slice(0, 8)}/${auth.region}/s3/aws4_request`;
   return {

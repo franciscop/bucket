@@ -6,6 +6,7 @@ import {
   toBase64Url,
 } from "./webcrypto.ts";
 import BucketError from "./BucketError.ts";
+import { encodeKey } from "./encodeKey.ts";
 import { basicDate, canonicalRequest } from "./sigv4.ts";
 
 export interface GCSAuth {
@@ -67,24 +68,37 @@ export async function getMetadataToken(): Promise<string> {
   return access_token;
 }
 
+export interface PresignGCSOptions {
+  /** API origin, e.g. `https://storage.googleapis.com` or an emulator. */
+  url: string;
+  bucket: string;
+  /** Object key. */
+  path: string;
+  auth: GCSAuth;
+  method: "GET" | "PUT";
+  /** Seconds until the URL expires. */
+  expires: number;
+}
+
 // GCS V4 presigned URL
-export async function presignGCS(
-  bucket: string,
-  objectPath: string,
-  auth: GCSAuth,
-  method: "GET" | "PUT",
-  expiresSeconds: number,
-): Promise<string> {
+export async function presignGCS({
+  url,
+  bucket,
+  path: key,
+  auth,
+  method,
+  expires,
+}: PresignGCSOptions): Promise<string> {
   const timestamp = basicDate();
   const scope = `${timestamp.slice(0, 8)}/auto/storage/goog4_request`;
-  const host = "storage.googleapis.com";
-  const path = `/${bucket}/${objectPath.replace(/^\//, "")}`;
+  const host = new URL(url).host;
+  const path = `/${bucket}/${encodeKey(key.replace(/^\//, ""))}`;
 
   const params = new URLSearchParams({
     "X-Goog-Algorithm": "GOOG4-RSA-SHA256",
     "X-Goog-Credential": `${auth.clientEmail}/${scope}`,
     "X-Goog-Date": timestamp,
-    "X-Goog-Expires": String(expiresSeconds),
+    "X-Goog-Expires": String(expires),
     "X-Goog-SignedHeaders": "host",
   });
   params.sort();
@@ -103,9 +117,9 @@ export async function presignGCS(
     await sha256hex(canonical),
   ].join("\n");
 
-  const key = await importRsaPkcs8(auth.privateKey);
-  const signature = toHex(await rsaSha256(key, stringToSign));
+  const signer = await importRsaPkcs8(auth.privateKey);
+  const signature = toHex(await rsaSha256(signer, stringToSign));
 
   params.set("X-Goog-Signature", signature);
-  return `https://${host}${path}?${params}`;
+  return `${url.replace(/\/+$/, "")}${path}?${params}`;
 }

@@ -2,7 +2,7 @@
 // differ only in how their config resolves (see s3/index.ts and r2/index.ts)
 // and in whether the storage endpoint doubles as a public URL.
 import signS3 from "./signS3.ts";
-import encodeS3Path from "./encodeS3Path.ts";
+import { encodeKey } from "./encodeKey.ts";
 import { escapeXml, unescapeXml, extractTags, getTag } from "./xml.ts";
 import { sha256base64 } from "./webcrypto.ts";
 import { scope } from "./prefix.ts";
@@ -70,11 +70,8 @@ export function s3Context(config: S3LikeConfig, prefix = ""): S3Context {
   };
 }
 
-const makeUrl = (ctx: S3Context, path = ""): string => {
-  const clean = path ? (path.startsWith("/") ? path : "/" + path) : "";
-  // Encode the key so the sent path matches what the signer canonicalizes.
-  return ctx.url + encodeS3Path(clean);
-};
+const makeUrl = (ctx: S3Context, path = ""): string =>
+  path ? `${ctx.url}/${encodeKey(path.replace(/^\//, ""))}` : ctx.url;
 
 export class S3LikeBucket extends BaseBucket<S3Context, S3LikeFile> {
   readonly type: string;
@@ -191,6 +188,7 @@ export class S3LikeFile extends BaseFile<S3Context> {
 
   #putHeaders(options: WriteOptions): Record<string, string> {
     return metaHeaders(this.meta(options), {
+      provider: this.provider,
       type: "Content-Type",
       cacheControl: "Cache-Control",
       disposition: "Content-Disposition",
@@ -221,7 +219,7 @@ export class S3LikeFile extends BaseFile<S3Context> {
   protected async copy(key: string, opts?: ReadOptions): Promise<void> {
     await this.ctx.http.put(this.#url(key), {
       headers: {
-        "x-amz-copy-source": `/${this.ctx.config.name}/${this.path}`,
+        "x-amz-copy-source": `/${this.ctx.config.name}/${encodeKey(this.path)}`,
       },
       signal: opts?.signal,
       what: "COPY",

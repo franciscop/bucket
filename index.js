@@ -545,7 +545,24 @@ function writeMeta(path2, options = {}, content) {
     )
   };
 }
+var HEADER_SAFE = /^[\x20-\x7e]*$/;
+function assertHeaderSafe(field, value, provider) {
+  if (HEADER_SAFE.test(value)) return;
+  throw new BucketError(
+    `${provider} sends ${field} as an HTTP header, which must be printable ASCII; got ${JSON.stringify(value)}. Encode it first, e.g. with encodeURIComponent().`,
+    { code: "INVALID_CONTENT" }
+  );
+}
 function metaHeaders(meta, names) {
+  const { provider } = names;
+  if (meta.cacheControl)
+    assertHeaderSafe("cacheControl", meta.cacheControl, provider);
+  if (meta.disposition)
+    assertHeaderSafe("disposition", meta.disposition, provider);
+  for (const [k, v] of Object.entries(meta.metadata)) {
+    assertHeaderSafe(`metadata key ${JSON.stringify(k)}`, k, provider);
+    assertHeaderSafe(`metadata ${JSON.stringify(k)}`, v, provider);
+  }
   const out = {};
   if (names.type && meta.type) out[names.type] = meta.type;
   if (names.cacheControl && meta.cacheControl)
@@ -1048,14 +1065,6 @@ function FileSystem(path2, config = {}) {
   return new FileSystemBucket(ctx);
 }
 
-// src/lib/encodeS3Path.ts
-function encodeS3Path(path2) {
-  return path2.replace(
-    /[!'()*&<>]/g,
-    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase()
-  );
-}
-
 // src/lib/webcrypto.ts
 var enc = new TextEncoder();
 var src = (data) => typeof data === "string" ? enc.encode(data) : data;
@@ -1111,14 +1120,25 @@ async function sha256base64(data) {
   return toBase64(new Uint8Array(buf));
 }
 
-// src/lib/sigv4.ts
-var basicDate = () => (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
-var ordinal = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-var signedHeaders = (headers) => Object.keys(headers).map((k) => k.toLowerCase()).sort(ordinal).join(";");
+// src/lib/encodeKey.ts
 var rfc3986 = (s) => encodeURIComponent(s).replace(
   /[!'()*]/g,
   (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase()
 );
+var encodeKey = (key) => key.split("/").map(rfc3986).join("/");
+
+// src/lib/sigv4.ts
+var basicDate = () => (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace(/\.\d+/, "");
+var ordinal = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+var signedHeaders = (headers) => Object.keys(headers).map((k) => k.toLowerCase()).sort(ordinal).join(";");
+var decode = (s) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+var canonicalPath = (pathname) => pathname.split("/").map((s) => rfc3986(decode(s))).join("/");
 var canonicalQuery = (params) => [...params].map(([k, v]) => `${rfc3986(k)}=${rfc3986(v)}`).sort(ordinal).join("&");
 function canonicalRequest(method, path2, query, headers, payloadHash) {
   const sorted = Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v.trim()]).sort(([a], [b]) => ordinal(a, b));
@@ -1165,15 +1185,11 @@ async function signS3(req, auth) {
     ...auth.sessionToken ? { "x-amz-security-token": auth.sessionToken } : {}
   };
   const timestamp = headers["x-amz-date"];
+  const path2 = canonicalPath(url.pathname);
   const query = canonicalQuery(url.searchParams);
+  url.pathname = path2;
   url.search = query;
-  const canonical = canonicalRequest(
-    method,
-    encodeS3Path(url.pathname),
-    query,
-    headers,
-    payload
-  );
+  const canonical = canonicalRequest(method, path2, query, headers, payload);
   const sig = await signature(auth.secret, timestamp, auth.region, canonical);
   const credential = `${auth.id}/${timestamp.slice(0, 8)}/${auth.region}/s3/aws4_request`;
   return {
@@ -1237,9 +1253,10 @@ async function presignS3(url, method, auth, expiresSeconds) {
   if (auth.sessionToken)
     u.searchParams.set("X-Amz-Security-Token", auth.sessionToken);
   u.searchParams.sort();
+  u.pathname = canonicalPath(u.pathname);
   const canonical = canonicalRequest(
     method,
-    encodeS3Path(u.pathname),
+    u.pathname,
     u.searchParams.toString(),
     { host: u.host },
     "UNSIGNED-PAYLOAD"
@@ -1367,10 +1384,7 @@ function s3Context(config, prefix = "") {
     })
   };
 }
-var makeUrl = (ctx, path2 = "") => {
-  const clean = path2 ? path2.startsWith("/") ? path2 : "/" + path2 : "";
-  return ctx.url + encodeS3Path(clean);
-};
+var makeUrl = (ctx, path2 = "") => path2 ? `${ctx.url}/${encodeKey(path2.replace(/^\//, ""))}` : ctx.url;
 var S3LikeBucket = class extends BaseBucket {
   type;
   constructor(ctx) {
@@ -1466,6 +1480,7 @@ var S3LikeFile = class extends BaseFile {
   }
   #putHeaders(options) {
     return metaHeaders(this.meta(options), {
+      provider: this.provider,
       type: "Content-Type",
       cacheControl: "Cache-Control",
       disposition: "Content-Disposition",
@@ -1493,7 +1508,7 @@ var S3LikeFile = class extends BaseFile {
   async copy(key, opts) {
     await this.ctx.http.put(this.#url(key), {
       headers: {
-        "x-amz-copy-source": `/${this.ctx.config.name}/${this.path}`
+        "x-amz-copy-source": `/${this.ctx.config.name}/${encodeKey(this.path)}`
       },
       signal: opts?.signal,
       what: "COPY"
@@ -1708,16 +1723,23 @@ async function getMetadataToken() {
   const { access_token } = await res.json();
   return access_token;
 }
-async function presignGCS(bucket, objectPath, auth, method, expiresSeconds) {
+async function presignGCS({
+  url,
+  bucket,
+  path: key,
+  auth,
+  method,
+  expires
+}) {
   const timestamp = basicDate();
   const scope2 = `${timestamp.slice(0, 8)}/auto/storage/goog4_request`;
-  const host = "storage.googleapis.com";
-  const path2 = `/${bucket}/${objectPath.replace(/^\//, "")}`;
+  const host = new URL(url).host;
+  const path2 = `/${bucket}/${encodeKey(key.replace(/^\//, ""))}`;
   const params = new URLSearchParams({
     "X-Goog-Algorithm": "GOOG4-RSA-SHA256",
     "X-Goog-Credential": `${auth.clientEmail}/${scope2}`,
     "X-Goog-Date": timestamp,
-    "X-Goog-Expires": String(expiresSeconds),
+    "X-Goog-Expires": String(expires),
     "X-Goog-SignedHeaders": "host"
   });
   params.sort();
@@ -1734,10 +1756,10 @@ async function presignGCS(bucket, objectPath, auth, method, expiresSeconds) {
     scope2,
     await sha256hex(canonical)
   ].join("\n");
-  const key = await importRsaPkcs8(auth.privateKey);
-  const signature2 = toHex(await rsaSha256(key, stringToSign));
+  const signer = await importRsaPkcs8(auth.privateKey);
+  const signature2 = toHex(await rsaSha256(signer, stringToSign));
   params.set("X-Goog-Signature", signature2);
-  return `https://${host}${path2}?${params}`;
+  return `${url.replace(/\/+$/, "")}${path2}?${params}`;
 }
 
 // src/gcs/File.ts
@@ -1893,13 +1915,14 @@ Content-Type: ${type ?? "application/octet-stream"}\r
   async #presign(method, opts) {
     const auth = await this.ctx.auth;
     if (!auth) return null;
-    return presignGCS(
-      this.ctx.bucket,
-      this.path,
+    return presignGCS({
+      url: this.ctx.url,
+      bucket: this.ctx.bucket,
+      path: this.path,
       auth,
       method,
-      expiresIn(opts)
-    );
+      expires: expiresIn(opts)
+    });
   }
   signedUrl(opts) {
     return this.#presign("GET", opts);
@@ -2067,16 +2090,25 @@ async function signAzure(method, path2, headers, auth, params = {}) {
     Authorization: `SharedKey ${auth.account}:${signature2}`
   };
 }
-async function presignAzure(account, container, blobPath, key, method, expiresSeconds) {
+async function presignAzure({
+  url,
+  account,
+  container,
+  path: path2,
+  key,
+  permission,
+  expires
+}) {
   const now = /* @__PURE__ */ new Date();
-  const expiry = new Date(now.getTime() + expiresSeconds * 1e3);
+  const expiry = new Date(now.getTime() + expires * 1e3);
   const format = (d) => d.toISOString().replace(/\.\d+Z$/, "Z");
   const start = format(now);
   const end = format(expiry);
-  const permissions = method === "w" ? "w" : "r";
-  const canonicalizedResource = `/blob/${account}/${container}/${blobPath.replace(/^\//, "")}`;
+  const blob = path2.replace(/^\//, "");
+  const canonicalizedResource = `/blob/${account}/${container}/${blob}`;
+  const protocol = url.startsWith("https:") ? "https" : "https,http";
   const stringToSign = [
-    permissions,
+    permission,
     start,
     end,
     canonicalizedResource,
@@ -2084,14 +2116,12 @@ async function presignAzure(account, container, blobPath, key, method, expiresSe
     // identifier
     "",
     // ip
-    "https",
+    protocol,
     "2020-10-02",
     "b",
     // signedResource: blob
     "",
-    // snapshot
-    "",
-    // encryptionScope
+    // snapshot (no encryption scope line before version 2020-12-06)
     "",
     // rscc
     "",
@@ -2111,21 +2141,18 @@ async function presignAzure(account, container, blobPath, key, method, expiresSe
     st: start,
     se: end,
     sr: "b",
-    sp: permissions,
-    spr: "https",
+    sp: permission,
+    spr: protocol,
     sig: signature2
   });
-  return `https://${account}.blob.core.windows.net/${container}/${blobPath.replace(/^\//, "")}?${params}`;
+  return `${url.replace(/\/+$/, "")}/${container}/${encodeKey(blob)}?${params}`;
 }
 
 // src/azure/File.ts
-var encodePath = (path2) => path2.replace(
-  /[<>]/g,
-  (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase()
-);
+var sleep2 = (ms) => new Promise((r) => setTimeout(r, ms));
 var AzureFile = class extends BaseFile {
   #blobUrl(path2 = this.path) {
-    return `${this.ctx.url}/${this.ctx.container}/${encodePath(path2)}`;
+    return `${this.ctx.url}/${this.ctx.container}/${encodeKey(path2)}`;
   }
   #url(path2 = this.path, params) {
     const base = this.#blobUrl(path2);
@@ -2164,6 +2191,7 @@ var AzureFile = class extends BaseFile {
   }
   #blobHeaders(options) {
     return metaHeaders(this.meta(options), {
+      provider: this.provider,
       type: "x-ms-blob-content-type",
       cacheControl: "x-ms-blob-cache-control",
       disposition: "x-ms-blob-content-disposition",
@@ -2183,6 +2211,7 @@ var AzureFile = class extends BaseFile {
   // garbage-collected by Azure after about a week.
   target(options) {
     const blockId = (n) => toBase64(toBytes(String(n).padStart(6, "0")));
+    const headers = this.#blobHeaders(options);
     return {
       partSize: 8 * 1024 * 1024,
       single: (data) => this.put(data, options),
@@ -2201,7 +2230,7 @@ var AzureFile = class extends BaseFile {
         const res = await this.ctx.http.put(
           this.#url(this.path, { comp: "blocklist" }),
           {
-            headers: this.#blobHeaders(options),
+            headers,
             body: `<?xml version="1.0" encoding="utf-8"?><BlockList>` + ids.map((id) => `<Latest>${id}</Latest>`).join("") + `</BlockList>`,
             signal: options.signal,
             what: "block commit"
@@ -2214,11 +2243,25 @@ var AzureFile = class extends BaseFile {
     };
   }
   async copy(key, opts) {
-    await this.ctx.http.put(this.#url(key), {
+    const res = await this.ctx.http.put(this.#url(key), {
       headers: { "x-ms-copy-source": this.#blobUrl() },
       signal: opts?.signal,
       what: "COPY"
     });
+    let status = res.headers.get("x-ms-copy-status");
+    for (let wait = 100; status === "pending"; wait = Math.min(wait * 2, 2e3)) {
+      await sleep2(wait);
+      throwIfAborted(opts?.signal);
+      const head = await this.ctx.http.head(this.#url(key), {
+        signal: opts?.signal,
+        what: "copy status"
+      });
+      status = head.headers.get("x-ms-copy-status");
+    }
+    if (status && status !== "success")
+      throw new BucketError(`Azure copy failed: ${status}`, {
+        provider: this.provider
+      });
   }
   async delete(opts) {
     await this.ctx.http.delete(this.#url(), {
@@ -2234,14 +2277,15 @@ var AzureFile = class extends BaseFile {
   async #presign(perm, opts) {
     const auth = this.ctx.auth;
     if (auth.type === "managed-identity") return null;
-    return presignAzure(
-      this.ctx.account,
-      this.ctx.container,
-      this.path,
-      auth.key,
-      perm,
-      expiresIn(opts)
-    );
+    return presignAzure({
+      url: this.ctx.url,
+      account: this.ctx.account,
+      container: this.ctx.container,
+      path: this.path,
+      key: auth.key,
+      permission: perm,
+      expires: expiresIn(opts)
+    });
   }
   signedUrl(opts) {
     return this.#presign("r", opts);
@@ -2517,7 +2561,7 @@ var B2File = class extends BaseFile {
   // The download-by-name URL, only known once the account has authorized.
   async #downloadUrl() {
     const auth = await this.ctx.session.get();
-    return auth.base + "file/" + auth.bucketName + "/" + this.path;
+    return auth.base + "file/" + auth.bucketName + "/" + encodeKey(this.path);
   }
   // A JSON API call; `name` is the B2 operation, e.g. "b2_hide_file".
   async #api(name, body, options = {}) {
@@ -2598,6 +2642,7 @@ var B2File = class extends BaseFile {
   }
   #fileInfo(options) {
     return metaHeaders(this.meta(options), {
+      provider: this.provider,
       cacheControl: "b2-cache-control",
       disposition: "b2-content-disposition",
       metaPrefix: ""
@@ -2610,7 +2655,8 @@ var B2File = class extends BaseFile {
       options.signal
     );
     const headers = {
-      "X-Bz-File-Name": this.path,
+      // B2 requires the name percent-encoded; raw, "?" and non-ASCII break.
+      "X-Bz-File-Name": encodeKey(this.path),
       "Content-Type": this.#type(options)
     };
     for (const [k, v] of Object.entries(this.#fileInfo(options)))
@@ -2620,6 +2666,7 @@ var B2File = class extends BaseFile {
   // B2 large-file upload: b2_start_large_file → b2_upload_part × n →
   // b2_finish_large_file, cancelling on failure so no orphan parts remain.
   target(options) {
+    const fileInfo = this.#fileInfo(options);
     return {
       // B2's recommendedPartSize is ~100 MB, far too much to buffer per part,
       // so use our own 8 MiB and only defer to B2 when its minimum is higher.
@@ -2636,7 +2683,7 @@ var B2File = class extends BaseFile {
             bucketId: auth.bucketId,
             fileName: this.path,
             contentType: this.#type(options),
-            fileInfo: this.#fileInfo(options)
+            fileInfo
           },
           { signal: options.signal }
         );

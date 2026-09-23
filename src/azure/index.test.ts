@@ -766,3 +766,89 @@ describe("Azure async iteration", () => {
     expect(names.sort()).toEqual(["hello.txt", "world.json"]);
   });
 });
+
+describe("Azure copy that completes asynchronously", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  // The copy answers "pending"; each later HEAD on the destination reports
+  // the next status in `statuses`.
+  function mockPendingCopy(statuses: string[]) {
+    const calls: string[] = [];
+    mockFetch((url, init) => {
+      const method = init?.method ?? "GET";
+      const copying = new Headers(init?.headers).has("x-ms-copy-source");
+      calls.push(copying ? "COPY" : `${method} ${new URL(url).pathname}`);
+      if (copying)
+        return Promise.resolve(
+          makeResponse(null, 202, { "x-ms-copy-status": "pending" }),
+        );
+      if (method === "HEAD")
+        return Promise.resolve(
+          makeResponse(null, 200, {
+            "x-ms-copy-status": statuses.shift() ?? "success",
+          }),
+        );
+      return Promise.resolve(makeResponse(null, 202));
+    });
+    return calls;
+  }
+
+  const bucket = () =>
+    Azure(TEST_CONTAINER, { account: TEST_ACCOUNT, key: TEST_KEY });
+
+  it("moveTo() waits for the copy before deleting the source", async () => {
+    const calls = mockPendingCopy(["pending", "success"]);
+    await bucket().file("src.txt").moveTo("dst.txt");
+    expect(calls).toEqual([
+      "COPY",
+      `HEAD /${TEST_CONTAINER}/dst.txt`,
+      `HEAD /${TEST_CONTAINER}/dst.txt`,
+      `DELETE /${TEST_CONTAINER}/src.txt`,
+    ]);
+  });
+
+  it("copyTo() throws when the copy fails, and moveTo() keeps the source", async () => {
+    const calls = mockPendingCopy(["failed"]);
+    await expect(bucket().file("src.txt").moveTo("dst.txt")).rejects.toThrow(
+      /copy failed/,
+    );
+    expect(calls.some((c) => c.startsWith("DELETE"))).toBe(false);
+  });
+});
+
+describe("Azure metadata", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("rejects non-ASCII values before sending anything", async () => {
+    let sent = 0;
+    mockFetch(() => {
+      sent++;
+      return Promise.resolve(makeResponse(null, 201));
+    });
+    const bucket = Azure(TEST_CONTAINER, {
+      account: TEST_ACCOUNT,
+      key: TEST_KEY,
+    });
+    const err = await bucket
+      .file("a.txt")
+      .write("x", { metadata: { note: "✓" } })
+      .then(
+        () => null,
+        (e: { code?: string }) => e,
+      );
+    expect(err?.code).toBe("INVALID_CONTENT");
+    expect(sent).toBe(0);
+  });
+});

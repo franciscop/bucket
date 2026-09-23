@@ -1117,3 +1117,67 @@ describe("B2 file().moveTo()", () => {
     );
   });
 });
+
+describe("B2 special-character keys and metadata", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const KEY = "dir/a?#+% b é.txt";
+  const ENCODED = "dir/a%3F%23%2B%25%20b%20%C3%A9.txt";
+
+  // Answers the upload flow and records every request.
+  async function recording() {
+    const seen: { url: string; headers: Headers }[] = [];
+    const bucket = await makeBucket((url, init) => {
+      seen.push({ url: url as string, headers: new Headers(init?.headers) });
+      if ((url as string).includes("b2_get_upload_url"))
+        return Promise.resolve(
+          makeResponse(
+            JSON.stringify({
+              uploadUrl: "https://upload.example/upload",
+              authorizationToken: "upload-token",
+            }),
+          ),
+        );
+      if ((url as string).includes("/file/"))
+        return Promise.resolve(makeResponse("content"));
+      return Promise.resolve(makeResponse("{}"));
+    });
+    return { bucket, seen };
+  }
+
+  it("percent-encodes the file name header on upload", async () => {
+    const { bucket, seen } = await recording();
+    await bucket.file(KEY).write("x");
+    const upload = seen.find((r) => r.url === "https://upload.example/upload");
+    expect(upload?.headers.get("x-bz-file-name")).toBe(ENCODED);
+  });
+
+  it("encodes the key in the download URL", async () => {
+    const { bucket, seen } = await recording();
+    expect(await bucket.file(KEY).text()).toBe("content");
+    const download = seen.find((r) => r.url.includes("/file/"));
+    expect(download?.url).toBe(
+      `https://f001.backblazeb2.com/file/test-bucket/${ENCODED}`,
+    );
+  });
+
+  it("rejects non-ASCII metadata before sending anything", async () => {
+    const { bucket, seen } = await recording();
+    const before = seen.length;
+    const err = await bucket
+      .file("a.txt")
+      .write("x", { metadata: { note: "✓" } })
+      .then(
+        () => null,
+        (e: { code?: string }) => e,
+      );
+    expect(err?.code).toBe("INVALID_CONTENT");
+    expect(seen.length).toBe(before);
+  });
+});
