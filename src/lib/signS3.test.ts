@@ -43,7 +43,7 @@ async function ours(c: Case) {
     {
       url: c.url,
       method: (c.method ?? "GET").toLowerCase(),
-      headers: { "x-amz-date": DATE, ...(c.headers ?? {}) },
+      headers: { "x-amz-date": DATE, ...c.headers },
       body: c.body,
     },
     auth,
@@ -57,7 +57,7 @@ function reference(c: Case) {
   const headers: Record<string, string> = {
     "X-Amz-Date": DATE,
     "X-Amz-Content-Sha256": sha256(c.body ?? ""),
-    ...(c.headers ?? {}),
+    ...c.headers,
   };
   if (c.sessionToken) headers["X-Amz-Security-Token"] = c.sessionToken;
   const RequestSigner = (aws4 as unknown as { RequestSigner: any })

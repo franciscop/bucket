@@ -116,7 +116,7 @@ export class Http {
       const plain: HttpRequest = {
         method: method.toUpperCase(),
         url,
-        headers: { ...(options.headers ?? {}) },
+        headers: { ...options.headers },
         body: options.body,
       };
       const req = options.auth === false ? plain : await authorize(plain);
