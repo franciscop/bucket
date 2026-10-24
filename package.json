@@ -25,10 +25,9 @@
     "emulators:setup": "bun --env-file=.env.emulators test/setup-emulators.ts",
     "test:emulators": "bun --env-file=.env.emulators test/emulators.ts"
   },
-  "type": "module",
   "main": "./index.js",
+  "type": "module",
   "types": "./index.d.ts",
-  "sideEffects": false,
   "files": [
     "index.js",
     "index.d.ts"
@@ -51,5 +50,6 @@
     "prettier": "^3.8.1",
     "tsup": "^8.5.1",
     "typescript": "^6.0.2"
-  }
+  },
+  "sideEffects": false
 }

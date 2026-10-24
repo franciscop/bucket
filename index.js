@@ -255,7 +255,7 @@ var Http = class {
       const plain = {
         method: method.toUpperCase(),
         url,
-        headers: { ...options.headers ?? {} },
+        headers: { ...options.headers },
         body: options.body
       };
       const req = options.auth === false ? plain : await authorize2(plain);

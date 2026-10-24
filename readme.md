@@ -1,4 +1,4 @@
-# Bucket [![bucket](https://img.shields.io/npm/v/bucket?label=bucket&color=greenlime)](https://www.npmjs.com/package/bucket) [![tests](https://github.com/franciscop/bucket/workflows/tests/badge.svg)](https://github.com/franciscop/bucket/actions)
+# Bucket [![npm install bucket](https://img.shields.io/badge/npm%20install-bucket-blue.svg)](https://www.npmjs.com/package/bucket) [![tests](https://github.com/franciscop/bucket/workflows/tests/badge.svg)](https://github.com/franciscop/bucket/actions) [![deps](https://img.shields.io/badge/deps-0-limegreen.svg)](https://github.com/franciscop/bucket/blob/master/package.json)
 
 A small library to talk to any of the popular file storage solutions with a unified API:
 
