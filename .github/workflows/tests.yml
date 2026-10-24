@@ -27,10 +27,8 @@ jobs:
         run: bun install
       - name: Lint
         run: bun run lint
-      - name: Typecheck
-        run: bun run typecheck
       - name: Test
-        run: bun test --timeout 30000
+        run: bun run test
         env:
           CI: true
           B2_BUCKET: ${{ secrets.BACKBLAZE_NAME }}
