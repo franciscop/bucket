@@ -29,7 +29,7 @@ async function waitFor(
 
 const ok = (status: number) => status < 300 || status === 409;
 
-// ── MinIO: create the S3 and R2 buckets (path-style PUT) ─────────────────────
+// ── SILO: create the S3 and R2 buckets (path-style PUT) ──────────────────────
 async function createBucket(
   endpoint: string,
   id: string,
@@ -49,7 +49,7 @@ async function createBucket(
 
 if (process.env.AWS_ENDPOINT_URL) {
   const { protocol, host } = new URL(process.env.AWS_ENDPOINT_URL);
-  await waitFor(`${protocol}//${host}/minio/health/live`, "MinIO");
+  await waitFor(`${protocol}//${host}/minio/health/live`, "SILO");
   await createBucket(
     `${process.env.AWS_ENDPOINT_URL}/${process.env.AWS_BUCKET}`,
     process.env.AWS_ACCESS_KEY_ID || "",

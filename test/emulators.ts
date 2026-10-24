@@ -1,11 +1,11 @@
 // Runs the full integration suite (test/index.test.ts) against local emulators,
-// no Docker required. Starts MinIO (S3 + R2), Azurite (Azure) and
+// no Docker required. Starts SILO (S3 + R2), Azurite (Azure) and
 // fake-gcs-server (GCS) as child processes, seeds the buckets/container, runs
 // the suite, then tears everything down.
 //
 //   bun --env-file=.env.emulators test/emulators.ts   (see `npm run test:emulators`)
 //
-// MinIO and fake-gcs-server must be on PATH (see readme "Emulators"); Azurite
+// SILO and fake-gcs-server must be on PATH (see Contributing "Emulators"); Azurite
 // ships as a devDependency, so it is always available after `bun install`.
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -57,9 +57,9 @@ try {
   const azuriteDir = mkdtempSync(join(tmpdir(), "azurite-"));
   dirs.push(minioDir, azuriteDir);
 
-  // MinIO serves both the S3 and R2 buckets on :9000.
+  // SILO (the MinIO fork) serves both the S3 and R2 buckets on :9000.
   launch(
-    "minio",
+    "silo",
     [
       "server",
       minioDir,

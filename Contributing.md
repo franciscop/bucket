@@ -64,12 +64,12 @@ The test suite has three layers, the first two of which need **no credentials**:
 
 ### Emulators
 
-S3, R2, GCS and Azure can be tested end-to-end against local emulators, no Docker required. MinIO and Azurite **validate request signatures**, so a green run proves the signer against a real server.
+S3, R2, GCS and Azure can be tested end-to-end against local emulators, no Docker required. SILO and Azurite **validate request signatures**, so a green run proves the signer against a real server.
 
-The emulators run as native binaries. Azurite ships as a devDependency (installed by `bun install`); MinIO (S3 + R2) and fake-gcs-server (GCS) are standalone binaries that need to be on your `PATH`:
+The emulators run as native binaries. Azurite ships as a devDependency (installed by `bun install`); [SILO](https://github.com/pgsty/silo) (S3 + R2, the maintained fork of MinIO) and fake-gcs-server (GCS) are standalone binaries that need to be on your `PATH`. Download `silo` from its [releases](https://github.com/pgsty/silo/releases), then:
 
 ```bash
-brew install minio fake-gcs-server   # macOS; see each project's docs for other OSes
+brew install fake-gcs-server   # macOS; see the project's docs for other OSes
 ```
 
 Then a single command starts all three, seeds the buckets, runs the suite, and tears everything down:

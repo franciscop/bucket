@@ -38,9 +38,9 @@ jobs:
           B2_APPLICATION_KEY: ${{ secrets.BACKBLAZE_KEY }}
 
   # Full integration suite for S3, R2, GCS and Azure against local emulators.
-  # No cloud credentials; MinIO and Azurite verify request signatures. The
-  # emulators run as native binaries, orchestrated by test/emulators.ts
-  # (Azurite ships as a devDependency via `bun install`).
+  # No cloud credentials; SILO (MinIO fork) and Azurite verify request
+  # signatures. The emulators run as native binaries, orchestrated by
+  # test/emulators.ts (Azurite ships as a devDependency via `bun install`).
   emulators:
     runs-on: ubuntu-latest
     steps:
@@ -48,21 +48,15 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         run: bun install
-      - name: Install MinIO and fake-gcs-server
-        env:
-          # MinIO archived its open-source server and dl.min.io now answers 410
-          # for every binary, so take it out of the last published image. It
-          # still runs as a native process; only fetching it involves Docker.
-          MINIO_IMAGE: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z.hotfix.7aa24e772
+      - name: Install SILO and fake-gcs-server
         run: |
           set -euo pipefail
-          docker create --name minio-bin "$MINIO_IMAGE" >/dev/null
-          docker cp minio-bin:/usr/bin/minio /tmp/minio
-          docker rm minio-bin >/dev/null
-          sudo install -m 0755 /tmp/minio /usr/local/bin/minio
+          # SILO is the maintained fork of the archived MinIO server
+          curl -fsSL https://github.com/pgsty/silo/releases/download/RELEASE.2026-10-18T00-00-00Z/silo_20261018000000.0.0_linux_amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin silo
           curl -fsSL https://github.com/fsouza/fake-gcs-server/releases/download/v1.56.1/fake-gcs-server_1.56.1_Linux_amd64.tar.gz \
             | sudo tar -xz -C /usr/local/bin fake-gcs-server
           # Fail here rather than with a confusing ENOEXEC once the suite runs
-          minio --version
+          silo --version
       - name: Run integration suite against emulators
         run: bun run test:emulators
