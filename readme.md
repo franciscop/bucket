@@ -12,19 +12,29 @@ await file.write("hello world");
 console.log(await file.text());
 ```
 
-Every provider behaves the same, so the code above works unchanged against any of them. That includes a "filesystem" bucket treating a local folder as a bucket, and an in-memory one for tests. Because they share an API, a file can be piped straight from one provider into another:
+Every provider behaves the same, so the code above works unchanged against any of them, including a local folder (`FS`) and an in-memory bucket for tests. Files work with the platform's own types: a native `File`, a `fetch()` response, or a file in another bucket can be written directly, and reads come back as a `Blob` or a stream:
 
 ```js
-// More complex example with streams and pipes
 import { FS, S3 } from "bucket";
 
+const bucket = S3("bucket-name", { id, secret });
 const local = FS("./public/");
-const aws = S3("mybucketname", { id, secret });
 
-const source = local.file("local.txt").stream();
-const target = aws.file("newfile.txt").writable();
-await source.pipeTo(target);
+// A native File, e.g. an upload from FormData
+await bucket.file("avatar.png").write(form.get("avatar"));
+
+// A fetch() download, streamed without buffering
+const res = await fetch("https://example.com/report.pdf");
+await bucket.file("report.pdf").write(res.body);
+
+// A file from another provider
+await bucket.file("logo.png").write(local.file("logo.png"));
+
+// And back out as a Response, e.g. to serve it
+new Response(bucket.file("report.pdf").stream());
 ```
+
+See [Guides](#guides) for uploads, serving over HTTP, and more.
 
 ## Getting Started
 
